@@ -489,6 +489,8 @@ namespace OrderUpVR
             mt.IsChecked = !s.KeepLauncherOpen;
             mt.Click += delegate { s.KeepLauncherOpen = mt.IsChecked != true; s.Save(); };
 
+            BuildVrRows();
+
             watch = new DispatcherTimer(); watch.Interval = TimeSpan.FromSeconds(1); watch.Tick += delegate { WatchGame(); };
             updateTimer = new DispatcherTimer(); updateTimer.Interval = TimeSpan.FromMinutes(30);
             updateTimer.Tick += delegate { if (!s.NoAutoUpdate) CheckUpdates(false); };
@@ -500,7 +502,78 @@ namespace OrderUpVR
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
         }
 
-        const int HowToRevision = 3; // raise when the controls change, so players see the guide again
+        // VR comfort and body choices: key, label, hint, then value/display pairs (the first is the default)
+        static readonly string[][] VrOptions =
+        {
+            new[] { "body", "Your chef", "The body you see when you look down", "male", "Male chef", "female", "Female chef", "off", "Hands only" },
+            new[] { "playmode", "Play position", "Standing: legs stand and step when you walk", "standing", "Standing", "seated", "Seated" },
+            new[] { "turn", "Turning", "Right stick left/right inside the game", "snap", "Snap turn", "smooth", "Smooth turn" },
+            new[] { "snapangle", "Snap turn angle", "How far one snap turns you", "45", "45 degrees", "30", "30 degrees", "60", "60 degrees", "90", "90 degrees", "15", "15 degrees" },
+            new[] { "turnspeed", "Smooth turn speed", "How fast smooth turning rotates you", "120", "Medium (120 degrees/s)", "180", "Fast (180 degrees/s)", "240", "Very fast (240 degrees/s)", "60", "Slow (60 degrees/s)", "90", "Gentle (90 degrees/s)" },
+            new[] { "movespeed", "Walking speed", "Left stick walking", "1.4", "Normal", "1.0", "Slow", "2.0", "Fast" },
+            new[] { "vignette", "Comfort vignette", "Darkens the edges of your view while the stick moves or turns you", "on", "On", "off", "Off" },
+            new[] { "huddist", "Menus and HUD distance", "Where the order tickets, timers and menus float", "1.5", "1.5 m", "1.0", "1.0 m", "2.0", "2.0 m", "3.0", "3.0 m" },
+            new[] { "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "On", "off", "Off" },
+            new[] { "pointing", "Pointing in the kitchen", "Hands: the pointer is where your hand covers things", "hand", "Hands", "laser", "Laser" },
+        };
+
+        string VrGet(string key, string def) { string v; return s.Vr != null && s.Vr.TryGetValue(key, out v) ? v : def; }
+
+        void BuildVrRows()
+        {
+            var rows = Get<StackPanel>("VrRows");
+            rows.Children.Clear();
+            foreach (var opt in VrOptions)
+            {
+                var o = opt;
+                var g = new Grid(); g.Margin = new Thickness(0, 6, 0, 6);
+                g.ColumnDefinitions.Add(new ColumnDefinition());
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var texts = new StackPanel();
+                var label = new TextBlock(); label.Text = o[1]; label.Foreground = Brushes.White; label.FontSize = 14; label.FontWeight = FontWeights.SemiBold;
+                var hint = new TextBlock(); hint.Text = o[2]; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 12, 0);
+                texts.Children.Add(label); texts.Children.Add(hint);
+                var b = new Button(); b.Style = (Style)FindResource("Ghost"); b.MinWidth = 190; b.Padding = new Thickness(14, 8, 14, 8); b.VerticalAlignment = VerticalAlignment.Center;
+                Grid.SetColumn(b, 1);
+                Action show = delegate
+                {
+                    string cur = VrGet(o[0], o[3]);
+                    string disp = o[4];
+                    for (int i = 3; i + 1 < o.Length; i += 2) if (o[i] == cur) disp = o[i + 1];
+                    b.Content = disp;
+                };
+                b.Click += delegate
+                {
+                    string cur = VrGet(o[0], o[3]);
+                    int at = 3;
+                    for (int i = 3; i + 1 < o.Length; i += 2) if (o[i] == cur) at = i;
+                    int next = at + 2 < o.Length ? at + 2 : 3;
+                    if (s.Vr == null) s.Vr = new Dictionary<string, string>();
+                    s.Vr[o[0]] = o[next];
+                    s.Save();
+                    WriteVrFile();
+                    show();
+                };
+                show();
+                g.Children.Add(texts); g.Children.Add(b);
+                rows.Children.Add(g);
+            }
+        }
+
+        void WriteVrFile()
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(Core.EmuDir(s), "config");
+                if (!Directory.Exists(dir)) return;
+                var sb = new System.Text.StringBuilder();
+                foreach (var o in VrOptions) sb.Append(o[0]).Append('=').Append(VrGet(o[0], o[3])).AppendLine();
+                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
+            }
+            catch { }
+        }
+
+        const int HowToRevision = 4; // raise when the controls change, so players see the guide again
 
         void ShowHowTo()
         {
@@ -927,6 +1000,7 @@ namespace OrderUpVR
             var psi = new ProcessStartInfo(System.IO.Path.Combine(emu, "rpcs3.exe"), "--no-gui \"" + System.IO.Path.Combine(s.GameDir, @"PS3_GAME\USRDIR\EBOOT.BIN") + "\"");
             psi.WorkingDirectory = emu; psi.UseShellExecute = false;
             psi.EnvironmentVariables["ORDERUP_VR_MODVERSION"] = s.InstalledVersion ?? "";
+            WriteVrFile();
             try
             {
                 try { File.Delete(System.IO.Path.Combine(emu, @"log\orderup_vr.log")); } catch { }

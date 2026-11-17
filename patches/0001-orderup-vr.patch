@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..c82b81902
+index 000000000..4b386c10f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,3354 @@
+@@ -0,0 +1,3499 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -695,6 +695,7 @@ index 000000000..c82b81902
 +			f32 unit = 0.3048f;  // metres per game unit
 +			bool mode3d = true;
 +			bool stereo = true;  // false = one image for both eyes (head tracked, no depth)
++			f32 hud_dist = 1.5f; // metres: where the game's HUD and menus float
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
 +
@@ -761,8 +762,13 @@ index 000000000..c82b81902
 +			int frames_with = 0, frames_without = 0;
 +			bool want3d = false;
 +			f32 unit = 0.3048f;
++			f32 hud_dist = 1.5f;
++			mat4 X2b;                  // backdrops drawn before the 3D scene: far away
++			u64 x2b_gen = 0;
++			bool x2b_ready = false;
++			int n2b = 0;
 +
-+			u64 last_log = 0, tot3 = 0, tot2 = 0, tot0 = 0, frames = 0;
++			u64 last_log = 0, tot3 = 0, tot2 = 0, tot2b = 0, tot0 = 0, frames = 0;
 +		};
 +		rsx_vr_state g_rv;
 +		frame_tag rv_end_frame(u64 display_key);
@@ -928,6 +934,20 @@ index 000000000..c82b81902
 +			f32 floor_y = -1.6f;      // LOCAL-space floor height
 +			bool floor_known = false;
 +			bool pointing_laser = false;  // inside the game: point with the laser instead of the hand
++
++			// Comfort and body settings (chosen in the launcher: config/orderupvr_comfort.txt)
++			struct comfort_t
++			{
++				bool body = true, female = false, seated = false;
++				bool smooth_turn = false, vignette = true;
++				f32 snap_deg = 45.f, turn_speed = 120.f, move_speed = 1.4f, hud_dist = 1.5f;
++			} comfort;
++			u64 comfort_read = 0;
++			f32 walk_phase = 0.f, walk_amount = 0.f;
++			vec3 walk_prev{};
++			bool moving = false;         // stick movement or smooth turning this frame (comfort vignette)
++			XrSwapchain vignette = XR_NULL_HANDLE;
++			bool vignette_ok = false, vignette_tried = false;
 +
 +			// The game asks to press Square at every start (PS Move calibration)
 +			u64 first_live = 0;
@@ -2389,49 +2409,67 @@ index 000000000..c82b81902
 +
 +		void draw_body(xr_state& xr)
 +		{
++			const auto& cf = xr.comfort;
++			if (!cf.body) return;
 +			const vec3 head = xr.last_head;
 +			const vec3 fb{-std::sin(xr.body_yaw), 0.f, -std::cos(xr.body_yaw)};
 +			const vec3 rb{-fb.z, 0.f, fb.x};
 +			const vec3 up{0.f, 1.f, 0.f};
 +			const f32 eye_h = head.y - xr.floor_y;
-+			const bool seated = eye_h < 1.35f;
-+			const f32 scale = std::clamp((seated ? eye_h + 0.45f : eye_h) / 1.65f, 0.85f, 1.15f);
++			// Body size from your real height when standing; a seated player gets an average-height chef
++			const f32 scale = (!cf.seated && xr.floor_known && eye_h > 1.3f) ? std::clamp(eye_h / 1.65f, 0.85f, 1.15f) : 1.f;
++			const f32 fem = cf.female ? 1.f : 0.f;
++			const f32 shoulder_w = (0.18f - 0.025f * fem) * scale;
 +			const vec3 back = fb * (-0.10f);
 +
++			// Chef jacket and apron
 +			const vec3 chest = head + up * (-0.40f * scale) + back;
 +			const vec3 belly = head + up * (-0.66f * scale) + back;
-+			draw_ellipsoid(xr, chest, rb, up, fb, {0.19f * scale, 0.20f * scale, 0.115f * scale}, c_jacket);
-+			draw_ellipsoid(xr, belly, rb, up, fb, {0.17f * scale, 0.16f * scale, 0.11f * scale}, c_jacket);
-+			draw_boxo(xr, belly + fb * (0.105f * scale) + up * (-0.08f * scale), rb, up, fb, {0.30f * scale, 0.42f * scale, 0.012f}, c_apron);
++			const vec3 hips = head + up * (-0.84f * scale) + back;
++			draw_ellipsoid(xr, chest, rb, up, fb, {(0.19f - 0.02f * fem) * scale, 0.20f * scale, (0.115f + 0.01f * fem) * scale}, c_jacket);
++			draw_ellipsoid(xr, belly, rb, up, fb, {(0.17f - 0.035f * fem) * scale, 0.16f * scale, (0.11f - 0.01f * fem) * scale}, c_jacket);
++			draw_ellipsoid(xr, hips, rb, up, fb, {(0.16f + 0.02f * fem) * scale, 0.10f * scale, 0.11f * scale}, c_pants);
++			// Double row of jacket buttons and a neckerchief
++			for (int row = 0; row < 3; row++)
++				for (int col = -1; col <= 1; col += 2)
++					draw_ball(xr, chest + fb * (0.112f * scale) + up * ((0.08f - row * 0.075f) * scale) + rb * (col * 0.05f * scale), 0.009f, {0.75f, 0.75f, 0.72f});
++			draw_ellipsoid(xr, head + up * (-0.22f * scale) + back + fb * 0.05f, rb, up, fb, {0.06f * scale, 0.03f * scale, 0.05f * scale}, cf.female ? vec3{0.85f, 0.25f, 0.35f} : vec3{0.85f, 0.2f, 0.15f});
++			draw_boxo(xr, belly + fb * (0.105f * scale) + up * (-0.10f * scale), rb, up, fb, {0.30f * scale, 0.46f * scale, 0.012f}, c_apron);
 +
 +			// Arms
 +			for (int hnd = 0; hnd < 2; hnd++)
 +			{
 +				const f32 side = hnd ? 1.f : -1.f;
-+				const vec3 shoulder = head + up * (-0.24f * scale) + back + rb * (side * 0.18f * scale);
-+				draw_ball(xr, shoulder, 0.055f * scale, c_jacket);
++				const vec3 shoulder = head + up * (-0.24f * scale) + back + rb * (side * shoulder_w);
++				draw_ball(xr, shoulder, (0.055f - 0.007f * fem) * scale, c_jacket);
 +				if (!xr.hand_valid[hnd]) continue;
 +				const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
-+				draw_arm(xr, shoulder, h.wrist, rb, fb, side, scale);
++				draw_arm(xr, shoulder, h.wrist, rb, fb, side, scale * (1.f - 0.04f * fem));
 +			}
 +
-+			// Legs
++			// Legs: standing (they step when you walk) or seated
++			const f32 thigh = 0.44f * scale, shin = 0.43f * scale;
 +			for (int leg = 0; leg < 2; leg++)
 +			{
 +				const f32 side = leg ? 1.f : -1.f;
-+				const vec3 hip = head + up * (-0.84f * scale) + back + rb * (side * 0.09f * scale);
++				const vec3 hip = hips + rb * (side * (0.09f + 0.01f * fem) * scale);
 +				vec3 knee, foot;
-+				if (seated)
++				if (cf.seated)
 +				{
-+					knee = hip + fb * (0.42f * scale) + up * 0.02f;
-+					foot = vec3{knee.x, xr.floor_y + 0.06f, knee.z} + fb * 0.05f;
++					knee = hip + fb * thigh + up * 0.02f;
++					foot = knee - up * shin + fb * 0.05f;
 +				}
 +				else
 +				{
-+					foot = vec3{hip.x, xr.floor_y + 0.06f, hip.z} + fb * 0.03f;
-+					knee = (hip + foot) * 0.5f + fb * 0.03f;
++					const f32 ph = xr.walk_phase + (leg ? 3.14159265f : 0.f);
++					const f32 swing = std::sin(ph) * 0.45f * xr.walk_amount;
++					const f32 lift = std::max(0.f, std::cos(ph)) * 0.7f * xr.walk_amount; // knee bends while the leg swings forward
++					const vec3 tdir = up * -std::cos(swing) + fb * std::sin(swing);
++					knee = hip + tdir * thigh;
++					const f32 sa = swing - lift;
++					foot = knee + (up * -std::cos(sa) + fb * std::sin(sa)) * shin;
 +				}
-+				draw_limb(xr, hip, knee, 0.075f * scale, 0.058f * scale, c_pants);
++				draw_limb(xr, hip, knee, (0.075f + 0.005f * fem) * scale, 0.058f * scale, c_pants);
 +				draw_limb(xr, knee, foot, 0.058f * scale, 0.045f * scale, c_pants);
 +				draw_ellipsoid(xr, foot + fb * 0.05f + up * (-0.02f), rb, up, fb, {0.05f, 0.04f, 0.12f}, c_shoe);
 +			}
@@ -2554,6 +2592,45 @@ index 000000000..c82b81902
 +				"Point at the middle of the screen and press X. Pulling the TRIGGER works too.");
 +		}
 +
++		void load_comfort(xr_state& xr)
++		{
++			std::map<std::string, std::string> kv;
++			if (std::FILE* f = std::fopen((fs::get_config_dir() + "orderupvr_comfort.txt").c_str(), "r"))
++			{
++				char line[256];
++				while (std::fgets(line, sizeof(line), f))
++				{
++					std::string l(line);
++					while (!l.empty() && (l.back() == 10 || l.back() == 13 || l.back() == 32)) l.pop_back();
++					const usz eq = l.find('=');
++					if (eq != std::string::npos) kv[l.substr(0, eq)] = l.substr(eq + 1);
++				}
++				std::fclose(f);
++			}
++			const auto get = [&](const char* k, const char* def) { const auto it = kv.find(k); return it == kv.end() ? std::string(def) : it->second; };
++			const auto num = [&](const char* k, f32 def, f32 lo, f32 hi) { const std::string v = get(k, ""); return v.empty() ? def : std::clamp(static_cast<f32>(std::atof(v.c_str())), lo, hi); };
++			auto& c = xr.comfort;
++			const auto old = c;
++			c.body = get("body", "male") != "off";
++			c.female = get("body", "male") == "female";
++			c.seated = get("playmode", "standing") == "seated";
++			c.smooth_turn = get("turn", "snap") == "smooth";
++			c.vignette = get("vignette", "on") != "off";
++			c.snap_deg = num("snapangle", 45.f, 10.f, 180.f);
++			c.turn_speed = num("turnspeed", 120.f, 20.f, 400.f);
++			c.move_speed = num("movespeed", 1.4f, 0.3f, 5.f);
++			c.hud_dist = num("huddist", 1.5f, 0.6f, 6.f);
++			if (const std::string st = get("stereo", ""); !st.empty()) xr.stereo = st != "off";
++			if (const std::string pt = get("pointing", ""); !pt.empty()) xr.pointing_laser = pt == "laser";
++			if (std::memcmp(&old, &c, sizeof(c)) != 0 || !xr.comfort_read)
++			{
++				vr_log("Comfort: body %s, %s, turn %s (%.0f deg snap, %.0f deg/s smooth), move %.1f m/s, vignette %s, HUD at %.1f m, %s, pointing with %s",
++					!c.body ? "hidden" : c.female ? "female chef" : "male chef", c.seated ? "seated" : "standing", c.smooth_turn ? "smooth" : "snap",
++					c.snap_deg, c.turn_speed, c.move_speed, c.vignette ? "on" : "off", c.hud_dist, xr.stereo ? "3D depth" : "no depth",
++					xr.pointing_laser ? "the laser" : "the hands");
++			}
++		}
++
 +		void update_input(xr_state& xr, XrTime time, f32 dt)
 +		{
 +			pointer_state out;
@@ -2623,6 +2700,17 @@ index 000000000..c82b81902
 +						xr.body_yaw += diff * std::min(1.f, rate * dt);
 +					}
 +				}
++				// Walking legs: step with how fast you move through the game (stick or real steps)
++				{
++					const vec3 here = to_player(xr, xr.last_head);
++					vec3 dv = here - xr.walk_prev;
++					dv.y = 0.f;
++					xr.walk_prev = here;
++					const f32 speed = dt > 0.f ? std::min(std::sqrt(dot(dv, dv)) / dt, 3.f) : 0.f;
++					const f32 target = std::clamp(speed / 1.2f, 0.f, 1.f);
++					xr.walk_amount += (target - xr.walk_amount) * std::min(1.f, 6.f * dt);
++					xr.walk_phase += speed * dt * 5.5f;
++				}
 +
 +				// Left stick click: short = recentre (screen and game camera), hold 1 s = switch inside-the-game 3D / big screen.
 +				const u64 now_ms = GetTickCount64();
@@ -2658,22 +2746,39 @@ index 000000000..c82b81902
 +				if (xr.live3d)
 +				{
 +					// Inside the game: left stick walks (where you look), right stick turns in 30 degree steps.
++					xr.moving = false;
 +					if (!grabbing && (std::fabs(ls.x) > 0.2f || std::fabs(ls.y) > 0.2f))
 +					{
 +						vec3 f = xr.last_forward;
 +						f.y = 0.f;
 +						f = normalize(f);
 +						const vec3 r{-f.z, 0.f, f.x};
-+						xr.player_pos = xr.player_pos - (r * ls.x + f * ls.y) * (1.4f * dt);
++						xr.player_pos = xr.player_pos - (r * ls.x + f * ls.y) * (xr.comfort.move_speed * dt);
++						xr.moving = true;
 +					}
-+					if (!grabbing && std::fabs(rs.x) > 0.7f && xr.snap_armed)
++					const auto turn_by = [&](f32 rad)
 +					{
 +						const vec3 head_rel = to_player(xr, xr.last_head);
-+						xr.player_yaw += rs.x > 0.f ? 0.5236f : -0.5236f;
++						xr.player_yaw += rad;
 +						xr.player_pos = xr.last_head - rotate(yaw_q(xr.player_yaw), head_rel);
-+						xr.snap_armed = false;
++					};
++					if (xr.comfort.smooth_turn)
++					{
++						if (!grabbing && std::fabs(rs.x) > 0.25f)
++						{
++							turn_by(rs.x * xr.comfort.turn_speed * 0.01745329f * dt);
++							xr.moving = true;
++						}
 +					}
-+					if (std::fabs(rs.x) < 0.3f) xr.snap_armed = true;
++					else
++					{
++						if (!grabbing && std::fabs(rs.x) > 0.7f && xr.snap_armed)
++						{
++							turn_by((rs.x > 0.f ? 1.f : -1.f) * xr.comfort.snap_deg * 0.01745329f);
++							xr.snap_armed = false;
++						}
++						if (std::fabs(rs.x) < 0.3f) xr.snap_armed = true;
++					}
 +
 +					// Right stick up/down: stand higher or lower in the game
 +					if (!grabbing && std::fabs(rs.y) > 0.6f && std::fabs(rs.x) < 0.5f)
@@ -2927,6 +3032,7 @@ index 000000000..c82b81902
 +			if (XR_FAILED(xrBeginFrame(xr.session, nullptr))) return;
 +
 +			const f32 dt = std::clamp(static_cast<f32>(frame_state.predictedDisplayPeriod) * 1e-9f, 0.001f, 0.05f);
++			if (GetTickCount64() - xr.comfort_read > 2000) { load_comfort(xr); xr.comfort_read = GetTickCount64(); }
 +			update_input(xr, frame_state.predictedDisplayTime, dt);
 +			upload_frame(xr);
 +
@@ -2951,6 +3057,7 @@ index 000000000..c82b81902
 +				g_views.unit = xr.unit;
 +				g_views.mode3d = xr.mode3d;
 +				g_views.stereo = xr.stereo;
++				g_views.hud_dist = xr.comfort.hud_dist;
 +			}
 +			const u64 now_tick = GetTickCount64();
 +			const bool was3d = xr.live3d;
@@ -2968,6 +3075,7 @@ index 000000000..c82b81902
 +			XrCompositionLayerProjectionView env_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 +			XrCompositionLayerProjectionView body_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 +			XrCompositionLayerQuad calib{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			XrCompositionLayerQuad vig{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			const XrCompositionLayerBaseHeader* layers[12]{};
 +			u32 layer_count = 0;
 +
@@ -3161,6 +3269,38 @@ index 000000000..c82b81902
 +				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);
 +			}
 +
++			// Comfort vignette: darkens the edges of your view while the stick moves or turns you
++			if (frame_state.shouldRender && xr.comfort.vignette && xr.moving && xr.live3d)
++			{
++				if (!xr.vignette_tried)
++				{
++					xr.vignette_tried = true;
++					constexpr u32 n = 256;
++					std::vector<u8> px(n * n * 4, 0);
++					for (u32 y = 0; y < n; y++) for (u32 x = 0; x < n; x++)
++					{
++						const f32 dx = (x + 0.5f) / n * 2.f - 1.f, dy = (y + 0.5f) / n * 2.f - 1.f;
++						const f32 r = std::sqrt(dx * dx + dy * dy);
++						const f32 a = std::clamp((r - 0.42f) / 0.38f, 0.f, 1.f);
++						px[(y * n + x) * 4 + 3] = static_cast<u8>(a * a * (3.f - 2.f * a) * 255.f);
++					}
++					xr.vignette_ok = make_static(xr, xr.vignette, n, n, px);
++				}
++				if (xr.vignette_ok)
++				{
++					vig.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++					vig.space = xr.view_space;
++					vig.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					vig.subImage.swapchain = xr.vignette;
++					vig.subImage.imageRect.extent = {256, 256};
++					vig.pose.orientation.w = 1.f;
++					vig.pose.position = {0.f, 0.f, -0.25f};
++					vig.size = {0.95f, 0.95f};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&vig);
++				}
++			}
++			if (!xr.live3d) xr.moving = false;
++
 +			XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
 +			end.displayTime = frame_state.predictedDisplayTime;
 +			end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -3184,6 +3324,7 @@ index 000000000..c82b81902
 +			if (xr.laser != XR_NULL_HANDLE) xrDestroySwapchain(xr.laser);
 +			for (auto sc : xr.eye_sc) if (sc != XR_NULL_HANDLE) xrDestroySwapchain(sc);
 +			if (xr.calib != XR_NULL_HANDLE) xrDestroySwapchain(xr.calib);
++			if (xr.vignette != XR_NULL_HANDLE) xrDestroySwapchain(xr.vignette);
 +			gfx_destroy();
 +			{
 +				std::lock_guard lock(g_state_mutex);
@@ -3450,8 +3591,8 @@ index 000000000..c82b81902
 +			auto& s = g_rv;
 +			s.begun = true;
 +			s.cam_this_frame = false;
-+			s.x3_ready = s.x2_ready = false;
-+			s.n3 = s.n2 = s.n0 = 0;
++			s.x3_ready = s.x2_ready = s.x2b_ready = false;
++			s.n3 = s.n2 = s.n0 = s.n2b = 0;
 +			s.votes.clear();
 +			s.depths.clear();
 +			s.tag = {};
@@ -3465,6 +3606,7 @@ index 000000000..c82b81902
 +				v = g_views;
 +			}
 +			s.unit = v.unit;
++			s.hud_dist = v.hud_dist;
 +			s.enabled = v.valid && v.mode3d && s.want3d;
 +			if (!s.enabled) return;
 +
@@ -3543,13 +3685,13 @@ index 000000000..c82b81902
 +
 +		// The 3D scene transform (frame's own eye) or the 2D overlay transform (the eye of the frame whose scene
 +		// picture is in the target, so the HUD lines up with it).
-+		bool rv_build(bool scene, u64 gen)
++		bool rv_build(bool scene, u64 gen, bool backdrop = false)
 +		{
 +			auto& s = g_rv;
 +			const auto& c = s.cam;
 +			const auto* r = rv_ring(gen);
 +			if (!r) return false;
-+			if (scene ? s.x3_ready : (s.x2_ready && s.x2_gen == gen)) return true;
++			if (scene ? s.x3_ready : backdrop ? (s.x2b_ready && s.x2b_gen == gen) : (s.x2_ready && s.x2_gen == gen)) return true;
 +			const mat4 base = mmul(mmul(eye_projection(r->tag.fov, c.A, c.B), r->E), level_mat(s.have_up ? s.up : vec3{0.f, 1.f, 0.f}));
 +			if (scene)
 +			{
@@ -3563,16 +3705,17 @@ index 000000000..c82b81902
 +			}
 +			else
 +			{
-+				// 2D (HUD, menus): a flat plane that exactly fills the game camera's view at the typical object distance
-+				const f32 D = s.depth;
++				// 2D: a flat plane that exactly fills the game camera's view. The HUD and menus float at a comfortable
++				// distance; backdrops (drawn before the 3D scene) sit just inside the far plane, behind everything.
++				const f32 far_plane = (c.A + 1.f) < -1e-4f ? c.B / (c.A + 1.f) : 60.f;
++				const f32 D = backdrop ? std::clamp(far_plane * 0.9f, 2.f, 200.f) : std::max(s.hud_dist / s.unit, c.B / c.A * 1.2f);
 +				mat4 S2;
 +				S2.m[0] = D / c.sx; S2.m[3] = D * c.cx / c.sx;
 +				S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
 +				S2.m[11] = -D;
 +				S2.m[15] = 1.f;
-+				s.X2 = mmul(base, S2);
-+				s.x2_ready = true;
-+				s.x2_gen = gen;
++				if (backdrop) { s.X2b = mmul(base, S2); s.x2b_ready = true; s.x2b_gen = gen; }
++				else { s.X2 = mmul(base, S2); s.x2_ready = true; s.x2_gen = gen; }
 +			}
 +			return true;
 +		}
@@ -3641,20 +3784,20 @@ index 000000000..c82b81902
 +				g_cam.depth = s.depth;
 +			}
 +
-+			s.tot3 += s.n3; s.tot2 += s.n2; s.tot0 += s.n0; s.frames++;
++			s.tot3 += s.n3; s.tot2 += s.n2; s.tot2b += s.n2b; s.tot0 += s.n0; s.frames++;
 +			const u64 now = GetTickCount64();
 +			if (now - s.last_log > 15000)
 +			{
 +				const auto pf = [&](u64 v) { return static_cast<unsigned long long>(v / std::max<u64>(s.frames, 1)); };
-+				vr_log("True VR: %s, shown eye=%d, per frame 3D=%llu 2D=%llu other=%llu; camera %s sx=%.3f sy=%.3f A=%.4f B=%.4f; up (%.2f %.2f %.2f); depth %.2f; "
++				vr_log("True VR: %s, shown eye=%d, per frame 3D=%llu 2D=%llu (+%llu backdrop) other=%llu; camera %s sx=%.3f sy=%.3f A=%.4f B=%.4f; up (%.2f %.2f %.2f); depth %.2f; "
 +					"scene 0x%llx composite 0x%llx shown 0x%llx; picture age 0:%llu 1:%llu 2:%llu more:%llu",
-+					s.enabled ? "rendering for the headset" : "flat", out.eye, pf(s.tot3), pf(s.tot2), pf(s.tot0), s.cam.valid ? "found" : "not found",
++					s.enabled ? "rendering for the headset" : "flat", out.eye, pf(s.tot3), pf(s.tot2), pf(s.tot2b), pf(s.tot0), s.cam.valid ? "found" : "not found",
 +					s.cam.sx, s.cam.sy, s.cam.A, s.cam.B, s.up.x, s.up.y, s.up.z, s.depth,
 +					static_cast<unsigned long long>(s.scene_key), static_cast<unsigned long long>(s.composite_key), static_cast<unsigned long long>(display_key),
 +					static_cast<unsigned long long>(s.lat_hist[0]), static_cast<unsigned long long>(s.lat_hist[1]),
 +					static_cast<unsigned long long>(s.lat_hist[2]), static_cast<unsigned long long>(s.lat_hist[3]));
 +				s.last_log = now;
-+				s.tot3 = s.tot2 = s.tot0 = s.frames = 0;
++				s.tot3 = s.tot2 = s.tot2b = s.tot0 = s.frames = 0;
 +				for (auto& h : s.lat_hist) h = 0;
 +			}
 +
@@ -3772,19 +3915,21 @@ index 000000000..c82b81902
 +			}
 +			else if (!perspective && s.cam.valid && (color_key == s.scene_key || color_key == s.composite_this || s.is_screen(color_key)))
 +			{
-+				// HUD, order tickets, menus: on a plane in the world, in the eye view of the picture already in that target
-+				kind = 2;
++				// HUD, order tickets, menus: on a plane in the world, in the eye view of the picture already in that target.
++				// Flat draws before any 3D draw this frame are backdrops (sky, scenery pictures): far away instead.
++				kind = s.n3 == 0 ? 3 : 2;
 +				if (const u64 g = rv_content_get(color_key); g && rv_ring(g)) content_gen = g;
 +			}
 +		}
 +
 +		if (kind == 1) s.n3++;
 +		else if (kind == 2) s.n2++;
++		else if (kind == 3) s.n2b++;
 +		else s.n0++;
 +
 +		if (!s.enabled || !kind || !s.cam.valid) return 0;
-+		if (!rv_build(kind == 1, kind == 1 ? gen : content_gen)) return 0;
-+		std::memcpy(x, (kind == 1 ? s.X3 : s.X2).m, sizeof(f32) * 16);
++		if (!rv_build(kind == 1, kind == 1 ? gen : content_gen, kind == 3)) return 0;
++		std::memcpy(x, (kind == 1 ? s.X3 : kind == 3 ? s.X2b : s.X2).m, sizeof(f32) * 16);
 +		return kind;
 +	}
 +
@@ -3963,7 +4108,7 @@ index 000000000..ea1c4829d
 +	void stereo_apply(void* rows, const f32 x[16]);
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
-index 51fc9092b..34987d81a 100644
+index 51fc9092b..5b7f5b51a 100644
 --- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 @@ -7,6 +7,7 @@
@@ -3998,7 +4143,7 @@ index 51fc9092b..34987d81a 100644
  
 +		// Order Up VR: the empty space around the game's view becomes see-through in the headset
 +		{
-+			const u64 vr_key = (static_cast<u64>(REGS(m_ctx)->surface_dma(0) == CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER ? 1 : 0) << 32) | REGS(m_ctx)->surface_offset(0);
++			const u64 vr_key = ouvr_color_target_address();
 +			if (f32 vr_c[4]; ouvr::stereo_clear_color(vr_key, vr_c))
 +			{
 +				for (int i = 0; i < 4; i++) color_clear_values.color.float32[i] = vr_c[i];
@@ -4008,7 +4153,23 @@ index 51fc9092b..34987d81a 100644
  		if (use_fast_clear)
  		{
  			for (u32 index = 0; index < m_draw_buffers.size(); ++index)
-@@ -2042,7 +2056,37 @@ void VKGSRender::load_program_env()
+@@ -2025,6 +2039,15 @@ bool VKGSRender::load_program()
+ 	return m_program != nullptr;
+ }
+ 
++// Order Up VR: address of the first colour target being drawn to (the game may draw to target B, C or D).
++u64 VKGSRender::ouvr_color_target_address() const
++{
++	const auto indexes = rsx::utility::get_rtt_indexes(REGS(m_ctx)->surface_color_target());
++	if (indexes.empty()) return ~0ull;
++	const u32 i = indexes[0];
++	return rsx::get_address(m_ctx, REGS(m_ctx)->surface_offset(i), REGS(m_ctx)->surface_dma(i));
++}
++
+ void VKGSRender::load_program_env()
+ {
+ 	if (!m_program)
+@@ -2042,7 +2065,37 @@ void VKGSRender::load_program_env()
  
  	const bool update_transform_constants = m_stale_constants.test(rsx::draw_state_t::group::transform_constants);
  	const bool update_fragment_constants = m_stale_constants.test(rsx::draw_state_t::group::fragment_constants);
@@ -4030,9 +4191,9 @@ index 51fc9092b..34987d81a 100644
 +		for (u32 i = 0; i < 16; i++)
 +		{
 +			const auto& tex = REGS(m_ctx)->fragment_textures[i];
-+			if (tex.enabled()) tex_keys[tex_count++] = (static_cast<u64>(tex.location()) << 32) | tex.offset();
++			if (tex.enabled()) tex_keys[tex_count++] = rsx::get_address(m_ctx, tex.offset(), tex.location());
 +		}
-+		const u64 color_key = (static_cast<u64>(REGS(m_ctx)->surface_dma(0) == CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER ? 1 : 0) << 32) | REGS(m_ctx)->surface_offset(0);
++		const u64 color_key = ouvr_color_target_address();
 +		vr_kind = ouvr::stereo_draw_transform(reinterpret_cast<const f32*>(REGS(m_ctx)->transform_constants.data()), uses_mvp,
 +			REGS(m_ctx)->surface_clip_width(), REGS(m_ctx)->surface_clip_height(), color_key, tex_keys, tex_count, vr_xform);
 +		static thread_local int s_vr_kind = 0;
@@ -4047,7 +4208,7 @@ index 51fc9092b..34987d81a 100644
  	const bool update_fragment_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env);
  	const bool update_fragment_texture_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_texture_env);
  	const bool update_instruction_buffers = (m_interpreter_state.test(rsx::draw_state_t::group::programs) && is_interpreter);
-@@ -2057,6 +2101,7 @@ void VKGSRender::load_program_env()
+@@ -2057,6 +2110,7 @@ void VKGSRender::load_program_env()
  		auto buf = m_vertex_env_ring_info.map<char>(mem, 96);
  
  		RSX(m_ctx)->draw_processor()->fill_vertex_env(buf, RSX(m_ctx)->resolution_scaling_config.scale_factor());
@@ -4055,7 +4216,7 @@ index 51fc9092b..34987d81a 100644
  
  		m_vertex_env_ring_info.unmap();
  		m_vertex_env_dynamic_offset = mem;
-@@ -2283,6 +2328,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
+@@ -2283,6 +2337,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
  			? std::span<const u16>{}
  			: std::span<const u16>(m_vertex_prog->constant_ids);
  		RSX(m_ctx)->draw_processor()->fill_vertex_program_constants_data(buf, constant_ids);
@@ -4069,8 +4230,20 @@ index 51fc9092b..34987d81a 100644
  	}
  }
  
+diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.h b/rpcs3/Emu/RSX/VK/VKGSRender.h
+index 07a6b7dcf..4568c3683 100644
+--- a/rpcs3/Emu/RSX/VK/VKGSRender.h
++++ b/rpcs3/Emu/RSX/VK/VKGSRender.h
+@@ -257,6 +257,7 @@ private:
+ 
+ 	bool load_program();
+ 	void load_program_env();
++	u64 ouvr_color_target_address() const; // Order Up VR
+ 	void update_vertex_env(u32 id, const vk::vertex_upload_info& vertex_info);
+ 	void upload_transform_constants(const rsx::io_buffer& buffer);
+ 
 diff --git a/rpcs3/Emu/RSX/VK/VKPresent.cpp b/rpcs3/Emu/RSX/VK/VKPresent.cpp
-index 4afff8452..a78c05ef1 100644
+index 4afff8452..4b889902d 100644
 --- a/rpcs3/Emu/RSX/VK/VKPresent.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKPresent.cpp
 @@ -1,5 +1,6 @@
@@ -4107,7 +4280,7 @@ index 4afff8452..a78c05ef1 100644
 +		{
 +			// Order Up VR: the headset gets its own copy of every frame
 +			const bool others_need_it = user_asked_for_screenshot || user_is_recording;
-+			ouvr::submit_frame(others_need_it ? std::vector<u8>(sshot_frame) : std::move(sshot_frame), buffer_width, buffer_height, is_bgra, display_buffer.offset);
++			ouvr::submit_frame(others_need_it ? std::vector<u8>(sshot_frame) : std::move(sshot_frame), buffer_width, buffer_height, is_bgra, rsx::get_address(m_ctx, display_buffer.offset, CELL_GCM_LOCATION_LOCAL));
 +		}
 +
  		if (user_asked_for_screenshot)

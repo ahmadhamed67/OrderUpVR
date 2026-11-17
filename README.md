@@ -31,9 +31,10 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | Menus on a large virtual screen | Works (confirmed on Quest 3) |
 | Quest controllers as the PlayStation Move (pointer, buttons, motion) | Works (confirmed on Quest 3) |
 | Inside the game in 3D: stereo, head tracking, walking, HUD placed in the world | Works since 0.6.0; 0.7.0 fixes the double image |
-| Body, arms and animated hands; pointing by reaching | New in 0.7.0, not yet confirmed in a headset |
+| Body (male/female chef), arms, animated hands; pointing by reaching | New in 0.7.0/0.8.0, being tested |
+| Comfort settings (snap/smooth turn, angles, speeds, vignette, seated/standing, HUD distance) | New in 0.8.0, in the launcher's Settings |
 
-## Controls (0.7.0)
+## Controls (0.8.0)
 
 - In the kitchen and the restaurant you are inside the game in 3D: look around and lean in. Menus and loading screens use the big screen.
 - Inside the game, reach for what you want: the pointer is where your hand covers it. On the big screen, aim the laser. The hand you press GRIP or TRIGGER with becomes the pointing hand.

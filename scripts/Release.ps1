@@ -12,7 +12,7 @@ if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 $stage = Join-Path $out 'stage'
 New-Item -ItemType Directory -Force (Join-Path $stage 'rpcs3'), (Join-Path $stage 'config') | Out-Null
 
-$changelog = Get-Content (Join-Path $root 'release\changelog.json') -Raw | ConvertFrom-Json
+$changelog = Get-Content (Join-Path $root 'release\changelog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($changelog[0].version -ne $Version) { throw "release\changelog.json must start with an entry for version $Version" }
 
 # Emulator binaries only: no debug symbols, no test data, nothing from a run (config, logs, caches).

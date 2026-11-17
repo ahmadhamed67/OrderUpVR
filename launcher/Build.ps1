@@ -17,7 +17,7 @@ try {
     # Sources with version and manifest URL filled in
     $sources = @()
     foreach ($f in Get-ChildItem $PSScriptRoot -Filter *.cs) {
-        $src = (Get-Content $f.FullName -Raw).Replace('@LAUNCHER_VERSION@', $Version).Replace('@MANIFEST_URL@', $ManifestUrl)
+        $src = (Get-Content $f.FullName -Raw -Encoding UTF8).Replace('@LAUNCHER_VERSION@', $Version).Replace('@MANIFEST_URL@', $ManifestUrl)
         $src = $src.Replace('[assembly: AssemblyVersion("1.0.0.0")]', "[assembly: AssemblyVersion(`"$Version.0`")]")
         $dst = Join-Path $work $f.Name
         Set-Content -Path $dst -Value $src -Encoding UTF8
@@ -65,7 +65,7 @@ try {
         '/r:System.Web.Extensions.dll', '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', '/r:System.Drawing.dll'
     )
     $res = foreach ($x in Get-ChildItem (Join-Path $PSScriptRoot 'ui') -Filter *.xaml) { "/resource:$($x.FullName),OrderUpVR.$($x.Name)" }
-    & (Join-Path $fw 'csc.exe') /nologo /target:winexe /platform:anycpu /optimize+ "/out:$Out" "/win32icon:$icoPath" @refs @res @sources
+    & (Join-Path $fw 'csc.exe') /nologo /codepage:65001 /target:winexe /platform:anycpu /optimize+ "/out:$Out" "/win32icon:$icoPath" @refs @res @sources
     if ($LASTEXITCODE) { throw 'Launcher build failed' }
 
     # Every XAML file must parse (catches markup mistakes at build time instead of on users' PCs)

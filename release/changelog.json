@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.8.0",
+    "date": "2026-11-17",
+    "notes": [
+      "Fixed the small square: the 3D view now fills the restaurant and kitchen again. 0.7.0 read the wrong drawing slot for where the game draws its 3D scene, so the picture the game copies onto the screen (with its blue sky) was mistaken for the HUD and shrunk onto a panel 4 metres away.",
+      "Scenery pictures the game draws behind the 3D world (like the sky) now sit far away behind everything, and the HUD, order tickets and menus float at a comfortable reading distance (1.5 m, adjustable).",
+      "New VR comfort and body settings in the launcher (Settings > VR comfort and body), applied in the headset within seconds, even while playing: snap or smooth turning, snap angle (15/30/45/60/90 degrees), smooth turn speed, walking speed, comfort vignette, menu and HUD distance, 3D depth on/off, and pointing with hands or a laser.",
+      "Choose your chef: male (the default, like Quick Play) or female, or hands only. The chef wears a double-buttoned jacket, neckerchief and apron.",
+      "Standing or seated play position. Standing is the default: the legs stand under you and step when you walk, with the stick or for real. 0.7.0 always showed sitting legs.",
+      "Fixed the garbled characters in the launcher (the tick in Up to date, the dot next to Latest and the PLAY icon).",
+      "Not done yet: picking the chef automatically from the profile you choose in the game, and using the game's own chef model. Both need the mod to read the game's memory, which is the next research step."
+    ]
+  },
+  {
     "version": "0.7.0",
     "date": "2026-11-17",
     "notes": [

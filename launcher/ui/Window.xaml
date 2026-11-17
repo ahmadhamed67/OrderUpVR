@@ -243,6 +243,13 @@
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+            <StackPanel>
+              <TextBlock Style="{StaticResource H2}" Text="VR comfort and body"/>
+              <TextBlock Style="{StaticResource DimText}" Text="Click a value to change it. Changes reach the headset within a few seconds, even while playing." Margin="0,4,0,10" TextWrapping="Wrap"/>
+              <StackPanel x:Name="VrRows"/>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Margin="0,16,0,0">
             <Grid>
               <StackPanel>
                 <TextBlock Style="{StaticResource H2}" Text="About"/>
