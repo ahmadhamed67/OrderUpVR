@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..e26be9cfd
+index 000000000..2b7077a85
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,4733 @@
+@@ -0,0 +1,4745 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -809,6 +809,7 @@ index 000000000..e26be9cfd
 +			int still = 0, fails = 0;
 +			u64 moves = 0, resets = 0, matched = 0, solved = 0;
 +			f32 pred_err = 0.f;
++			u64 eye_flip = 0;
 +		};
 +		rsx_vr_state g_rv;
 +		frame_tag rv_end_frame(u64 display_key);
@@ -1619,12 +1620,12 @@ index 000000000..e26be9cfd
 +			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, L"CONTROLS",
 +				"GRIP  -  grab and hold (the game's T button)\n"
 +				"TRIGGER  -  select and confirm (the Move button)\n"
-+				"A / B / X / Y  -  Cross / Circle / Square / Triangle (shown on your hands)\n"
++				"A / B / X / Y  -  Cross / Circle / Square / Triangle (X is the pink square)\n"
 +				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
 +				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
 +				"In the kitchen  -  reach for things: the pointer is where your hand\n      covers them. Left stick: walk, right stick: turn and height\n"
 +				"Stations  -  A / B move along the kitchen; after one press, just turn\n      your head toward the next station and the game goes there\n"
-+				"Big screen (menus)  -  right stick: nearer / farther,  left stick: size\n"
++				"Menu board  -  hold both GRIPs, then right stick: nearer / farther, left stick: size\n"
 +				"Left stick click: recentre.  Hold it 1 s: switch 3D / big screen\n"
 +				"Hold Left MENU for 2 seconds to show this card again.");
 +		}
@@ -2767,7 +2768,6 @@ index 000000000..e26be9cfd
 +								if (!xr.hand_valid[hnd]) continue;
 +								const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
 +								draw_hand(xr, h);
-+								draw_button_labels(xr, h, hnd);
 +							}
 +						}
 +						release(g.body_sc[e]);
@@ -2805,8 +2805,8 @@ index 000000000..e26be9cfd
 +			const auto num = [&](const char* k, f32 def, f32 lo, f32 hi) { const std::string v = get(k, ""); return v.empty() ? def : std::clamp(static_cast<f32>(std::atof(v.c_str())), lo, hi); };
 +			auto& c = xr.comfort;
 +			const auto old = c;
-+			c.body = get("body", "male") != "off";
-+			c.female = get("body", "male") == "female";
++			c.body = get("chefbody", "off") != "off";
++			c.female = get("chefbody", "off") == "female";
 +			c.seated = get("playmode", "standing") == "seated";
 +			c.smooth_turn = get("turn", "snap") == "smooth";
 +			c.vignette = get("vignette", "on") != "off";
@@ -3060,6 +3060,15 @@ index 000000000..e26be9cfd
 +						const vec3 r{-f.z, 0.f, f.x};
 +						xr.player_pos = xr.player_pos - (r * ls.x + f * ls.y) * (xr.comfort.move_speed * dt);
 +						xr.moving = true;
++						// The kitchen has walls: the stick cannot take you more than 1 m from your spot
++						const vec3 h = to_player(xr, xr.last_head);
++						const f32 rr = std::sqrt(h.x * h.x + h.z * h.z), lim = 1.0f;
++						if (rr > lim) xr.player_pos = xr.player_pos + rotate(yaw_q(xr.player_yaw), vec3{h.x, 0.f, h.z} * (1.f - lim / rr));
++					}
++					// Walking out of the play area for real: the view darkens at the edges
++					{
++						const vec3 h = to_player(xr, xr.last_head);
++						if (h.x * h.x + h.z * h.z > 1.3f * 1.3f) xr.moving = true;
 +					}
 +					const auto turn_by = [&](f32 rad)
 +					{
@@ -3101,14 +3110,16 @@ index 000000000..e26be9cfd
 +				}
 +				else
 +				{
-+					// Big screen: right stick up/down = distance, left stick up/down = size.
++					// Menus and the big screen: the menu board stays where it is. Holding GRIP and a stick moves it
++					// (right stick: nearer or farther) or resizes it (left stick), for players who want it elsewhere.
 +					bool moved = false;
-+					if (!grabbing && std::fabs(rs.y) > 0.6f)
++					const bool adjust = grip[0] > 0.5f && grip[1] > 0.5f;
++					if (adjust && std::fabs(rs.y) > 0.6f)
 +					{
 +						xr.screen_distance = std::clamp(xr.screen_distance + rs.y * dt * 1.0f, 1.0f, 8.0f);
 +						moved = true;
 +					}
-+					if (!grabbing && std::fabs(ls.y) > 0.6f)
++					if (adjust && std::fabs(ls.y) > 0.6f)
 +					{
 +						xr.screen_width = std::clamp(xr.screen_width + ls.y * dt * 1.5f, 1.0f, 10.0f);
 +					}
@@ -3152,7 +3163,7 @@ index 000000000..e26be9cfd
 +					// camera (= your eyes). Reach for a burger and it is under the pointer. Laser: where the ray meets it.
 +					bool have = false;
 +					f32 nx = 0.f, ny = 0.f;
-+					if (!xr.pointing_laser && xr.hand_valid[hand])
++					if (!xr.pointing_laser && cam.depth * xr.unit < 2.2f && xr.hand_valid[hand])
 +					{
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
 +						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f));
@@ -3953,7 +3964,7 @@ index 000000000..e26be9cfd
 +			if (v.stereo)
 +			{
 +				// Alternate eyes every frame; the headset shows each eye's newest image from where it was rendered.
-+				const int e = static_cast<int>(s.gen.load() & 1);
++				const int e = static_cast<int>(s.eye_flip & 1);
 +				pose = v.eye[e];
 +				fov = v.fov[e];
 +				s.tag.eye = e;
@@ -4050,7 +4061,7 @@ index 000000000..e26be9cfd
 +				// 2D: a flat plane that exactly fills the game camera's view. The HUD and menus float at a comfortable
 +				// distance; backdrops (drawn before the 3D scene) sit just inside the far plane, behind everything.
 +				const f32 far_plane = (c.A + 1.f) < -1e-4f ? c.B / (c.A + 1.f) : 60.f;
-+				const f32 D = backdrop ? std::clamp(far_plane * 0.9f, 2.f, 200.f) : std::max(s.hud_dist / s.unit, c.B / c.A * 1.2f);
++				const f32 D = backdrop ? std::clamp(far_plane * 0.9f, 2.f, 200.f) : std::max({s.hud_dist / s.unit, c.B / c.A * 1.2f, s.depth * 0.9f});
 +				mat4 S2;
 +				S2.m[0] = D / c.sx; S2.m[3] = D * c.cx / c.sx;
 +				S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
@@ -4318,6 +4329,7 @@ index 000000000..e26be9cfd
 +			}
 +
 +			s.begun = false;
++			if (s.n3 > 0) s.eye_flip++;   // the game may show one picture twice: switch eyes per new picture
 +			s.gen++;
 +			return out;
 +		}

@@ -145,3 +145,16 @@ Stations: the mod learns from your own A/B press which way each one moves the ca
 `station_cross` in orderupvr_state.txt), remembers each station's look target in the room, and when your head
 turns more than 30 degrees past the current station (or closer to a known neighbour), presses the button for you.
 A press that does nothing marks the end of the row on that side.
+
+## Findings from the 0.9.0 session (issue #1, OrderUpVR_logs_20261117_215838.zip)
+
+- Room mode held: 59-900 frames per 15 s solved with 76-217 objects each, prediction off by at most 2.7 cm, no re-anchors.
+- Black right eye in the restaurant cutscene: the game presents each picture twice there; eyes alternated per present,
+  so every new picture went to the same eye. 0.9.1 alternates per frame with 3D draws.
+- Camera found in memory. A camera object at a fixed address in the game's data: 4x4 view matrix (rows) at
+  0x003821d8, camera position at 0x00382218 (matches -R^T t of that matrix in both captures), projection terms
+  next to it (0x00382028 sx). The research also confirmed a field-of-view value (degrees) that moves the picture
+  and is kept by the game (0x38c5bf5c in that session; heap, so it must be found per session).
+- Chef models: Models/Characters/PC_MaleChef and PC_FemaleChef with mesh parts (base, limbs, hat, eyes, nose,
+  chin, eyebrows) and skeletal animations (idle, walk, run, chop, mix, ...); the script function IsMaleChef tells
+  which chef the profile uses.

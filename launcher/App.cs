@@ -505,7 +505,7 @@ namespace OrderUpVR
         // VR comfort and body choices: key, label, hint, then value/display pairs (the first is the default)
         static readonly string[][] VrOptions =
         {
-            new[] { "body", "Your chef", "The body you see when you look down", "male", "Male chef", "female", "Female chef", "off", "Hands only" },
+            new[] { "chefbody", "Your body", "Hands only until the game's own chef models are in; the simple body is a placeholder", "off", "Hands only", "male", "Simple body (placeholder)" },
             new[] { "playmode", "Play position", "Standing: legs stand and step when you walk", "standing", "Standing", "seated", "Seated" },
             new[] { "turn", "Turning", "Right stick left/right inside the game", "snap", "Snap turn", "smooth", "Smooth turn" },
             new[] { "snapangle", "Snap turn angle", "How far one snap turns you", "45", "45 degrees", "30", "30 degrees", "60", "60 degrees", "90", "90 degrees", "15", "15 degrees" },
@@ -587,11 +587,11 @@ namespace OrderUpVR
                 "3.  Reach for things: inside the game the pointer is wherever your hand covers them. On the big screen, aim the laser.\n\n" +
                 "GRIP: grab and hold (the game's T button)\n" +
                 "TRIGGER: select and confirm (the Move button)\n" +
-                "A / B / X / Y: Cross / Circle / Square / Triangle (the shapes float over your hands; the pink square is X)\n" +
+                "A / B / X / Y: Cross / Circle / Square / Triangle (the pink square is X)\n" +
                 "Left MENU: Start (pause).  Right stick click: Select\n" +
                 "Flipping and other motions: hold GRIP and flick the controller, or flick that hand's thumbstick up\n" +
                 "Inside the game: left stick walks, right stick turns (left/right) and moves you higher or lower (up/down)\n" +
-                "Big screen: right stick moves it nearer or farther, left stick resizes it\n" +
+                "Menu board: hold both GRIPs, then the right stick moves it nearer or farther and the left stick resizes it\n" +
                 "Left stick click: recentre.  Hold it for 1 second: switch between 3D and the big screen\n\n" +
                 "Start-up screen asking for the pink SQUARE: point at the middle of the screen and press X (or pull the trigger).\n" +
                 "In the headset, hold Left MENU for 2 seconds to see the controls again.",
@@ -869,8 +869,7 @@ namespace OrderUpVR
                             if (error == null)
                             {
                                 SetStatus("Ready to play", 0, "Version " + m.version + " installed.");
-                                ShowToast("Order Up VR " + m.version + " is installed. See What's new for the changes.", true);
-                                if (s.HowToSeen < HowToRevision) ShowHowTo();
+                                ShowToast("Updated to " + m.version, true);
                                 if (!Core.VcRedistOk(VcMinimum)) EnsureVcRuntime(null);
                                 if (WindowState == WindowState.Minimized) TaskbarItemInfo.ProgressState = TaskbarItemProgressState.None;
                             }

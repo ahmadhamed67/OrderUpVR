@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.9.1",
+    "date": "2026-11-17",
+    "notes": [
+      "Fixed the black right eye in cutscenes (the waiter taking orders): there the game shows each picture twice, and both copies went to the left eye. Eyes now take turns on every new picture.",
+      "The placeholder body and the button shapes on your hands are gone: you see your hands only, until the game's own male and female chef models are in (being worked on).",
+      "Menus: the sticks no longer move or resize the menu board. To adjust it, hold both GRIPs and use the sticks.",
+      "The kitchen has walls: the stick cannot take you more than 1 m from your spot, and walking further for real darkens the edges of your view.",
+      "The order tickets and the rest of the HUD are never nearer than the kitchen itself, so they no longer end up in your way when you lean or walk in.",
+      "In the restaurant (things far away), you point with a ray from your hand instead of having to cover things with it.",
+      "The launcher no longer opens the long guide after an update; it just says it updated. The guide is still under Help."
+    ]
+  },
+  {
     "version": "0.9.0",
     "date": "2026-11-17",
     "notes": [
