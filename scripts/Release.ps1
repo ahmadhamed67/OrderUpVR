@@ -20,6 +20,29 @@ $bin = Join-Path $root 'rpcs3-src\bin'
 $skip = 'test', 'config', 'log', 'cache', 'dev_hdd0', 'dev_hdd1', 'dev_flash', 'dev_usb000', 'games', 'captures', 'savestates', 'shaderlog', 'patches', 'sounds', 'ppu_progs', 'spu_progs'
 Get-ChildItem $bin | Where-Object { $_.Name -notin $skip -and $_.Extension -notin '.pdb', '.exp', '.lib', '.buf', '.log' } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path $stage 'rpcs3') -Recurse -Force }
+# Microsoft Visual C++ runtime, app-local (users may not have it, or have an older one).
+$crt = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' -Directory | Sort-Object FullName | Select-Object -Last 1
+if (-not $crt) { throw 'Visual C++ redistributable files not found' }
+Copy-Item (Join-Path $crt.FullName '*.dll') (Join-Path $stage 'rpcs3') -Force
+
+# Every DLL the shipped binaries import must be shipped or be part of Windows / the GPU driver.
+# Developer-only files (Vulkan SDK layers, VC++ runtime, debug runtimes) must never be assumed present.
+$dumpbin = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe' | Select-Object -Last 1
+$shipped = @{}; Get-ChildItem (Join-Path $stage 'rpcs3') -Recurse -Include *.dll, *.exe | ForEach-Object { $shipped[$_.Name.ToLower()] = $true }
+$fromDriver = 'vulkan-1.dll'   # installed by every Vulkan-capable GPU driver; RPCS3 itself needs it
+$neverSystem = '^(msvcp|vcruntime|concrt|vccorlib|ucrtbased|vcomp|mfc)\d*'
+$missing = @()
+foreach ($f in Get-ChildItem (Join-Path $stage 'rpcs3') -Recurse -Include *.dll, *.exe) {
+    foreach ($line in & $dumpbin.FullName /nologo /dependents $f.FullName) {
+        if ($line -notmatch '^\s+(\S+\.dll)\s*$') { continue }
+        $dll = $Matches[1].ToLower()
+        if ($shipped[$dll] -or $dll -eq $fromDriver -or $dll -like 'api-ms-win-*' -or $dll -like 'ext-ms-*') { continue }
+        if ($dll -match $neverSystem -or -not (Test-Path (Join-Path $env:WINDIR "System32\$dll"))) { $missing += "$($f.Name) -> $dll" }
+    }
+}
+if ($missing) { throw "Package would depend on files users may not have:`n" + ($missing | Sort-Object -Unique | Out-String) }
+Write-Host 'Dependency check passed: everything the mod needs is shipped or part of Windows.'
+
 Copy-Item (Join-Path $root 'package\config\*.yml') (Join-Path $stage 'config')
 Copy-Item (Join-Path $root 'package\LICENSE-NOTES.txt') $stage
 

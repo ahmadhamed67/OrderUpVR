@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.3.0",
+    "date": "2026-11-17",
+    "notes": [
+      "New launcher: redesigned from scratch with a modern look, smooth animations and rounded corners. It has a step-by-step setup that finds your folders by itself, a live status panel, a settings page and notifications. It also snaps and minimizes like a normal Windows app.",
+      "Fixed: the mod relied on Microsoft's Visual C++ runtime already being on the PC. It now ships its own copy, so it works on a fresh Windows install. Every release is now checked automatically for files that normal PCs might not have.",
+      "New: Order Up VR appears in Windows' Settings > Apps > Installed apps, and can be uninstalled from there or from the launcher.",
+      "New: uninstalling asks whether to keep your settings and game cache for a quick reinstall later, or remove everything. A full uninstall leaves nothing behind. Your own RPCS3, firmware, saves and game files are never touched.",
+      "Only one launcher window opens at a time; starting it again brings the open one to the front.",
+      "While playing, the launcher minimizes itself and comes back when the game closes (you can turn this off in Settings).",
+      "The VR part is unchanged from 0.2.0 and still needs its first test on a real headset."
+    ]
+  },
+  {
     "version": "0.2.0",
     "date": "2026-11-17",
     "notes": [

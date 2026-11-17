@@ -12,6 +12,8 @@ The launcher checks this repository for new versions by itself (and has a "Check
 
 Windows may warn about the setup file because it is not code-signed.
 
+To remove it, use Uninstall in the launcher's Settings or in Windows' Settings > Apps > Installed apps. You can keep your settings and game cache for a quick reinstall or remove everything; your own RPCS3, firmware, saves and game files are never touched.
+
 ## What you need
 
 - Your own RPCS3 install with PS3 firmware installed.
@@ -40,7 +42,7 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 ## Source layout
 
 ```
-launcher/     Setup + launcher (single C# WinForms exe)
+launcher/     Setup + launcher (single exe, C# + WPF on the .NET Framework built into Windows)
 patches/      Changes to RPCS3 (against commit fb6737b1c) that add the VR module
 package/      Per-game RPCS3 config shipped with the mod
 release/      Changelog
