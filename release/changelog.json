@@ -1,0 +1,15 @@
+[
+  {
+    "version": "0.1.0",
+    "date": "2026-11-17",
+    "notes": [
+      "First test build.",
+      "The game appears on a large virtual screen in the headset (checked in a headset simulator, not yet in a real Quest 3).",
+      "The VR controller you aim at the screen is the game's PlayStation Move pointer. The hand that pulls its trigger becomes the pointing hand.",
+      "Calibration screen: point at the middle of the screen and press X (the game's Square), then squeeze the grip to continue.",
+      "Buttons: trigger = T, grip = Move, A/B/X/Y = Cross/Circle/Square/Triangle, left menu = START, right stick click = SELECT.",
+      "Screen: left stick click recentres it, right stick up/down moves it nearer or farther, left stick up/down resizes it.",
+      "Not done yet: real 3D depth and head-tracked camera. The tutorial has not been played through in Move mode."
+    ]
+  }
+]

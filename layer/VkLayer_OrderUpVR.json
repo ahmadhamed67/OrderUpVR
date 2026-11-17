@@ -1,0 +1,15 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_ORDERUP_vr",
+        "type": "GLOBAL",
+        "library_path": ".\\VkLayer_OrderUpVR.dll",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "Order Up VR: OpenXR bridge for RPCS3 (BLES01470)",
+        "functions": {
+            "vkGetInstanceProcAddr": "OrderUpVR_GetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "OrderUpVR_GetDeviceProcAddr"
+        }
+    }
+}

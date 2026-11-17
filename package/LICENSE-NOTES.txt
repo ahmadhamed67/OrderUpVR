@@ -1,0 +1,6 @@
+Order Up VR contains a modified build of RPCS3 (https://github.com/RPCS3/rpcs3), which is licensed under the
+GNU General Public License v2. The modifications are published as source in the Order Up VR repository
+(patches/ against RPCS3 commit fb6737b1c). The OpenXR loader is (c) The Khronos Group, Apache License 2.0.
+
+This package contains no PlayStation firmware, no game files and no keys. You need your own copy of RPCS3 with
+firmware installed and your own copy of Order Up!! (BLES01470).

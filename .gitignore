@@ -1,0 +1,17 @@
+build/
+bin/*.dll
+bin/*.lib
+bin/*.exp
+bin/*.pdb
+logs/
+deps/
+backups/
+rpcs3-src/
+build-rpcs3.log
+build-llvm.log
+dist/
+testinstall/
+# kept local only
+docs/img/
+docs/HANDOFF_FROM_CODEX.md
+docs/PLAN_V2.md
