@@ -200,6 +200,9 @@
             <Button x:Name="LogsBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" Margin="0,0,10,0" ToolTip="Collect logs for support">
               <TextBlock Style="{StaticResource Icon}" Text="&#xE8A5;" FontSize="16"/>
             </Button>
+            <Button x:Name="HelpBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" Margin="0,0,10,0" ToolTip="How to play">
+              <TextBlock Style="{StaticResource Icon}" Text="&#xE897;" FontSize="16"/>
+            </Button>
             <Button x:Name="SettingsBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" ToolTip="Settings and folders">
               <TextBlock Style="{StaticResource Icon}" Text="&#xE713;" FontSize="16"/>
             </Button>

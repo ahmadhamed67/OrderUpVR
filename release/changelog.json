@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.5.0",
+    "date": "2026-11-17",
+    "notes": [
+      "Smoother pointer: removed the hand movement that 0.4.0 added to the pointer while holding GRIP (it made dragging feel sometimes fast, sometimes slow) and added light smoothing that steadies hand tremor without adding delay. Flicks still work through the controller's rotation and speed.",
+      "New laser and cursor: a beam from your hand and a ring where it hits the screen, drawn directly by the headset, so you see exactly where you point without waiting for the game.",
+      "First-time introduction: the launcher shows a How to play guide after installing (and from the new ? button), and the headset shows a Controls card next to the screen during your first session. Hold Left MENU for 2 seconds to bring it back at any time.",
+      "Loading screen: the 'first start' explanation now appears only when the game really prepares after an install or update. Normal starts just show Loading with a progress bar and controller tips.",
+      "Groundwork for true VR (see docs/TRUE_VR_PLAN.md): this version quietly records the game's camera data while you play. After a session that reaches the kitchen, press Collect logs and send the zip."
+    ]
+  },
+  {
     "version": "0.4.0",
     "date": "2026-11-17",
     "notes": [

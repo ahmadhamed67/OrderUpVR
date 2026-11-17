@@ -476,6 +476,7 @@ namespace OrderUpVR
             Get<Button>("UpdateBtn").Click += delegate { CheckUpdates(true); };
             Get<Button>("SettingsBtn").Click += delegate { OpenSettings(); };
             Get<Button>("LogsBtn").Click += delegate { CollectLogs(); };
+            Get<Button>("HelpBtn").Click += delegate { ShowHowTo(); };
             Get<Button>("ReleasesBtn").Click += delegate { OpenUrl(Core.RepoUrl + "/releases"); };
             Get<Button>("BackBtn").Click += delegate { ShowPage("MainPage", false); RefreshAll(); };
             Get<Button>("GithubBtn").Click += delegate { OpenUrl(Core.RepoUrl); };
@@ -497,6 +498,23 @@ namespace OrderUpVR
             RenderChangelog();
             RefreshAll();
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
+        }
+
+        void ShowHowTo()
+        {
+            s.SeenHowTo = true; s.Save();
+            ShowDialog("How to play in VR",
+                "1.  Connect your headset (Quest Link, Air Link, Virtual Desktop or SteamVR), then press PLAY.\n" +
+                "2.  The game appears on a big screen in front of you. Aim a controller at it to point.\n\n" +
+                "GRIP: grab and hold (the game's T button)\n" +
+                "TRIGGER: select and confirm (the Move button)\n" +
+                "A / B / X / Y: Cross / Circle / Square / Triangle\n" +
+                "Left MENU: Start (pause).  Right stick click: Select\n" +
+                "Flipping and other motions: hold GRIP and flick the controller, or flick that hand's thumbstick up\n" +
+                "Screen: left stick click recentres it, right stick moves it nearer or farther, left stick resizes it\n\n" +
+                "Calibration screen: point at the middle of the screen, press X, then pull the trigger.\n" +
+                "In the headset, hold Left MENU for 2 seconds to see the controls again.",
+                null, false, Btn("Got it", null));
         }
 
         static void OpenUrl(string url) { try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { } }
@@ -771,6 +789,7 @@ namespace OrderUpVR
                             {
                                 SetStatus("Ready to play", 0, "Version " + m.version + " installed.");
                                 ShowToast("Order Up VR " + m.version + " is installed. See What's new for the changes.", true);
+                                if (!s.SeenHowTo) ShowHowTo();
                                 if (!Core.VcRedistOk(VcMinimum)) EnsureVcRuntime(null);
                                 if (WindowState == WindowState.Minimized) TaskbarItemInfo.ProgressState = TaskbarItemProgressState.None;
                             }
@@ -902,6 +921,7 @@ namespace OrderUpVR
             string emu = Core.EmuDir(s);
             var psi = new ProcessStartInfo(System.IO.Path.Combine(emu, "rpcs3.exe"), "--no-gui \"" + System.IO.Path.Combine(s.GameDir, @"PS3_GAME\USRDIR\EBOOT.BIN") + "\"");
             psi.WorkingDirectory = emu; psi.UseShellExecute = false;
+            psi.EnvironmentVariables["ORDERUP_VR_MODVERSION"] = s.InstalledVersion ?? "";
             try
             {
                 try { File.Delete(System.IO.Path.Combine(emu, @"log\orderup_vr.log")); } catch { }
@@ -1055,13 +1075,18 @@ namespace OrderUpVR
                 if (!sawGameWindow && gameTitle != null) { sawGameWindow = true; Note("Game window: " + gameTitle); }
                 liveGame = "Preparing for this PC: " + prepPercent + "%";
                 Note("Preparing " + prepPercent + "% " + prepWhat);
-                SetStatus("Preparing the game for this PC: " + prepPercent + "%", 1, prepWhat + ". This happens only on the first start and after an update.");
+                bool firstPrep = s.PreparedVersion != s.InstalledVersion;
+                SetStatus((firstPrep ? "Preparing the game for this PC: " : "Loading: ") + prepPercent + "%", 1,
+                    prepWhat + (firstPrep ? ". This one-time step runs after installing or updating the mod." : ""));
                 SetProgress(prepPercent / 100.0);
                 preparingShown = true;
                 RenderStatus();
                 return;
             }
             if (preparingShown) { preparingShown = false; SetProgress(-1); }
+
+            // The game picture is up: this version is prepared on this PC.
+            if (gameTitle != null && secs > 5 && s.PreparedVersion != s.InstalledVersion) { s.PreparedVersion = s.InstalledVersion; s.Save(); }
 
             if (gameTitle != null)
             {
@@ -1103,11 +1128,29 @@ namespace OrderUpVR
                 string emu = Core.EmuDir(s);
                 string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
-                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml" })
+                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"config\orderupvr_state.txt" })
                 {
                     string p = System.IO.Path.Combine(emu, rel);
                     try { if (File.Exists(p)) CopyTail(p, System.IO.Path.Combine(tmp, System.IO.Path.GetFileName(p)), 20L * 1048576); } catch { }
                 }
+                // Vertex shader programs (for finding the game camera for true VR), capped at 15 MB
+                try
+                {
+                    string shaders = System.IO.Path.Combine(emu, @"cache\shaderlog");
+                    if (Directory.Exists(shaders))
+                    {
+                        string dst = System.IO.Path.Combine(tmp, "shaderlog"); Directory.CreateDirectory(dst);
+                        long budget = 15L * 1048576;
+                        foreach (string f in Directory.GetFiles(shaders, "*", SearchOption.AllDirectories))
+                        {
+                            string n = System.IO.Path.GetFileName(f).ToLowerInvariant();
+                            if (!(n.Contains("vp") || n.Contains("vertex"))) continue;
+                            long len = new FileInfo(f).Length; if (len > budget) break; budget -= len;
+                            File.Copy(f, System.IO.Path.Combine(dst, System.IO.Path.GetFileName(f)), true);
+                        }
+                    }
+                }
+                catch { }
                 File.WriteAllText(System.IO.Path.Combine(tmp, "launcher_watch.txt"), watchLog.Length > 0 ? watchLog.ToString() : "(the game was not started from this launcher window)\r\n");
                 File.WriteAllText(System.IO.Path.Combine(tmp, "system.txt"), "Mod version: " + s.InstalledVersion + "\r\nLauncher: " + Core.LauncherVersion +
                     "\r\nOpenXR runtime: " + (Core.ActiveOpenXrRuntime() ?? "none") + "\r\nWindows: " + Environment.OSVersion.VersionString + "\r\n");

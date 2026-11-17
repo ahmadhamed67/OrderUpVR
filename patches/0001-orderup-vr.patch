@@ -1,5 +1,5 @@
 diff --git a/rpcs3/Emu/Cell/Modules/cellGem.cpp b/rpcs3/Emu/Cell/Modules/cellGem.cpp
-index 0dfcf9cb7..119b19b96 100644
+index 0dfcf9cb7..f2b91c5ee 100644
 --- a/rpcs3/Emu/Cell/Modules/cellGem.cpp
 +++ b/rpcs3/Emu/Cell/Modules/cellGem.cpp
 @@ -1,5 +1,6 @@
@@ -114,7 +114,7 @@ index 0dfcf9cb7..119b19b96 100644
 +
 +					for (u32 i = 0; i < 3; i++)
 +					{
-+						if (vr.t) // quick hand movement while holding something
++						if (vr.assist) // only for the assisted flip: real hand movement made the pointer uneven while dragging
 +						{
 +							gem_state->pos[i] = gem_state->pos[i] + vr.disp[i];
 +							gem_state->handle_pos[i] = gem_state->handle_pos[i] + vr.disp[i];
@@ -497,10 +497,10 @@ index 0dfcf9cb7..119b19b96 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..a38e4001e
+index 000000000..8de8e9565
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,1331 @@
+@@ -0,0 +1,1676 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -532,6 +532,7 @@ index 000000000..a38e4001e
 +#include <cstdio>
 +#include <cstdlib>
 +#include <map>
++#include <set>
 +#include <mutex>
 +#include <string>
 +#include <thread>
@@ -674,6 +675,23 @@ index 000000000..a38e4001e
 +			int active_hand = 1; // 0 = left, 1 = right
 +			u64 frames = 0;
 +
++			// Controls card (first session, or left MENU held)
++			XrSwapchain help = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> help_images;
++			bool help_bgra = false, help_has = false, help_drawn = false;
++			u64 help_until = 0;
++			u64 menu_down_since = 0;
++
++			// Instant pointer feedback, drawn at headset rate
++			XrSwapchain cursor = XR_NULL_HANDLE, laser = XR_NULL_HANDLE;
++			bool cursor_ok = false, laser_ok = false, pointer_images_tried = false;
++			bool show_pointer = false;
++			vec3 aim_origin{}, aim_hit{};
++
++			// Pointer smoothing (One Euro filter)
++			f32 fx = 0.5f, fy = 0.5f, fdx = 0.f, fdy = 0.f;
++			bool filter_init = false;
++
 +			// Motion (PS Move emulation)
 +			bool have_prev = false, lp_init = false;
 +			vec3 prev_vel{}, accel{}, prev_angvel{}, angaccel{}, lp_pos{};
@@ -682,6 +700,8 @@ index 000000000..a38e4001e
 +		};
 +
 +		constexpr u32 panel_w = 1024, panel_h = 512;
++		constexpr u32 help_w = 1024, help_h = 600;
++		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
 +
 +		bool xr_ok(xr_state& xr, XrResult res, const char* what)
@@ -959,6 +979,71 @@ index 000000000..a38e4001e
 +			return 0;
 +		}
 +
++		// Small persistent state (config/orderupvr_state.txt): first-session controls card, prepared mod version.
++		std::map<std::string, std::string> g_persist;
++		std::mutex g_persist_mutex;
++
++		std::string persist_path() { return fs::get_config_dir() + "orderupvr_state.txt"; }
++
++		void persist_load()
++		{
++			std::lock_guard lock(g_persist_mutex);
++			g_persist.clear();
++			if (std::FILE* f = std::fopen(persist_path().c_str(), "r"))
++			{
++				char line[512];
++				while (std::fgets(line, sizeof(line), f))
++				{
++					std::string l(line);
++					while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
++					const usz eq = l.find('=');
++					if (eq != std::string::npos) g_persist[l.substr(0, eq)] = l.substr(eq + 1);
++				}
++				std::fclose(f);
++			}
++		}
++
++		std::string persist_get(const std::string& key)
++		{
++			std::lock_guard lock(g_persist_mutex);
++			const auto it = g_persist.find(key);
++			return it == g_persist.end() ? std::string() : it->second;
++		}
++
++		void persist_set(const std::string& key, const std::string& value)
++		{
++			std::lock_guard lock(g_persist_mutex);
++			if (g_persist[key] == value) return;
++			g_persist[key] = value;
++			if (std::FILE* f = std::fopen(persist_path().c_str(), "w"))
++			{
++				for (const auto& [k, v] : g_persist) std::fprintf(f, "%s=%s\n", k.c_str(), v.c_str());
++				std::fclose(f);
++			}
++		}
++
++		std::string mod_version()
++		{
++			const char* v = std::getenv("ORDERUP_VR_MODVERSION");
++			return v && *v ? v : "dev";
++		}
++
++		// True when this mod version has already finished preparing once on this PC.
++		bool already_prepared() { return persist_get("prepared") == mod_version(); }
++
++		const char* loading_tip(u64 now)
++		{
++			static const char* tips[] =
++			{
++				"Tip: GRIP grabs and holds, TRIGGER selects.",
++				"Tip: to flip, hold GRIP and flick the controller up and over, or flick the thumbstick up.",
++				"Tip: click the left thumbstick to bring the screen back in front of you.",
++				"Tip: hold Left MENU for 2 seconds to see all controls.",
++				"Tip: the hand you press GRIP or TRIGGER with becomes the pointing hand.",
++			};
++			return tips[(now / 8000) % std::size(tips)];
++		}
++
 +		// RPCS3's own first-start preparation progress (the same numbers its progress dialog shows).
 +		bool get_progress(u32& percent, std::string& text, u32& done, u32& total)
 +		{
@@ -1002,18 +1087,25 @@ index 000000000..a38e4001e
 +					if (left >= 90) std::snprintf(eta, sizeof(eta), "About %llu minutes left.", static_cast<unsigned long long>((left + 30) / 60));
 +					else std::snprintf(eta, sizeof(eta), "Less than 2 minutes left.");
 +				}
-+				char buf[768];
++				const bool first = !already_prepared();
++				if (percent >= 100) persist_set("prepared", mod_version());
++				char buf[900];
 +				std::snprintf(buf, sizeof(buf),
-+					"@progress=%u\nPreparing the game for this PC:  %u%%\n%s%s\n\nThis happens only on the first start and after an update. %s",
-+					percent, percent, what.empty() ? "Compiling" : what.c_str(),
-+					total ? (" (" + std::to_string(done) + " of " + std::to_string(total) + ")").c_str() : "", eta);
++					"@progress=%u\n%s  %u%%\n%s%s\n\n%s %s\n%s",
++					percent, first ? "Preparing the game for this PC:" : "Loading:", percent, what.empty() ? "Compiling" : what.c_str(),
++					total ? (" (" + std::to_string(done) + " of " + std::to_string(total) + ")").c_str() : "",
++					first ? "This one-time step runs after installing or updating the mod." : "", eta, loading_tip(now));
 +				return buf;
 +			}
 +			progress_since = 0;
 +			const u64 last_frame = g_last_frame_tick.load();
 +			const u64 no_window = g_window_unavailable_tick.load();
 +
-+			if (last_frame && now - last_frame < 3000) return {};
++			if (last_frame && now - last_frame < 3000)
++			{
++				persist_set("prepared", mod_version());
++				return {};
++			}
 +
 +			if (no_window && now - no_window < 2000)
 +			{
@@ -1026,41 +1118,43 @@ index 000000000..a38e4001e
 +			}
 +
 +			const u64 secs = (now - g_start_tick.load()) / 1000;
-+			char buf[512];
++			char buf[700];
 +			std::snprintf(buf, sizeof(buf),
-+				"Starting Order Up!!...   %llu s\n\nThe first start after an update prepares the game for this PC and can take a few minutes. "
-+				"Later starts are quick.\n\nThe game also opens in a window on the PC monitor. Keep that window open.",
-+				static_cast<unsigned long long>(secs));
++				already_prepared()
++					? "Starting Order Up!!...   %llu s\n\nThe game also opens in a window on the PC monitor. Keep that window open.\n\n%s"
++					: "Starting Order Up!!...   %llu s\n\nAfter installing or updating, the first start prepares the game for this PC and can take a few minutes. "
++					  "Later starts are quick.\n\nThe game also opens in a window on the PC monitor. Keep that window open.\n%s",
++				static_cast<unsigned long long>(secs), loading_tip(now));
 +			return buf;
 +		}
 +
-+		// Draws the panel text with GDI and uploads it to the panel swapchain.
-+		void draw_panel(xr_state& xr, const std::string& text)
++		// Draws a text card with GDI and uploads it to its swapchain.
++		void draw_card(xr_state& xr, XrSwapchain& sc, std::vector<XrSwapchainImageD3D11KHR>& images, bool& is_bgra, bool& has_image, u32 cw, u32 ch, const wchar_t* title_text, const std::string& text)
 +		{
-+			if (xr.panel == XR_NULL_HANDLE)
++			if (sc == XR_NULL_HANDLE)
 +			{
-+				const s64 format = pick_format(xr, xr.panel_is_bgra);
++				const s64 format = pick_format(xr, is_bgra);
 +				if (!format) return;
 +
 +				XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
 +				info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
 +				info.format = format;
 +				info.sampleCount = 1;
-+				info.width = panel_w;
-+				info.height = panel_h;
++				info.width = cw;
++				info.height = ch;
 +				info.faceCount = 1;
 +				info.arraySize = 1;
 +				info.mipCount = 1;
-+				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &xr.panel), "xrCreateSwapchain(panel)")) return;
++				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &sc), "xrCreateSwapchain(panel)")) return;
 +
 +				u32 count = 0;
-+				xrEnumerateSwapchainImages(xr.panel, 0, &count, nullptr);
-+				xr.panel_images.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-+				if (!xr_ok(xr, xrEnumerateSwapchainImages(xr.panel, count, &count,
-+					reinterpret_cast<XrSwapchainImageBaseHeader*>(xr.panel_images.data())), "xrEnumerateSwapchainImages(panel)"))
++				xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
++				images.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
++				if (!xr_ok(xr, xrEnumerateSwapchainImages(sc, count, &count,
++					reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "xrEnumerateSwapchainImages(panel)"))
 +				{
-+					xrDestroySwapchain(xr.panel);
-+					xr.panel = XR_NULL_HANDLE;
++					xrDestroySwapchain(sc);
++					sc = XR_NULL_HANDLE;
 +					return;
 +				}
 +			}
@@ -1068,8 +1162,8 @@ index 000000000..a38e4001e
 +			HDC dc = CreateCompatibleDC(nullptr);
 +			BITMAPINFO bmi{};
 +			bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-+			bmi.bmiHeader.biWidth = panel_w;
-+			bmi.bmiHeader.biHeight = -static_cast<LONG>(panel_h); // top-down
++			bmi.bmiHeader.biWidth = cw;
++			bmi.bmiHeader.biHeight = -static_cast<LONG>(ch); // top-down
 +			bmi.bmiHeader.biPlanes = 1;
 +			bmi.bmiHeader.biBitCount = 32;
 +			bmi.bmiHeader.biCompression = BI_RGB;
@@ -1082,11 +1176,11 @@ index 000000000..a38e4001e
 +			}
 +			HGDIOBJ old_bmp = SelectObject(dc, bmp);
 +
-+			RECT all{0, 0, static_cast<LONG>(panel_w), static_cast<LONG>(panel_h)};
++			RECT all{0, 0, static_cast<LONG>(cw), static_cast<LONG>(ch)};
 +			HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
 +			FillRect(dc, &all, bg);
 +			DeleteObject(bg);
-+			RECT bar{0, 0, static_cast<LONG>(panel_w), 10};
++			RECT bar{0, 0, static_cast<LONG>(cw), 10};
 +			HBRUSH accent = CreateSolidBrush(RGB(242, 108, 36));
 +			FillRect(dc, &bar, accent);
 +			DeleteObject(accent);
@@ -1097,8 +1191,8 @@ index 000000000..a38e4001e
 +
 +			HGDIOBJ old_font = SelectObject(dc, title);
 +			SetTextColor(dc, RGB(242, 108, 36));
-+			RECT rt{48, 36, static_cast<LONG>(panel_w) - 48, 120};
-+			DrawTextW(dc, L"ORDER UP VR", -1, &rt, DT_LEFT | DT_TOP | DT_SINGLELINE);
++			RECT rt{48, 36, static_cast<LONG>(cw) - 48, 120};
++			DrawTextW(dc, title_text, -1, &rt, DT_LEFT | DT_TOP | DT_SINGLELINE);
 +
 +			// Optional progress bar
 +			std::string msg_body = text;
@@ -1111,7 +1205,7 @@ index 000000000..a38e4001e
 +			}
 +			if (bar_percent >= 0)
 +			{
-+				const LONG x0 = 48, x1 = static_cast<LONG>(panel_w) - 48, y0 = static_cast<LONG>(panel_h) - 74, y1 = y0 + 22;
++				const LONG x0 = 48, x1 = static_cast<LONG>(cw) - 48, y0 = static_cast<LONG>(ch) - 74, y1 = y0 + 22;
 +				HBRUSH track = CreateSolidBrush(RGB(52, 58, 70));
 +				HBRUSH fill = CreateSolidBrush(RGB(255, 138, 0));
 +				HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
@@ -1133,7 +1227,7 @@ index 000000000..a38e4001e
 +			MultiByteToWideChar(CP_UTF8, 0, msg_body.c_str(), -1, wide, 1023);
 +			SelectObject(dc, body);
 +			SetTextColor(dc, RGB(235, 235, 240));
-+			RECT rb{48, 130, static_cast<LONG>(panel_w) - 48, static_cast<LONG>(panel_h) - 30};
++			RECT rb{48, 130, static_cast<LONG>(cw) - 48, static_cast<LONG>(ch) - 30};
 +			DrawTextW(dc, wide, -1, &rb, DT_LEFT | DT_TOP | DT_WORDBREAK);
 +
 +			SelectObject(dc, old_font);
@@ -1143,30 +1237,121 @@ index 000000000..a38e4001e
 +
 +			// GDI gives BGRX; set alpha and swap to RGBA when needed.
 +			u8* px = static_cast<u8*>(bits);
-+			for (u32 i = 0; i < panel_w * panel_h; i++, px += 4)
++			for (u32 i = 0; i < cw * ch; i++, px += 4)
 +			{
-+				if (!xr.panel_is_bgra) std::swap(px[0], px[2]);
++				if (!is_bgra) std::swap(px[0], px[2]);
 +				px[3] = 255;
 +			}
 +
 +			u32 index = 0;
 +			XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-+			if (XR_SUCCEEDED(xrAcquireSwapchainImage(xr.panel, &acquire, &index)))
++			if (XR_SUCCEEDED(xrAcquireSwapchainImage(sc, &acquire, &index)))
 +			{
 +				XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
 +				wait.timeout = XR_INFINITE_DURATION;
-+				if (XR_SUCCEEDED(xrWaitSwapchainImage(xr.panel, &wait)))
++				if (XR_SUCCEEDED(xrWaitSwapchainImage(sc, &wait)))
 +				{
-+					xr.context->UpdateSubresource(xr.panel_images[index].texture, 0, nullptr, bits, panel_w * 4, 0);
-+					xr.panel_has_image = true;
++					xr.context->UpdateSubresource(images[index].texture, 0, nullptr, bits, cw * 4, 0);
++					has_image = true;
 +				}
 +				XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-+				xrReleaseSwapchainImage(xr.panel, &release);
++				xrReleaseSwapchainImage(sc, &release);
 +			}
 +
 +			SelectObject(dc, old_bmp);
 +			DeleteObject(bmp);
 +			DeleteDC(dc);
++		}
++
++		void draw_panel(xr_state& xr, const std::string& text)
++		{
++			draw_card(xr, xr.panel, xr.panel_images, xr.panel_is_bgra, xr.panel_has_image, panel_w, panel_h, L"ORDER UP VR", text);
++		}
++
++		void draw_help(xr_state& xr)
++		{
++			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, L"CONTROLS",
++				"GRIP  -  grab and hold (the game's T button)\n"
++				"TRIGGER  -  select and confirm (the Move button)\n"
++				"A / B / X / Y  -  Cross / Circle / Square / Triangle\n"
++				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
++				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
++				"Screen  -  left stick click: recentre,  right stick: nearer / farther,\n      left stick: bigger / smaller\n"
++				"Hold Left MENU for 2 seconds to show this card again.");
++		}
++
++		// Small static images: pointer cursor and laser beam (premultiplied alpha).
++		bool make_static(xr_state& xr, XrSwapchain& sc, u32 w, u32 h, const std::vector<u8>& rgba)
++		{
++			bool bgra = false;
++			const s64 format = pick_format(xr, bgra);
++			if (!format) return false;
++			XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
++			info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
++			info.format = format; info.sampleCount = 1; info.width = w; info.height = h; info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
++			if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &sc), "xrCreateSwapchain(static)")) return false;
++			u32 count = 0;
++			xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
++			std::vector<XrSwapchainImageD3D11KHR> imgs(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
++			if (XR_FAILED(xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data())))) return false;
++			std::vector<u8> px = rgba;
++			if (bgra) for (usz i = 0; i + 3 < px.size(); i += 4) std::swap(px[i], px[i + 2]);
++			u32 index = 0;
++			XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
++			if (XR_FAILED(xrAcquireSwapchainImage(sc, &acquire, &index))) return false;
++			XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
++			wait.timeout = XR_INFINITE_DURATION;
++			const bool ok = XR_SUCCEEDED(xrWaitSwapchainImage(sc, &wait));
++			if (ok) xr.context->UpdateSubresource(imgs[index].texture, 0, nullptr, px.data(), w * 4, 0);
++			XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
++			xrReleaseSwapchainImage(sc, &release);
++			return ok;
++		}
++
++		void make_pointer_images(xr_state& xr)
++		{
++			// Cursor: soft white ring with an orange core
++			{
++				constexpr u32 n = 64;
++				std::vector<u8> px(n * n * 4, 0);
++				for (u32 y = 0; y < n; y++) for (u32 x = 0; x < n; x++)
++				{
++					const f32 dx = x + 0.5f - n / 2.f, dy = y + 0.5f - n / 2.f, r = std::sqrt(dx * dx + dy * dy) / (n / 2.f);
++					const f32 ring = std::clamp(1.f - std::fabs(r - 0.78f) / 0.12f, 0.f, 1.f);
++					const f32 core = std::clamp(1.f - r / 0.32f, 0.f, 1.f);
++					const f32 a = std::max(ring * 0.95f, core);
++					const f32 cr = core > ring ? 1.f : 1.f, cg = core > ring ? 0.55f : 1.f, cb = core > ring ? 0.1f : 1.f;
++					u8* p = &px[(y * n + x) * 4];
++					p[0] = static_cast<u8>(cr * a * 255); p[1] = static_cast<u8>(cg * a * 255); p[2] = static_cast<u8>(cb * a * 255); p[3] = static_cast<u8>(a * 255);
++				}
++				xr.cursor_ok = make_static(xr, xr.cursor, n, n, px);
++			}
++			// Laser: thin beam, bright at the hand, fading towards the screen
++			{
++				constexpr u32 w = 256, h = 8;
++				std::vector<u8> px(w * h * 4, 0);
++				for (u32 y = 0; y < h; y++) for (u32 x = 0; x < w; x++)
++				{
++					const f32 along = x / static_cast<f32>(w - 1);
++					const f32 across = 1.f - std::fabs((y + 0.5f) / h * 2.f - 1.f);
++					const f32 a = std::clamp(across * 1.4f, 0.f, 1.f) * (0.75f - 0.6f * along);
++					u8* p = &px[(y * w + x) * 4];
++					p[0] = static_cast<u8>(1.0f * a * 255); p[1] = static_cast<u8>(0.75f * a * 255); p[2] = static_cast<u8>(0.45f * a * 255); p[3] = static_cast<u8>(a * 255);
++				}
++				xr.laser_ok = make_static(xr, xr.laser, w, h, px);
++			}
++		}
++
++		// Quaternion of the rotation whose columns are the given orthonormal axes.
++		XrQuaternionf quat_from_axes(vec3 x, vec3 y, vec3 z)
++		{
++			const f32 tr = x.x + y.y + z.z;
++			XrQuaternionf q;
++			if (tr > 0.f) { const f32 s4 = std::sqrt(tr + 1.f) * 2.f; q = {(y.z - z.y) / s4, (z.x - x.z) / s4, (x.y - y.x) / s4, 0.25f * s4}; }
++			else if (x.x > y.y && x.x > z.z) { const f32 s4 = std::sqrt(1.f + x.x - y.y - z.z) * 2.f; q = {0.25f * s4, (y.x + x.y) / s4, (z.x + x.z) / s4, (y.z - z.y) / s4}; }
++			else if (y.y > z.z) { const f32 s4 = std::sqrt(1.f + y.y - x.x - z.z) * 2.f; q = {(y.x + x.y) / s4, 0.25f * s4, (z.y + y.z) / s4, (z.x - x.z) / s4}; }
++			else { const f32 s4 = std::sqrt(1.f + z.z - x.x - y.y) * 2.f; q = {(z.x + x.z) / s4, (z.y + y.z) / s4, 0.25f * s4, (x.y - y.x) / s4}; }
++			return qnorm(q);
 +		}
 +
 +		bool create_swapchain(xr_state& xr, u32 width, u32 height)
@@ -1393,6 +1578,7 @@ index 000000000..a38e4001e
 +				out.accel[i] += (&acc.x)[i];
 +				out.disp[i] += (&p0.x)[i];
 +			}
++			out.assist = true;
 +			out.angvel[0] += w;
 +			out.angaccel[0] += wa;
 +			out.gyro_dev[0] += w;
@@ -1495,6 +1681,25 @@ index 000000000..a38e4001e
 +						out.x = 0.5f + dot(hit, right) / width;
 +						out.y = 0.5f - dot(hit, up) / height;
 +						out.on_screen = t > 0.0f && out.x > 0.0f && out.x < 1.0f && out.y > 0.0f && out.y < 1.0f;
++
++						// One Euro filter: steadies small hand tremor, follows fast moves with almost no delay.
++						const auto alpha = [dt](f32 cutoff) { const f32 r = 2.f * 3.14159265f * cutoff * dt; return r / (r + 1.f); };
++						if (!xr.filter_init || !out.on_screen) { xr.fx = out.x; xr.fy = out.y; xr.fdx = xr.fdy = 0.f; xr.filter_init = out.on_screen; }
++						else
++						{
++							const f32 dx = (out.x - xr.fx) / dt, dy = (out.y - xr.fy) / dt;
++							xr.fdx += (dx - xr.fdx) * alpha(1.f);
++							xr.fdy += (dy - xr.fdy) * alpha(1.f);
++							const f32 speed = std::sqrt(xr.fdx * xr.fdx + xr.fdy * xr.fdy);
++							const f32 a = alpha(1.2f + 0.6f * speed);
++							xr.fx += (out.x - xr.fx) * a;
++							xr.fy += (out.y - xr.fy) * a;
++							out.x = xr.fx;
++							out.y = xr.fy;
++						}
++
++						xr.aim_origin = origin;
++						xr.aim_hit = xr.screen_center + right * ((out.x - 0.5f) * width) + up * ((0.5f - out.y) * height) + normal * 0.01f;
 +					}
 +					else
 +					{
@@ -1505,6 +1710,16 @@ index 000000000..a38e4001e
 +
 +					compute_motion(xr, aim, aim_vel, out, dt, width, height);
 +				}
++				xr.show_pointer = out.on_screen;
++
++				// Hold Left MENU for 2 seconds: show the controls card
++				if (get_bool(xr, xr.btn_menu))
++				{
++					const u64 now_ms = GetTickCount64();
++					if (!xr.menu_down_since) xr.menu_down_since = now_ms;
++					else if (now_ms - xr.menu_down_since > 2000) { xr.help_until = now_ms + 30000; xr.menu_down_since = now_ms + 600000; }
++				}
++				else xr.menu_down_since = 0;
 +
 +				// Grip grabs (the game's T button), trigger selects (the Move button), as in most VR games.
 +				out.trigger = grip[hand];
@@ -1581,7 +1796,10 @@ index 000000000..a38e4001e
 +
 +			XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad panel{XR_TYPE_COMPOSITION_LAYER_QUAD};
-+			const XrCompositionLayerBaseHeader* layers[2]{};
++			XrCompositionLayerQuad help{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			XrCompositionLayerQuad beam{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			XrCompositionLayerQuad dot_layer{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			const XrCompositionLayerBaseHeader* layers[5]{};
 +			u32 layer_count = 0;
 +
 +			const std::string message = panel_message();
@@ -1608,6 +1826,79 @@ index 000000000..a38e4001e
 +				quad.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				quad.size = {xr.screen_width, xr.screen_width * xr.sc_h / xr.sc_w};
 +				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
++			}
++
++			if (!xr.pointer_images_tried) { xr.pointer_images_tried = true; make_pointer_images(xr); }
++
++			// Laser from the hand to the screen, and a cursor where it lands (no emulator delay)
++			if (frame_state.shouldRender && xr.show_pointer && xr.have_image && message.empty())
++			{
++				const vec3 along = xr.aim_hit - xr.aim_origin;
++				const f32 len = std::sqrt(dot(along, along));
++				if (xr.laser_ok && len > 0.05f)
++				{
++					const vec3 bx = along * (1.f / len);
++					vec3 bz = (xr.last_head - (xr.aim_origin + along * 0.5f));
++					bz = normalize(bz - bx * dot(bz, bx));
++					const vec3 by = cross(bz, bx);
++					const vec3 mid = xr.aim_origin + along * 0.5f;
++					beam.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++					beam.space = xr.local_space;
++					beam.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					beam.subImage.swapchain = xr.laser;
++					beam.subImage.imageRect.extent = {256, 8};
++					beam.pose.position = {mid.x, mid.y, mid.z};
++					beam.pose.orientation = quat_from_axes(bx, by, bz);
++					beam.size = {len, 0.006f};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&beam);
++				}
++				if (xr.cursor_ok)
++				{
++					const f32 size = std::clamp(xr.screen_width * 0.018f, 0.03f, 0.12f);
++					dot_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++					dot_layer.space = xr.local_space;
++					dot_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					dot_layer.subImage.swapchain = xr.cursor;
++					dot_layer.subImage.imageRect.extent = {64, 64};
++					dot_layer.pose.position = {xr.aim_hit.x, xr.aim_hit.y, xr.aim_hit.z};
++					dot_layer.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
++					dot_layer.size = {size, size};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot_layer);
++				}
++			}
++
++			// Controls card: first session (until a few minutes after the game picture appears), or after holding Left MENU
++			{
++				const u64 now_ms = GetTickCount64();
++				static u64 first_live = 0;
++				bool want = now_ms < xr.help_until;
++				if (persist_get("intro") != "1")
++				{
++					want = true;
++					if (xr.have_image && message.empty())
++					{
++						if (!first_live) first_live = now_ms;
++						else if (now_ms - first_live > 180000) { persist_set("intro", "1"); vr_log("Controls intro shown"); }
++					}
++				}
++				if (want && !xr.help_drawn) { draw_help(xr); xr.help_drawn = true; }
++				if (want && xr.help_has && xr.screen_placed && frame_state.shouldRender)
++				{
++					// To the left of the screen, turned slightly towards the player
++					const vec3 right{std::cos(xr.screen_yaw), 0.0f, -std::sin(xr.screen_yaw)};
++					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++					const f32 sh = xr.sc_w ? xr.screen_width * xr.sc_h / xr.sc_w : xr.screen_width * 9.f / 16.f;
++					const vec3 pos = xr.screen_center - right * (xr.screen_width * 0.5f + help_width_m * 0.55f) + normal * 0.35f + vec3{0.f, sh * 0.5f - help_width_m * help_h / help_w * 0.5f, 0.f};
++					const f32 yaw = xr.screen_yaw + 0.35f;
++					help.space = xr.local_space;
++					help.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					help.subImage.swapchain = xr.help;
++					help.subImage.imageRect.extent = {static_cast<s32>(help_w), static_cast<s32>(help_h)};
++					help.pose.position = {pos.x, pos.y, pos.z};
++					help.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
++					help.size = {help_width_m, help_width_m * help_h / help_w};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&help);
++				}
 +			}
 +
 +			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed)
@@ -1644,6 +1935,9 @@ index 000000000..a38e4001e
 +			}
 +			if (xr.swapchain != XR_NULL_HANDLE) xrDestroySwapchain(xr.swapchain);
 +			if (xr.panel != XR_NULL_HANDLE) xrDestroySwapchain(xr.panel);
++			if (xr.help != XR_NULL_HANDLE) xrDestroySwapchain(xr.help);
++			if (xr.cursor != XR_NULL_HANDLE) xrDestroySwapchain(xr.cursor);
++			if (xr.laser != XR_NULL_HANDLE) xrDestroySwapchain(xr.laser);
 +			if (xr.session != XR_NULL_HANDLE) xrDestroySession(xr.session);
 +			if (xr.instance != XR_NULL_HANDLE) xrDestroyInstance(xr.instance);
 +			if (xr.context) xr.context->Release();
@@ -1698,6 +1992,7 @@ index 000000000..a38e4001e
 +		}
 +
 +		g_stop = false;
++		persist_load();
 +		g_start_tick = GetTickCount64();
 +		g_last_frame_tick = 0;
 +		g_window_unavailable_tick = 0;
@@ -1784,6 +2079,55 @@ index 000000000..a38e4001e
 +		return g_pointer;
 +	}
 +
++	void research_constants(u32 program_id, const f32* consts, const u16* ids, usz id_count)
++	{
++		static std::mutex mtx;
++		static std::FILE* out = nullptr;
++		static u64 window_end = 0, next_window = 0;
++		static int windows = 0;
++		static std::set<u32> seen;
++
++		const u64 now = GetTickCount64();
++		std::lock_guard lock(mtx);
++		if (!next_window) next_window = now + 30000; // first sample 30 s after the renderer starts
++		if (now >= window_end)
++		{
++			if (now < next_window || windows >= 20) return;
++			window_end = now + 50;
++			next_window = now + 20000;
++			windows++;
++			seen.clear();
++			if (!out)
++			{
++				out = std::fopen((fs::get_log_dir() + "orderup_research.log").c_str(), "w");
++				if (!out) return;
++			}
++			std::fprintf(out, "=== sample %d at %llu ms\n", windows, static_cast<unsigned long long>(now - g_start_tick.load()));
++		}
++		if (!out || !seen.insert(program_id).second || seen.size() > 80) return;
++
++		std::fprintf(out, "prog %u: %zu constants:", program_id, id_count);
++		for (usz i = 0; i < id_count && i < 48; i++) std::fprintf(out, " %u", ids[i]);
++		std::fprintf(out, "\n");
++
++		// 4x4 blocks whose last row or column has a unit-length xyz part: the signature of a perspective camera
++		// (view-projection or model-view-projection) matrix. Logged with all 16 values for offline analysis.
++		for (usz i = 0; i + 3 < id_count; i++)
++		{
++			const u16 k = ids[i];
++			if (k > 464 || ids[i + 1] != k + 1 || ids[i + 2] != k + 2 || ids[i + 3] != k + 3) continue;
++			const f32* m = consts + k * 4;
++			const f32 row = std::sqrt(m[12] * m[12] + m[13] * m[13] + m[14] * m[14]);
++			const f32 col = std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]);
++			const bool r = row > 0.9f && row < 1.1f, c = col > 0.9f && col < 1.1f;
++			if (!r && !c) continue;
++			std::fprintf(out, "  c%u %s:", k, r && c ? "row+col" : r ? "row" : "col");
++			for (int j = 0; j < 16; j++) std::fprintf(out, " %.5g", m[j]);
++			std::fprintf(out, "\n");
++		}
++		std::fflush(out);
++	}
++
 +	void note(const char* fmt, ...)
 +	{
 +		char buf[512];
@@ -1828,16 +2172,17 @@ index 000000000..a38e4001e
 +	void report_window_unavailable() {}
 +	pointer_state get_pointer() { return {}; }
 +	void trace(const char*) {}
++	void research_constants(u32, const f32*, const u16*, usz) {}
 +	void note(const char*, ...) {}
 +}
 +
 +#endif
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..29dbc672b
+index 000000000..54ff991dc
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,69 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -1872,6 +2217,7 @@ index 000000000..29dbc672b
 +		// Real controller motion, in the emulated PS Eye camera frame (= the virtual screen: x right, y up,
 +		// z towards the player). A real PS Move reports the same quantities, so the game's motion gestures work.
 +		bool motion = false;
++		bool assist = false;   // the stick-flick flip is playing
 +		f32 rq[4] = {0.f, 0.f, 0.f, 1.f}; // rotation beyond aiming (wrist twist, flicking past the screen), x y z w
 +		f32 vel[3] = {};       // mm/s
 +		f32 accel[3] = {};     // mm/s^2
@@ -1900,10 +2246,14 @@ index 000000000..29dbc672b
 +
 +	// Diagnostics (written to log/orderup_vr.log). trace() counts calls per name and reports them every few seconds.
 +	void trace(const char* name);
++
++	// True-VR research: records likely camera/projection matrices from vertex shader constants a few times per session
++	// (log/orderup_research.log). consts = all 468 transform constants (4 floats each), ids = constants the program reads.
++	void research_constants(u32 program_id, const f32* consts, const u16* ids, usz id_count);
 +	void note(const char* fmt, ...);
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
-index 51fc9092b..6e1050e72 100644
+index 51fc9092b..43ad58ce4 100644
 --- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 @@ -7,6 +7,7 @@
@@ -1932,6 +2282,20 @@ index 51fc9092b..6e1050e72 100644
  	if (m_device == VK_NULL_HANDLE)
  	{
  		//Initialization failed
+@@ -2283,6 +2288,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
+ 			? std::span<const u16>{}
+ 			: std::span<const u16>(m_vertex_prog->constant_ids);
+ 		RSX(m_ctx)->draw_processor()->fill_vertex_program_constants_data(buf, constant_ids);
++
++		// Order Up VR: true-VR research sampling (cheap: returns at once outside short sampling windows)
++		if (!m_vertex_prog->constant_ids.empty())
++		{
++			ouvr::research_constants(m_vertex_prog->id, reinterpret_cast<const f32*>(REGS(m_ctx)->transform_constants.data()),
++				m_vertex_prog->constant_ids.data(), m_vertex_prog->constant_ids.size());
++		}
+ 	}
+ }
+ 
 diff --git a/rpcs3/Emu/RSX/VK/VKPresent.cpp b/rpcs3/Emu/RSX/VK/VKPresent.cpp
 index 4afff8452..f896ee2df 100644
 --- a/rpcs3/Emu/RSX/VK/VKPresent.cpp
