@@ -449,10 +449,10 @@ index 0dfcf9cb7..d4671faa3 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..d5b6997a0
+index 000000000..8a924a66f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,919 @@
+@@ -0,0 +1,1108 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -547,6 +547,9 @@ index 000000000..d5b6997a0
 +		u32 g_frame_w = 0, g_frame_h = 0;   // guarded by g_state_mutex
 +		bool g_frame_bgra = false;          // guarded by g_state_mutex
 +		u64 g_frame_id = 0;                 // guarded by g_state_mutex
++		std::atomic<u64> g_last_frame_tick{0};          // GetTickCount64() of the newest game frame
++		std::atomic<u64> g_window_unavailable_tick{0};  // last time the renderer had no window to present to
++		std::atomic<u64> g_start_tick{0};
 +
 +		std::atomic<bool> g_stop{false};
 +		std::atomic<bool> g_session_running{false};
@@ -589,9 +592,19 @@ index 000000000..d5b6997a0
 +			vec3 last_forward{0.0f, 0.0f, -1.0f};
 +			bool recenter_held = false;
 +
++			// Status panel, shown while there is no game picture
++			XrSwapchain panel = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> panel_images;
++			bool panel_is_bgra = false;
++			bool panel_has_image = false;
++			std::string panel_text;
++
 +			int active_hand = 1; // 0 = left, 1 = right
 +			u64 frames = 0;
 +		};
++
++		constexpr u32 panel_w = 1024, panel_h = 512;
++		constexpr f32 panel_width_m = 1.6f;
 +
 +		bool xr_ok(xr_state& xr, XrResult res, const char* what)
 +		{
@@ -840,6 +853,168 @@ index 000000000..d5b6997a0
 +			return xr_ok(xr, xrAttachSessionActionSets(xr.session, &attach), "xrAttachSessionActionSets");
 +		}
 +
++		// Picks an 8-bit colour format the runtime supports. Returns 0 if none.
++		s64 pick_format(xr_state& xr, bool& is_bgra)
++		{
++			u32 count = 0;
++			xrEnumerateSwapchainFormats(xr.session, 0, &count, nullptr);
++			std::vector<s64> formats(count);
++			if (!xr_ok(xr, xrEnumerateSwapchainFormats(xr.session, count, &count, formats.data()), "xrEnumerateSwapchainFormats")) return 0;
++
++			// The images are gamma encoded, so prefer sRGB formats.
++			const struct { DXGI_FORMAT format; bool bgra; } wanted[] =
++			{
++				{DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, false},
++				{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, true},
++				{DXGI_FORMAT_R8G8B8A8_UNORM, false},
++				{DXGI_FORMAT_B8G8R8A8_UNORM, true},
++			};
++			for (const auto& w : wanted)
++			{
++				if (std::find(formats.begin(), formats.end(), static_cast<s64>(w.format)) != formats.end())
++				{
++					is_bgra = w.bgra;
++					return w.format;
++				}
++			}
++			vr_log("ERROR: the VR runtime offers no 8-bit RGBA swapchain format");
++			return 0;
++		}
++
++		// What the status panel should say right now. Empty = the game picture is live, no panel.
++		std::string panel_message()
++		{
++			const u64 now = GetTickCount64();
++			const u64 last_frame = g_last_frame_tick.load();
++			const u64 no_window = g_window_unavailable_tick.load();
++
++			if (last_frame && now - last_frame < 3000) return {};
++
++			if (no_window && now - no_window < 2000)
++			{
++				return "The game window on the PC is minimized.\n\nRestore the Order Up!! window on the PC (click it in the taskbar). "
++					"The headset can only show the game while that window is open.";
++			}
++			if (last_frame)
++			{
++				return "Waiting for the game picture...\n\nThe game is busy loading.\nIf this stays for minutes, close the game and press Collect logs in the launcher.";
++			}
++
++			const u64 secs = (now - g_start_tick.load()) / 1000;
++			char buf[512];
++			std::snprintf(buf, sizeof(buf),
++				"Starting Order Up!!...   %llu s\n\nThe first start after an update prepares the game for this PC and can take a few minutes. "
++				"Later starts are quick.\n\nThe game also opens in a window on the PC monitor. Keep that window open.",
++				static_cast<unsigned long long>(secs));
++			return buf;
++		}
++
++		// Draws the panel text with GDI and uploads it to the panel swapchain.
++		void draw_panel(xr_state& xr, const std::string& text)
++		{
++			if (xr.panel == XR_NULL_HANDLE)
++			{
++				const s64 format = pick_format(xr, xr.panel_is_bgra);
++				if (!format) return;
++
++				XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
++				info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
++				info.format = format;
++				info.sampleCount = 1;
++				info.width = panel_w;
++				info.height = panel_h;
++				info.faceCount = 1;
++				info.arraySize = 1;
++				info.mipCount = 1;
++				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &xr.panel), "xrCreateSwapchain(panel)")) return;
++
++				u32 count = 0;
++				xrEnumerateSwapchainImages(xr.panel, 0, &count, nullptr);
++				xr.panel_images.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
++				if (!xr_ok(xr, xrEnumerateSwapchainImages(xr.panel, count, &count,
++					reinterpret_cast<XrSwapchainImageBaseHeader*>(xr.panel_images.data())), "xrEnumerateSwapchainImages(panel)"))
++				{
++					xrDestroySwapchain(xr.panel);
++					xr.panel = XR_NULL_HANDLE;
++					return;
++				}
++			}
++
++			HDC dc = CreateCompatibleDC(nullptr);
++			BITMAPINFO bmi{};
++			bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
++			bmi.bmiHeader.biWidth = panel_w;
++			bmi.bmiHeader.biHeight = -static_cast<LONG>(panel_h); // top-down
++			bmi.bmiHeader.biPlanes = 1;
++			bmi.bmiHeader.biBitCount = 32;
++			bmi.bmiHeader.biCompression = BI_RGB;
++			void* bits = nullptr;
++			HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
++			if (!bmp || !bits)
++			{
++				DeleteDC(dc);
++				return;
++			}
++			HGDIOBJ old_bmp = SelectObject(dc, bmp);
++
++			RECT all{0, 0, static_cast<LONG>(panel_w), static_cast<LONG>(panel_h)};
++			HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
++			FillRect(dc, &all, bg);
++			DeleteObject(bg);
++			RECT bar{0, 0, static_cast<LONG>(panel_w), 10};
++			HBRUSH accent = CreateSolidBrush(RGB(242, 108, 36));
++			FillRect(dc, &bar, accent);
++			DeleteObject(accent);
++
++			SetBkMode(dc, TRANSPARENT);
++			HFONT title = CreateFontW(64, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
++			HFONT body = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
++
++			HGDIOBJ old_font = SelectObject(dc, title);
++			SetTextColor(dc, RGB(242, 108, 36));
++			RECT rt{48, 36, static_cast<LONG>(panel_w) - 48, 120};
++			DrawTextW(dc, L"ORDER UP VR", -1, &rt, DT_LEFT | DT_TOP | DT_SINGLELINE);
++
++			wchar_t wide[1024]{};
++			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide, 1023);
++			SelectObject(dc, body);
++			SetTextColor(dc, RGB(235, 235, 240));
++			RECT rb{48, 130, static_cast<LONG>(panel_w) - 48, static_cast<LONG>(panel_h) - 30};
++			DrawTextW(dc, wide, -1, &rb, DT_LEFT | DT_TOP | DT_WORDBREAK);
++
++			SelectObject(dc, old_font);
++			DeleteObject(title);
++			DeleteObject(body);
++			GdiFlush();
++
++			// GDI gives BGRX; set alpha and swap to RGBA when needed.
++			u8* px = static_cast<u8*>(bits);
++			for (u32 i = 0; i < panel_w * panel_h; i++, px += 4)
++			{
++				if (!xr.panel_is_bgra) std::swap(px[0], px[2]);
++				px[3] = 255;
++			}
++
++			u32 index = 0;
++			XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
++			if (XR_SUCCEEDED(xrAcquireSwapchainImage(xr.panel, &acquire, &index)))
++			{
++				XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
++				wait.timeout = XR_INFINITE_DURATION;
++				if (XR_SUCCEEDED(xrWaitSwapchainImage(xr.panel, &wait)))
++				{
++					xr.context->UpdateSubresource(xr.panel_images[index].texture, 0, nullptr, bits, panel_w * 4, 0);
++					xr.panel_has_image = true;
++				}
++				XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
++				xrReleaseSwapchainImage(xr.panel, &release);
++			}
++
++			SelectObject(dc, old_bmp);
++			DeleteObject(bmp);
++			DeleteDC(dc);
++		}
++
 +		bool create_swapchain(xr_state& xr, u32 width, u32 height)
 +		{
 +			if (xr.swapchain != XR_NULL_HANDLE)
@@ -850,35 +1025,8 @@ index 000000000..d5b6997a0
 +				xr.have_image = false;
 +			}
 +
-+			u32 count = 0;
-+			xrEnumerateSwapchainFormats(xr.session, 0, &count, nullptr);
-+			std::vector<s64> formats(count);
-+			if (!xr_ok(xr, xrEnumerateSwapchainFormats(xr.session, count, &count, formats.data()), "xrEnumerateSwapchainFormats")) return false;
-+
-+			// The game image is gamma encoded, so prefer sRGB formats.
-+			const struct { DXGI_FORMAT format; bool bgra; } wanted[] =
-+			{
-+				{DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, false},
-+				{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, true},
-+				{DXGI_FORMAT_R8G8B8A8_UNORM, false},
-+				{DXGI_FORMAT_B8G8R8A8_UNORM, true},
-+			};
-+
-+			xr.swapchain_format = 0;
-+			for (const auto& w : wanted)
-+			{
-+				if (std::find(formats.begin(), formats.end(), static_cast<s64>(w.format)) != formats.end())
-+				{
-+					xr.swapchain_format = w.format;
-+					xr.swapchain_is_bgra = w.bgra;
-+					break;
-+				}
-+			}
-+			if (!xr.swapchain_format)
-+			{
-+				vr_log("ERROR: the VR runtime offers no 8-bit RGBA swapchain format");
-+				return false;
-+			}
++			xr.swapchain_format = pick_format(xr, xr.swapchain_is_bgra);
++			if (!xr.swapchain_format) return false;
 +
 +			XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
 +			info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
@@ -891,6 +1039,7 @@ index 000000000..d5b6997a0
 +			info.mipCount = 1;
 +			if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &xr.swapchain), "xrCreateSwapchain")) return false;
 +
++			u32 count = 0;
 +			xrEnumerateSwapchainImages(xr.swapchain, 0, &count, nullptr);
 +			xr.images.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
 +			if (!xr_ok(xr, xrEnumerateSwapchainImages(xr.swapchain, count, &count,
@@ -1160,8 +1309,22 @@ index 000000000..d5b6997a0
 +			upload_frame(xr);
 +
 +			XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-+			const XrCompositionLayerBaseHeader* layers[1]{};
++			XrCompositionLayerQuad panel{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			const XrCompositionLayerBaseHeader* layers[2]{};
 +			u32 layer_count = 0;
++
++			const std::string message = panel_message();
++			if (!message.empty() && message != xr.panel_text)
++			{
++				draw_panel(xr, message);
++				xr.panel_text = message;
++				vr_log("Panel: %s", message.substr(0, message.find('\n')).c_str());
++			}
++			else if (message.empty() && !xr.panel_text.empty())
++			{
++				xr.panel_text.clear();
++				vr_log("Panel hidden: game picture is live");
++			}
 +
 +			if (frame_state.shouldRender && xr.have_image && xr.screen_placed)
 +			{
@@ -1173,8 +1336,23 @@ index 000000000..d5b6997a0
 +				quad.pose.position = {xr.screen_center.x, xr.screen_center.y, xr.screen_center.z};
 +				quad.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				quad.size = {xr.screen_width, xr.screen_width * xr.sc_h / xr.sc_w};
-+				layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
-+				layer_count = 1;
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
++			}
++
++			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed)
++			{
++				// Floats just in front of the game screen, facing the player.
++				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++				const vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f);
++				panel.space = xr.local_space;
++				panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++				panel.subImage.swapchain = xr.panel;
++				panel.subImage.imageRect.offset = {0, 0};
++				panel.subImage.imageRect.extent = {static_cast<s32>(panel_w), static_cast<s32>(panel_h)};
++				panel.pose.position = {pos.x, pos.y, pos.z};
++				panel.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
++				panel.size = {panel_width_m, panel_width_m * panel_h / panel_w};
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);
 +			}
 +
 +			XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
@@ -1194,6 +1372,7 @@ index 000000000..d5b6997a0
 +				g_pointer = {};
 +			}
 +			if (xr.swapchain != XR_NULL_HANDLE) xrDestroySwapchain(xr.swapchain);
++			if (xr.panel != XR_NULL_HANDLE) xrDestroySwapchain(xr.panel);
 +			if (xr.session != XR_NULL_HANDLE) xrDestroySession(xr.session);
 +			if (xr.instance != XR_NULL_HANDLE) xrDestroyInstance(xr.instance);
 +			if (xr.context) xr.context->Release();
@@ -1248,6 +1427,9 @@ index 000000000..d5b6997a0
 +		}
 +
 +		g_stop = false;
++		g_start_tick = GetTickCount64();
++		g_last_frame_tick = 0;
++		g_window_unavailable_tick = 0;
 +		g_thread = std::thread(thread_main);
 +	}
 +
@@ -1271,6 +1453,12 @@ index 000000000..d5b6997a0
 +		g_frame_h = height;
 +		g_frame_bgra = is_bgra;
 +		g_frame_id++;
++		g_last_frame_tick = GetTickCount64();
++	}
++
++	void report_window_unavailable()
++	{
++		g_window_unavailable_tick = GetTickCount64();
 +	}
 +
 +	// Test hook: ORDERUP_VR_FAKE_FILE names a text file holding "x y buttonmask". While set, its content is used as
@@ -1366,6 +1554,7 @@ index 000000000..d5b6997a0
 +	void stop() {}
 +	bool wants_frames() { return false; }
 +	void submit_frame(std::vector<u8>&&, u32, u32, bool) {}
++	void report_window_unavailable() {}
 +	pointer_state get_pointer() { return {}; }
 +	void trace(const char*) {}
 +	void note(const char*, ...) {}
@@ -1374,10 +1563,10 @@ index 000000000..d5b6997a0
 +#endif
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..849bdcada
+index 000000000..8fcf74712
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -1420,6 +1609,9 @@ index 000000000..849bdcada
 +	// Latest presented game frame, 4 bytes per pixel.
 +	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra);
 +
++	// The renderer could not present because the desktop game window is minimized or has no size.
++	void report_window_unavailable();
++
 +	// Current controller-as-pointer state (thread safe).
 +	pointer_state get_pointer();
 +
@@ -1458,7 +1650,7 @@ index 51fc9092b..6e1050e72 100644
  	{
  		//Initialization failed
 diff --git a/rpcs3/Emu/RSX/VK/VKPresent.cpp b/rpcs3/Emu/RSX/VK/VKPresent.cpp
-index 4afff8452..c18b517fb 100644
+index 4afff8452..f896ee2df 100644
 --- a/rpcs3/Emu/RSX/VK/VKPresent.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKPresent.cpp
 @@ -1,5 +1,6 @@
@@ -1468,7 +1660,16 @@ index 4afff8452..c18b517fb 100644
  #include "VKGSRender.h"
  #include "vkutils/buffer_object.h"
  #include "vkutils/memory.h"
-@@ -683,7 +684,8 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
+@@ -514,6 +515,8 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
+ 
+ 	if (info.skip_frame || swapchain_unavailable)
+ 	{
++		if (swapchain_unavailable) ouvr::report_window_unavailable(); // Order Up VR: tell the headset why there is no picture
++
+ 		if (!info.skip_frame)
+ 		{
+ 			ensure(swapchain_unavailable);
+@@ -683,7 +686,8 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
  	const bool has_overlay = (overlay_manager && overlay_manager->has_visible());
  	const bool user_asked_for_screenshot = g_user_asked_for_screenshot.exchange(false);
  	const bool user_is_recording = (g_recording_mode != recording_mode::stopped && m_frame->can_consume_frame());
@@ -1478,7 +1679,7 @@ index 4afff8452..c18b517fb 100644
  
  	const auto render_overlays = [&](vk::framebuffer_holder* fbo, const areau& area)
  	{
-@@ -790,11 +792,18 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
+@@ -790,11 +794,18 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
  		driver_manager.set_enabled(true);
  
  		const bool is_bgra = image_to_copy->format() == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1498,6 +1699,32 @@ index 4afff8452..c18b517fb 100644
  		{
  			m_frame->present_frame(std::move(sshot_frame), buffer_width * 4, buffer_width, buffer_height, is_bgra);
  		}
+diff --git a/rpcs3/Emu/RSX/VK/vkutils/instance.cpp b/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
+index e59c24948..949776858 100644
+--- a/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
++++ b/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
+@@ -188,7 +188,20 @@ namespace vk
+ 			}
+ #endif //(WIN32, __APPLE__)
+ 			if (g_cfg.video.debug_output)
+-				layers.push_back("VK_LAYER_KHRONOS_validation");
++			{
++				// Order Up VR: only request the validation layer when it is installed (Vulkan SDK). Without this check a
++				// config with "Debug output" on makes the renderer fail on every normal PC.
++				u32 layer_count = 0;
++				vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
++				std::vector<VkLayerProperties> available(layer_count);
++				vkEnumerateInstanceLayerProperties(&layer_count, available.data());
++				const bool have_validation = std::any_of(available.begin(), available.end(),
++					[](const VkLayerProperties& l) { return std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0; });
++				if (have_validation)
++					layers.push_back("VK_LAYER_KHRONOS_validation");
++				else
++					rsx_log.warning("Debug output is enabled but VK_LAYER_KHRONOS_validation is not installed. Ignoring it.");
++			}
+ 		}
+ #ifdef __APPLE__ 
+ 		// MoltenVK's ICD will not be detected without these extensions enabled.
 diff --git a/rpcs3/emucore.vcxproj b/rpcs3/emucore.vcxproj
 index 36ba6b15e..571709b21 100644
 --- a/rpcs3/emucore.vcxproj

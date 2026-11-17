@@ -9,6 +9,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -290,6 +291,37 @@ namespace OrderUpVR
         }
     }
 
+    static class Native
+    {
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+        // Visible top-level windows of a process: handle -> title.
+        public static List<KeyValuePair<IntPtr, string>> WindowsOf(int pid)
+        {
+            var list = new List<KeyValuePair<IntPtr, string>>();
+            EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                uint owner;
+                GetWindowThreadProcessId(h, out owner);
+                if (owner == (uint)pid && IsWindowVisible(h))
+                {
+                    var sb = new StringBuilder(512);
+                    GetWindowText(h, sb, sb.Capacity);
+                    list.Add(new KeyValuePair<IntPtr, string>(h, sb.ToString()));
+                }
+                return true;
+            }, IntPtr.Zero);
+            return list;
+        }
+    }
+
     static class Theme
     {
         public static readonly Color Back = Color.FromArgb(24, 26, 32);
@@ -390,6 +422,14 @@ namespace OrderUpVR
         Timer timer;
         bool busy;
 
+        // Game watcher (after Play)
+        Process game;
+        DateTime gameStart;
+        Timer watch;
+        bool sawGameWindow, broughtToFront;
+        string lastWatchNote = "";
+        readonly StringBuilder watchLog = new StringBuilder();
+
         public MainForm(Settings settings)
         {
             s = settings;
@@ -406,7 +446,7 @@ namespace OrderUpVR
             log.Font = new Font("Segoe UI", 10f); log.SetBounds(26, 126, 708, 280); log.TabStop = false; Controls.Add(log);
 
             bar = new ProgressBar(); bar.SetBounds(26, 418, 708, 8); bar.Style = ProgressBarStyle.Continuous; Controls.Add(bar);
-            statusLabel = new Label(); statusLabel.ForeColor = Theme.Dim; statusLabel.SetBounds(26, 432, 708, 22); Controls.Add(statusLabel);
+            statusLabel = new Label(); statusLabel.ForeColor = Theme.Dim; statusLabel.AutoEllipsis = true; statusLabel.SetBounds(26, 430, 708, 36); Controls.Add(statusLabel);
 
             playBtn = Theme.MakeButton("PLAY", true); playBtn.SetBounds(534, 468, 200, 54); playBtn.Click += delegate { Play(); }; Controls.Add(playBtn);
             updateBtn = Theme.MakeButton("Check for updates", false); updateBtn.SetBounds(26, 478, 150, 36); updateBtn.Click += delegate { CheckUpdates(); }; Controls.Add(updateBtn);
@@ -419,6 +459,8 @@ namespace OrderUpVR
 
             // Keep checking while the launcher stays open.
             timer = new Timer(); timer.Interval = 30 * 60 * 1000; timer.Tick += delegate { CheckUpdates(); }; timer.Start();
+
+            watch = new Timer(); watch.Interval = 1000; watch.Tick += delegate { WatchGame(); };
         }
 
         string ManifestUrl { get { return string.IsNullOrEmpty(s.ManifestUrl) ? Core.DefaultManifestUrl : s.ManifestUrl; } }
@@ -428,7 +470,7 @@ namespace OrderUpVR
         {
             string latest = manifest != null ? manifest.version : "?";
             versionLabel.Text = "Installed mod: " + (ModInstalled ? s.InstalledVersion : "none") + "     Latest: " + latest + "     Launcher: " + Core.LauncherVersion;
-            playBtn.Enabled = ModInstalled && !busy;
+            playBtn.Enabled = ModInstalled && !busy && game == null;
             updateBtn.Enabled = !busy;
         }
 
@@ -565,8 +607,145 @@ namespace OrderUpVR
             string emu = Core.EmuDir(s);
             var psi = new ProcessStartInfo(Path.Combine(emu, "rpcs3.exe"), "--no-gui \"" + Path.Combine(s.GameDir, @"PS3_GAME\USRDIR\EBOOT.BIN") + "\"");
             psi.WorkingDirectory = emu; psi.UseShellExecute = false;
-            try { Process.Start(psi); SetStatus("Starting the game. The first start after an update takes a few minutes."); }
+            try
+            {
+                // Fresh VR log for this run, so the watcher only reads this start.
+                try { File.Delete(Path.Combine(emu, @"log\orderup_vr.log")); } catch { }
+                game = Process.Start(psi);
+                gameStart = DateTime.Now;
+                sawGameWindow = false; broughtToFront = false; lastWatchNote = "";
+                watchLog.Length = 0;
+                Note("Started " + psi.FileName + " " + psi.Arguments);
+                SetStatus("Starting the game...");
+                RefreshLabels();
+                watch.Start();
+            }
             catch (Exception ex) { SetStatus("Could not start: " + ex.Message); }
+        }
+
+        void Note(string text)
+        {
+            if (text == lastWatchNote) return;
+            lastWatchNote = text;
+            watchLog.AppendLine(DateTime.Now.ToString("HH:mm:ss") + "  " + text);
+        }
+
+        // Reads the end of a file that another process is still writing.
+        static string ReadTail(string path, int maxBytes)
+        {
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    long start = Math.Max(0, fs.Length - maxBytes);
+                    fs.Seek(start, SeekOrigin.Begin);
+                    var buf = new byte[fs.Length - start];
+                    int n = fs.Read(buf, 0, buf.Length);
+                    return Encoding.UTF8.GetString(buf, 0, n);
+                }
+            }
+            catch { return ""; }
+        }
+
+        // One line about the headset, from the VR module's log.
+        string VrSummary()
+        {
+            string text = ReadTail(Path.Combine(Core.EmuDir(s), @"log\orderup_vr.log"), 256 * 1024);
+            if (text.Length == 0) return "VR: not started yet";
+            if (text.Contains("No usable OpenXR runtime")) return "VR: no PC VR software found (start Quest Link / SteamVR first). Playing on the monitor only.";
+            if (text.Contains("Disabled by ORDERUP_VR=0")) return "VR: switched off";
+            string headset = null, state = null, lastError = null;
+            bool live = false;
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.Trim();
+                int i;
+                if ((i = line.IndexOf("Headset: ")) >= 0) headset = line.Substring(i + 9);
+                if ((i = line.IndexOf("Session state -> ")) >= 0) state = line.Substring(i + 17);
+                if (line.Contains("Panel hidden: game picture is live")) live = true;
+                if (line.Contains("Panel: ")) live = false;
+                if ((i = line.IndexOf("ERROR: ")) >= 0) lastError = line.Substring(i + 7);
+            }
+            if (lastError != null && state == null) return "VR error: " + lastError;
+            if (headset == null) return "VR: waiting for the headset (is Quest Link / Air Link connected?)";
+            string where = headset;
+            if (state == null) return "VR: " + where + " found, starting...";
+            switch (state)
+            {
+                case "1": case "2": case "3": return "VR: " + where + ", waiting for the headset to be put on";
+                case "4": return "VR: " + where + ", visible but not focused (close the Quest menu)";
+                case "5": return "VR: " + where + (live ? ", showing the game" : ", showing the status panel (no game picture yet)");
+                case "6": case "7": case "8": return "VR: " + where + ", the VR session ended";
+            }
+            return "VR: " + where + " (state " + state + ")";
+        }
+
+        void WatchGame()
+        {
+            if (game == null) { watch.Stop(); return; }
+            int secs = (int)(DateTime.Now - gameStart).TotalSeconds;
+
+            bool exited;
+            try { exited = game.HasExited; } catch { exited = true; }
+            if (exited)
+            {
+                watch.Stop();
+                int code = 0;
+                try { code = game.ExitCode; } catch { }
+                Note("Game process ended after " + secs + " s, exit code " + code);
+                game = null;
+                RefreshLabels();
+                if (!sawGameWindow)
+                    SetStatus("The game closed before its window appeared. Press Collect logs and send the file from your Desktop.");
+                else if (secs < 60)
+                    SetStatus("The game closed after " + secs + " seconds. If you did not close it, press Collect logs and send the file.");
+                else
+                    SetStatus("The game has closed.");
+                return;
+            }
+
+            string gameTitle = null, errorTitle = null;
+            IntPtr gameWnd = IntPtr.Zero, errorWnd = IntPtr.Zero;
+            bool minimized = false;
+            foreach (var w in Native.WindowsOf(game.Id))
+            {
+                if (w.Value.StartsWith("FPS:")) { gameTitle = w.Value; gameWnd = w.Key; minimized = Native.IsIconic(w.Key); }
+                else if (w.Value.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 || w.Value.IndexOf("fatal", StringComparison.OrdinalIgnoreCase) >= 0)
+                { errorTitle = w.Value; errorWnd = w.Key; }
+                else if (w.Value.Length > 0) Note("Window: " + w.Value);
+            }
+
+            if (errorTitle != null)
+            {
+                Note("Error window: " + errorTitle);
+                SetStatus("RPCS3 reported a problem (\"" + errorTitle + "\"). Read the message on the PC, close it, then press Collect logs.");
+                if (!broughtToFront) { Native.ShowWindow(errorWnd, 9); Native.SetForegroundWindow(errorWnd); broughtToFront = true; }
+                return;
+            }
+
+            string vr = VrSummary();
+            Note(vr);
+            if (gameTitle != null)
+            {
+                if (!sawGameWindow) { sawGameWindow = true; Note("Game window: " + gameTitle); }
+                if (!broughtToFront) { Native.ShowWindow(gameWnd, 9); Native.SetForegroundWindow(gameWnd); broughtToFront = true; }
+                string fps = gameTitle.Split('|')[0].Trim();
+                SetStatus((minimized ? "Game window is MINIMIZED, restore it so the headset gets a picture. " : "Game running (" + fps + ").  ") + vr);
+            }
+            else if (secs < 120)
+                SetStatus("Starting the game... " + secs + " s.  " + vr);
+            else
+                SetStatus("No game window after " + secs + " s. Check the taskbar for an RPCS3 window. If there is none, close the game and press Collect logs.  " + vr);
+        }
+
+        static void CopyTail(string src, string dst, long maxBytes)
+        {
+            using (var fs = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var outf = File.Create(dst))
+            {
+                if (fs.Length > maxBytes) fs.Seek(fs.Length - maxBytes, SeekOrigin.Begin);
+                fs.CopyTo(outf);
+            }
         }
 
         void EditFolders()
@@ -586,17 +765,19 @@ namespace OrderUpVR
                 string emu = Core.EmuDir(s);
                 string tmp = Path.Combine(Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
-                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml" })
+                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml" })
                 {
                     string p = Path.Combine(emu, rel);
-                    if (File.Exists(p) && new FileInfo(p).Length < 50 * 1048576) File.Copy(p, Path.Combine(tmp, Path.GetFileName(p)), true);
+                    try { if (File.Exists(p)) CopyTail(p, Path.Combine(tmp, Path.GetFileName(p)), 20L * 1048576); } catch { }
                 }
+                File.WriteAllText(Path.Combine(tmp, "launcher_watch.txt"), watchLog.Length > 0 ? watchLog.ToString() : "(the game was not started from this launcher window)\r\n");
                 File.WriteAllText(Path.Combine(tmp, "system.txt"), "Mod version: " + s.InstalledVersion + "\r\nLauncher: " + Core.LauncherVersion +
                     "\r\nOpenXR runtime: " + (Core.ActiveOpenXrRuntime() ?? "none") + "\r\nWindows: " + Environment.OSVersion.VersionString + "\r\n");
                 string zip = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OrderUpVR_logs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".zip");
                 ZipFile.CreateFromDirectory(tmp, zip);
                 Directory.Delete(tmp, true);
-                SetStatus("Logs saved to your Desktop: " + Path.GetFileName(zip));
+                SetStatus("Logs saved to your Desktop: " + Path.GetFileName(zip) + "  (no passwords or personal files are included)");
+                try { Process.Start("explorer.exe", "/select,\"" + zip + "\""); } catch { }
             }
             catch (Exception ex) { SetStatus("Could not collect logs: " + ex.Message); }
         }

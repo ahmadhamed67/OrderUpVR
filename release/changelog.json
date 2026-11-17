@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.2.0",
+    "date": "2026-11-17",
+    "notes": [
+      "Fixed: pressing Play gave a black headset and no game window (only the boot music played). The mod's game settings switched on a Vulkan debugging option that only works on PCs with the Vulkan SDK installed, so on normal PCs the game's graphics never started. That option is now off, and the mod build ignores it if it is ever switched on again.",
+      "The mod now ships only the settings it needs (Vulkan renderer, Move emulation, no pausing when the window loses focus). Everything else uses your own RPCS3 settings.",
+      "New: a status panel in the headset while the game starts, instead of a black screen. It also tells you when the game window on the PC is minimized, because the headset can only show the game while that window is open.",
+      "New: after you press Play the launcher shows what is happening: game starting, game window open with FPS, VR runtime and headset state. It brings the game window to the front and tells you if the game closes or RPCS3 shows an error.",
+      "Collect logs now includes the full RPCS3 log again (it was switched off), the launcher's own notes from the last start, and opens the folder with the zip so you can send it.",
+      "Not yet tested on a real Quest 3. Real 3D depth and a head-tracked camera are still to come."
+    ]
+  },
+  {
     "version": "0.1.0",
     "date": "2026-11-17",
     "notes": [
