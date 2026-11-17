@@ -32,12 +32,13 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | VR controller as the game's PlayStation Move pointer and buttons | Built; aim accuracy not yet confirmed |
 | Real stereo 3D and head-tracked camera | Not started |
 
-## Controls (0.1.0)
+## Controls (0.4.0)
 
-- Aim a controller at the screen to point. The hand that pulls its trigger becomes the pointing hand.
-- Trigger = T, grip = Move, A/B/X/Y = Cross/Circle/Square/Triangle, left menu = START, right stick click = SELECT.
-- Calibration screen: point at the middle of the screen, press X (the game's Square), then squeeze the grip.
-- Left stick click recentres the screen; right stick up/down moves it nearer or farther; left stick up/down resizes it.
+- Aim a controller at the screen to point. The hand you press GRIP or TRIGGER with becomes the pointing hand.
+- GRIP = grab and hold (the game's T button). TRIGGER = select (the Move button). A/B/X/Y = Cross/Circle/Square/Triangle. Left menu = START. Right stick click = SELECT.
+- Motion actions (flipping, etc.): hold GRIP and make the movement with the controller, as with a PlayStation Move. Backup: hold GRIP and flick that hand's thumbstick up.
+- Calibration screen: point at the middle of the screen, press X (the game's Square), then pull the TRIGGER.
+- Screen (when not holding GRIP): left stick click recentres it, right stick up/down moves it nearer or farther, left stick up/down resizes it.
 
 ## Source layout
 

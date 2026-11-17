@@ -974,6 +974,25 @@ namespace OrderUpVR
             return headset + " (state " + state + ")";
         }
 
+        bool preparingShown;
+
+        // Reads the VR module's "Progress: N% text (a of b)" lines. True while preparation is still running.
+        bool Preparing(out int percent, out string what)
+        {
+            percent = 0; what = "";
+            string text = ReadTail(System.IO.Path.Combine(Core.EmuDir(s), @"log\orderup_vr.log"), 64 * 1024);
+            int i = text.LastIndexOf("Progress: ");
+            if (i < 0) return false;
+            if (text.LastIndexOf("Panel hidden: game picture is live") > i) return false;
+            int nl = text.IndexOf('\n', i);
+            string line = (nl < 0 ? text.Substring(i + 10) : text.Substring(i + 10, nl - i - 10)).Trim();
+            int pct = line.IndexOf('%');
+            if (pct < 0 || !int.TryParse(line.Substring(0, pct), out percent)) return false;
+            what = line.Substring(pct + 1).Trim();
+            if (what.Length == 0) what = "Compiling";
+            return percent < 100;
+        }
+
         void WatchGame()
         {
             if (game == null) { watch.Stop(); return; }
@@ -989,6 +1008,7 @@ namespace OrderUpVR
                 Note("Game process ended after " + secs + " s, exit code " + code);
                 game = null;
                 if (minimizedForGame) BringToFront();
+                if (preparingShown) { preparingShown = false; SetProgress(-1); }
                 RefreshAll();
                 if (!sawGameWindow)
                 {
@@ -1027,6 +1047,22 @@ namespace OrderUpVR
             liveVr = VrSummary(out level);
             liveVrLevel = level;
             Note("VR: " + liveVr);
+
+            // First start after an update: RPCS3 prepares the game for this PC. Show its real progress.
+            int prepPercent; string prepWhat;
+            if (Preparing(out prepPercent, out prepWhat))
+            {
+                if (!sawGameWindow && gameTitle != null) { sawGameWindow = true; Note("Game window: " + gameTitle); }
+                liveGame = "Preparing for this PC: " + prepPercent + "%";
+                Note("Preparing " + prepPercent + "% " + prepWhat);
+                SetStatus("Preparing the game for this PC: " + prepPercent + "%", 1, prepWhat + ". This happens only on the first start and after an update.");
+                SetProgress(prepPercent / 100.0);
+                preparingShown = true;
+                RenderStatus();
+                return;
+            }
+            if (preparingShown) { preparingShown = false; SetProgress(-1); }
+
             if (gameTitle != null)
             {
                 if (!sawGameWindow)

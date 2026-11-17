@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.4.0",
+    "date": "2026-11-17",
+    "notes": [
+      "Controls swapped as in most VR games: GRIP now grabs and holds (the game's T button), TRIGGER selects and confirms (the Move button).",
+      "Motion support: the Quest controller's real movement and rotation are now sent to the game the way a PlayStation Move reports them (rotation, speed, acceleration, spin and its motion sensors). Motion actions such as flipping a burger should now work with a real flick: hold GRIP on the item, then flick your wrist up and over in a half circle.",
+      "Backup for motion actions: while holding GRIP, flick the thumbstick of the same hand up. This plays a clean flip motion for you, in case your own flick is not recognised. (While holding GRIP the thumbsticks no longer move or resize the screen.)",
+      "First start loading: the headset now shows RPCS3's real preparation progress with a progress bar, the percentage, what is being prepared and the time left, instead of a counting timer. The launcher shows the same progress bar.",
+      "Pointing at the screen works as before. Not yet tested in the real game: whether the game accepts every motion the tutorial asks for. If a motion action does not work, collect logs right after trying it and send them."
+    ]
+  },
+  {
     "version": "0.3.1",
     "date": "2026-11-17",
     "notes": [

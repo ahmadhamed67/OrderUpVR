@@ -1,5 +1,5 @@
 diff --git a/rpcs3/Emu/Cell/Modules/cellGem.cpp b/rpcs3/Emu/Cell/Modules/cellGem.cpp
-index 0dfcf9cb7..d4671faa3 100644
+index 0dfcf9cb7..119b19b96 100644
 --- a/rpcs3/Emu/Cell/Modules/cellGem.cpp
 +++ b/rpcs3/Emu/Cell/Modules/cellGem.cpp
 @@ -1,5 +1,6 @@
@@ -52,7 +52,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	return true;
  }
  
-@@ -2638,14 +2668,74 @@ static void mouse_pos_to_gem_state(u32 mouse_no, gem_config::gem_controller& con
+@@ -2638,14 +2668,103 @@ static void mouse_pos_to_gem_state(u32 mouse_no, gem_config::gem_controller& con
  
  	const auto& mouse = ::at32(handler.GetMice(), mouse_no);
  
@@ -100,6 +100,35 @@ index 0dfcf9cb7..d4671faa3 100644
 +		{
 +			pos_to_gem_state(mouse_no, controller, gem_state, x_pos, y_pos, move_data);
 +
++			// Order Up VR: real controller motion on top of the pointer, so motion gestures (flipping) work
++			if (mouse_no == 0)
++			{
++				if (const ouvr::pointer_state vr = ouvr::get_pointer(); vr.active && vr.motion)
++				{
++					const f32 ax = gem_state->quat[0], ay = gem_state->quat[1], az = gem_state->quat[2], aw = gem_state->quat[3];
++					const f32 bx = vr.rq[0], by = vr.rq[1], bz = vr.rq[2], bw = vr.rq[3];
++					gem_state->quat[0] = aw * bx + ax * bw + ay * bz - az * by;
++					gem_state->quat[1] = aw * by - ax * bz + ay * bw + az * bx;
++					gem_state->quat[2] = aw * bz + ax * by - ay * bx + az * bw;
++					gem_state->quat[3] = aw * bw - ax * bx - ay * by - az * bz;
++
++					for (u32 i = 0; i < 3; i++)
++					{
++						if (vr.t) // quick hand movement while holding something
++						{
++							gem_state->pos[i] = gem_state->pos[i] + vr.disp[i];
++							gem_state->handle_pos[i] = gem_state->handle_pos[i] + vr.disp[i];
++						}
++						gem_state->vel[i] = vr.vel[i];
++						gem_state->accel[i] = vr.accel[i];
++						gem_state->handle_vel[i] = vr.vel[i];
++						gem_state->handle_accel[i] = vr.accel[i];
++						gem_state->angvel[i] = vr.angvel[i];
++						gem_state->angaccel[i] = vr.angaccel[i];
++					}
++				}
++			}
++
 +			if (ptr_mode == 2)
 +			{
 +				gem_state->quat[0] = 0.f;
@@ -129,7 +158,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	}
  }
  
-@@ -2723,6 +2813,7 @@ static void gun_pos_to_gem_state(u32 gem_no, gem_config::gem_controller& control
+@@ -2723,6 +2842,7 @@ static void gun_pos_to_gem_state(u32 gem_no, gem_config::gem_controller& control
  
  error_code cellGemCalibrate(u32 gem_num)
  {
@@ -137,7 +166,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemCalibrate(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2754,6 +2845,7 @@ error_code cellGemCalibrate(u32 gem_num)
+@@ -2754,6 +2874,7 @@ error_code cellGemCalibrate(u32 gem_num)
  
  error_code cellGemClearStatusFlags(u32 gem_num, u64 mask)
  {
@@ -145,7 +174,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemClearStatusFlags(gem_num=%d, mask=0x%x)", gem_num, mask);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2779,6 +2871,7 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
+@@ -2779,6 +2900,7 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -153,7 +182,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemConvertVideoFinish()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2805,6 +2898,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
+@@ -2805,6 +2927,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -161,7 +190,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemConvertVideoStart(video_frame=*0x%x)", video_frame);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2841,6 +2935,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
+@@ -2841,6 +2964,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
  
  error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
  {
@@ -169,7 +198,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemEnableCameraPitchAngleCorrection(enable_flag=%d)", enable_flag);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2859,6 +2954,7 @@ error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
+@@ -2859,6 +2983,7 @@ error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
  
  error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
  {
@@ -177,7 +206,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemEnableMagnetometer(gem_num=%d, enable=0x%x)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2908,6 +3004,7 @@ error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
+@@ -2908,6 +3033,7 @@ error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
  
  error_code cellGemEnableMagnetometer2(u32 gem_num, u32 enable)
  {
@@ -185,7 +214,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.trace("cellGemEnableMagnetometer2(gem_num=%d, enable=0x%x)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2958,6 +3055,7 @@ error_code cellGemEnd(ppu_thread& ppu)
+@@ -2958,6 +3084,7 @@ error_code cellGemEnd(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -193,7 +222,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemEnd()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2989,6 +3087,7 @@ error_code cellGemEnd(ppu_thread& ppu)
+@@ -2989,6 +3116,7 @@ error_code cellGemEnd(ppu_thread& ppu)
  
  error_code cellGemFilterState(u32 gem_num, u32 enable)
  {
@@ -201,7 +230,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemFilterState(gem_num=%d, enable=%d)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3012,6 +3111,7 @@ error_code cellGemFilterState(u32 gem_num, u32 enable)
+@@ -3012,6 +3140,7 @@ error_code cellGemFilterState(u32 gem_num, u32 enable)
  
  error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
  {
@@ -209,7 +238,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemForceRGB(gem_num=%d, r=%f, g=%f, b=%f)", gem_num, r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3047,6 +3147,7 @@ error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
+@@ -3047,6 +3176,7 @@ error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
  
  error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos)
  {
@@ -217,7 +246,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetAccelerometerPositionInDevice(gem_num=%d, pos=*0x%x)", gem_num, pos);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3072,6 +3173,7 @@ error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos
+@@ -3072,6 +3202,7 @@ error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos
  
  error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
  {
@@ -225,7 +254,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetAllTrackableHues(hues=*0x%x)", hues);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3099,6 +3201,7 @@ error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
+@@ -3099,6 +3230,7 @@ error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
  
  error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
  {
@@ -233,7 +262,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetCameraState(camera_state=0x%x)", camera_state);
  
  	[[maybe_unused]] auto& gem = g_fxo->get<gem_config>();
-@@ -3120,6 +3223,7 @@ error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
+@@ -3120,6 +3252,7 @@ error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
  
  error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -241,7 +270,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetEnvironmentLightingColor(r=*0x%x, g=*0x%x, b=*0x%x)", r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3150,6 +3254,7 @@ error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm
+@@ -3150,6 +3283,7 @@ error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm
  
  error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8> pixels)
  {
@@ -249,7 +278,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetHuePixels(camera_frame=*0x%x, hue=%d, pixels=*0x%x)", camera_frame, hue, pixels);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3176,6 +3281,7 @@ error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8>
+@@ -3176,6 +3310,7 @@ error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8>
  
  error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_image_state)
  {
@@ -257,7 +286,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemGetImageState(gem_num=%d, image_state=&0x%x)", gem_num, gem_image_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3233,6 +3339,7 @@ error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_imag
+@@ -3233,6 +3368,7 @@ error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_imag
  
  error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, vm::ptr<CellGemInertialState> inertial_state)
  {
@@ -265,7 +294,26 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemGetInertialState(gem_num=%d, state_flag=%d, timestamp=0x%x, inertial_state=0x%x)", gem_num, state_flag, timestamp, inertial_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3310,6 +3417,7 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
+@@ -3294,6 +3430,18 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
+ 		case move_handler::mouse:
+ 		case move_handler::raw_mouse:
+ 			mouse_input_to_pad(gem_num, inertial_state->pad.digitalbuttons, inertial_state->pad.analog_T);
++			// Order Up VR: motion sensors from the real controller
++			if (gem_num == 0)
++			{
++				if (const ouvr::pointer_state vr = ouvr::get_pointer(); vr.active && vr.motion)
++				{
++					for (u32 i = 0; i < 3; i++)
++					{
++						inertial_state->accelerometer[i] = vr.acc_dev[i];
++						inertial_state->gyro[i] = vr.gyro_dev[i];
++					}
++				}
++			}
+ 			break;
+ #ifdef HAVE_LIBEVDEV
+ 		case move_handler::gun:
+@@ -3310,6 +3458,7 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
  
  error_code cellGemGetInfo(vm::ptr<CellGemInfo> info)
  {
@@ -273,7 +321,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.trace("cellGemGetInfo(info=*0x%x)", info);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3345,6 +3453,7 @@ u32 GemGetMemorySize(s32 max_connect)
+@@ -3345,6 +3494,7 @@ u32 GemGetMemorySize(s32 max_connect)
  
  error_code cellGemGetMemorySize(s32 max_connect)
  {
@@ -281,7 +329,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemGetMemorySize(max_connect=%d)", max_connect);
  
  	if (max_connect > CELL_GEM_MAX_NUM || max_connect <= 0)
-@@ -3357,6 +3466,7 @@ error_code cellGemGetMemorySize(s32 max_connect)
+@@ -3357,6 +3507,7 @@ error_code cellGemGetMemorySize(s32 max_connect)
  
  error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -289,7 +337,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetRGB(gem_num=%d, r=*0x%x, g=*0x%x, b=*0x%x)", gem_num, r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3383,6 +3493,7 @@ error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f3
+@@ -3383,6 +3534,7 @@ error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f3
  
  error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
  {
@@ -297,7 +345,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemGetRumble(gem_num=%d, rumble=*0x%x)", gem_num, rumble);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3406,6 +3517,7 @@ error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
+@@ -3406,6 +3558,7 @@ error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
  
  error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<CellGemState> gem_state)
  {
@@ -305,7 +353,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemGetState(gem_num=%d, flag=0x%x, time=0x%llx, gem_state=*0x%x)", gem_num, flag, time_parameter, gem_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3525,6 +3637,7 @@ error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<Ce
+@@ -3525,6 +3678,7 @@ error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<Ce
  
  error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
  {
@@ -313,7 +361,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.trace("cellGemGetStatusFlags(gem_num=%d, flags=*0x%x)", gem_num, flags);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3543,11 +3656,21 @@ error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
+@@ -3543,11 +3697,21 @@ error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
  
  	*flags = gem.runtime_status_flags | gem.controllers[gem_num].calibration_status_flags;
  
@@ -335,7 +383,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemGetTrackerHue(gem_num=%d, hue=*0x%x)", gem_num, hue);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3578,6 +3701,7 @@ error_code cellGemGetTrackerHue(u32 gem_num, vm::ptr<u32> hue)
+@@ -3578,6 +3742,7 @@ error_code cellGemGetTrackerHue(u32 gem_num, vm::ptr<u32> hue)
  
  error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -343,7 +391,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemHSVtoRGB(h=%f, s=%f, v=%f, r=*0x%x, g=*0x%x, b=*0x%x)", h, s, v, r, g, b);
  
  	if (!r || !g || !b)
-@@ -3642,6 +3766,7 @@ error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g,
+@@ -3642,6 +3807,7 @@ error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g,
  
  error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
  {
@@ -351,7 +399,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemInit(attribute=*0x%x)", attribute);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3695,6 +3820,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
+@@ -3695,6 +3861,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
  
  error_code cellGemInvalidateCalibration(s32 gem_num)
  {
@@ -359,7 +407,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemInvalidateCalibration(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3726,6 +3852,7 @@ error_code cellGemInvalidateCalibration(s32 gem_num)
+@@ -3726,6 +3893,7 @@ error_code cellGemInvalidateCalibration(s32 gem_num)
  
  s32 cellGemIsTrackableHue(u32 hue)
  {
@@ -367,7 +415,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemIsTrackableHue(hue=%d)", hue);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3748,6 +3875,7 @@ s32 cellGemIsTrackableHue(u32 hue)
+@@ -3748,6 +3916,7 @@ s32 cellGemIsTrackableHue(u32 hue)
  
  error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
  {
@@ -375,7 +423,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemPrepareCamera(max_exposure=%d, image_quality=%f)", max_exposure, image_quality);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3800,6 +3928,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
+@@ -3800,6 +3969,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
  
  error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_attribute)
  {
@@ -383,7 +431,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemPrepareVideoConvert(vc_attribute=*0x%x)", vc_attribute);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3849,6 +3978,7 @@ error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_
+@@ -3849,6 +4019,7 @@ error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_
  
  error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, vm::ptr<u8[CELL_GEM_EXTERNAL_PORT_DEVICE_INFO_SIZE]> ext_info)
  {
@@ -391,7 +439,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemReadExternalPortDeviceInfo(gem_num=%d, ext_id=*0x%x, ext_info=%s)", gem_num, ext_id, ext_info);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3933,6 +4063,7 @@ error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, v
+@@ -3933,6 +4104,7 @@ error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, v
  
  error_code cellGemReset(u32 gem_num)
  {
@@ -399,7 +447,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemReset(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3957,6 +4088,7 @@ error_code cellGemReset(u32 gem_num)
+@@ -3957,6 +4129,7 @@ error_code cellGemReset(u32 gem_num)
  
  error_code cellGemSetRumble(u32 gem_num, u8 rumble)
  {
@@ -407,7 +455,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.trace("cellGemSetRumble(gem_num=%d, rumble=0x%x)", gem_num, rumble);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4005,6 +4137,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
+@@ -4005,6 +4178,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
  	const f32 z_direction_z = z_direction.fr[2];
  	const f32 z_direction_w = z_direction.fr[3];
  
@@ -415,7 +463,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemSetYaw(gem_num=%d, z_direction_x=%f, z_direction_y=%f, z_direction_z=%f, z_direction_w=%f)", gem_num, z_direction_x, z_direction_y, z_direction_z, z_direction_w);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4047,6 +4180,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
+@@ -4047,6 +4221,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
  
  error_code cellGemTrackHues(vm::cptr<u32> req_hues, vm::ptr<u32> res_hues)
  {
@@ -423,7 +471,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.todo("cellGemTrackHues(req_hues=%s, res_hues=*0x%x)", req_hues ? fmt::format("*0x%x [%d, %d, %d, %d]", req_hues, req_hues[0], req_hues[1], req_hues[2], req_hues[3]) : "*0x0", res_hues);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4136,6 +4270,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
+@@ -4136,6 +4311,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -431,7 +479,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemUpdateFinish()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4170,6 +4305,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
+@@ -4170,6 +4346,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
  
  error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
  {
@@ -439,7 +487,7 @@ index 0dfcf9cb7..d4671faa3 100644
  	cellGem.warning("cellGemUpdateStart(camera_frame=*0x%x, timestamp=%d)", camera_frame, timestamp);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4215,6 +4351,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
+@@ -4215,6 +4392,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
  
  error_code cellGemWriteExternalPort(u32 gem_num, vm::ptr<u8[CELL_GEM_EXTERNAL_PORT_OUTPUT_SIZE]> data)
  {
@@ -449,16 +497,17 @@ index 0dfcf9cb7..d4671faa3 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..8a924a66f
+index 000000000..a38e4001e
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1331 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
 +#ifdef _WIN32
 +
 +#include "Emu/System.h"
++#include "Emu/system_progress.hpp"
 +#include "Utilities/File.h"
 +
 +#ifndef WIN32_LEAN_AND_MEAN
@@ -533,6 +582,29 @@ index 000000000..8a924a66f
 +		vec3 cross(vec3 a, vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 +		vec3 to_vec(const XrVector3f& v) { return {v.x, v.y, v.z}; }
 +
++		vec3 normalize(vec3 v)
++		{
++			const f32 l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
++			return l > 1e-6f ? v * (1.0f / l) : v;
++		}
++
++		XrQuaternionf qmul(const XrQuaternionf& a, const XrQuaternionf& b)
++		{
++			return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
++			        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
++			        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
++			        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
++		}
++
++		XrQuaternionf qconj(const XrQuaternionf& q) { return {-q.x, -q.y, -q.z, q.w}; }
++
++		XrQuaternionf qnorm(XrQuaternionf q)
++		{
++			const f32 l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
++			if (l < 1e-6f) return {0.f, 0.f, 0.f, 1.f};
++			return {q.x / l, q.y / l, q.z / l, q.w / l};
++		}
++
 +		vec3 rotate(const XrQuaternionf& q, vec3 v)
 +		{
 +			const vec3 u{q.x, q.y, q.z};
@@ -601,6 +673,12 @@ index 000000000..8a924a66f
 +
 +			int active_hand = 1; // 0 = left, 1 = right
 +			u64 frames = 0;
++
++			// Motion (PS Move emulation)
++			bool have_prev = false, lp_init = false;
++			vec3 prev_vel{}, accel{}, prev_angvel{}, angaccel{}, lp_pos{};
++			u64 assist_start = 0;     // GetTickCount64() when a stick-flick flip started, 0 = none
++			bool flick_armed = true;
 +		};
 +
 +		constexpr u32 panel_w = 1024, panel_h = 512;
@@ -881,10 +959,57 @@ index 000000000..8a924a66f
 +			return 0;
 +		}
 +
++		// RPCS3's own first-start preparation progress (the same numbers its progress dialog shows).
++		bool get_progress(u32& percent, std::string& text, u32& done, u32& total)
++		{
++			const u32 ftotal = g_progr_ftotal, ptotal = g_progr_ptotal, pdone = g_progr_pdone;
++			const u64 ftotal_bits = g_progr_ftotal_bits, fknown_bits = g_progr_fknown_bits;
++			if (!ftotal && !ptotal) return false;
++			const bool use_bits = fknown_bits && ftotal_bits;
++			const u64 known = use_bits ? fknown_bits : ftotal;
++			const u64 all = std::max<u64>(ptotal, 1) * std::max<u64>(use_bits ? ftotal_bits : ftotal, 1) / std::max<u64>(known, 1);
++			percent = pdone >= all ? 100 : static_cast<u32>(pdone * 100 / all);
++			text = std::string(g_progr_text);
++			done = pdone;
++			total = ptotal;
++			return true;
++		}
++
 +		// What the status panel should say right now. Empty = the game picture is live, no panel.
++		// A first line "@progress=N" makes the panel draw a progress bar at N percent.
 +		std::string panel_message()
 +		{
 +			const u64 now = GetTickCount64();
++
++			static u64 progress_since = 0;
++			static u32 logged_percent = 1000;
++			u32 percent = 0, done = 0, total = 0;
++			std::string what;
++			if (get_progress(percent, what, done, total))
++			{
++				if (!progress_since) progress_since = now;
++				if (percent / 5 != logged_percent / 5) { vr_log("Progress: %u%% %s (%u of %u)", percent, what.c_str(), done, total); logged_percent = percent; }
++
++				// While the game picture is already live, RPCS3 draws its own progress on it; do not cover it.
++				const u64 live_frame = g_last_frame_tick.load();
++				if (live_frame && now - live_frame < 3000) return {};
++
++				char eta[96] = "";
++				const u64 elapsed = (now - progress_since) / 1000;
++				if (percent >= 3 && percent < 100 && elapsed >= 10)
++				{
++					const u64 left = elapsed * (100 - percent) / percent;
++					if (left >= 90) std::snprintf(eta, sizeof(eta), "About %llu minutes left.", static_cast<unsigned long long>((left + 30) / 60));
++					else std::snprintf(eta, sizeof(eta), "Less than 2 minutes left.");
++				}
++				char buf[768];
++				std::snprintf(buf, sizeof(buf),
++					"@progress=%u\nPreparing the game for this PC:  %u%%\n%s%s\n\nThis happens only on the first start and after an update. %s",
++					percent, percent, what.empty() ? "Compiling" : what.c_str(),
++					total ? (" (" + std::to_string(done) + " of " + std::to_string(total) + ")").c_str() : "", eta);
++				return buf;
++			}
++			progress_since = 0;
 +			const u64 last_frame = g_last_frame_tick.load();
 +			const u64 no_window = g_window_unavailable_tick.load();
 +
@@ -975,8 +1100,37 @@ index 000000000..8a924a66f
 +			RECT rt{48, 36, static_cast<LONG>(panel_w) - 48, 120};
 +			DrawTextW(dc, L"ORDER UP VR", -1, &rt, DT_LEFT | DT_TOP | DT_SINGLELINE);
 +
++			// Optional progress bar
++			std::string msg_body = text;
++			int bar_percent = -1;
++			if (msg_body.rfind("@progress=", 0) == 0)
++			{
++				bar_percent = std::clamp(std::atoi(msg_body.c_str() + 10), 0, 100);
++				const usz nl = msg_body.find('\n');
++				msg_body = nl == std::string::npos ? std::string() : msg_body.substr(nl + 1);
++			}
++			if (bar_percent >= 0)
++			{
++				const LONG x0 = 48, x1 = static_cast<LONG>(panel_w) - 48, y0 = static_cast<LONG>(panel_h) - 74, y1 = y0 + 22;
++				HBRUSH track = CreateSolidBrush(RGB(52, 58, 70));
++				HBRUSH fill = CreateSolidBrush(RGB(255, 138, 0));
++				HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
++				HGDIOBJ old_brush = SelectObject(dc, track);
++				RoundRect(dc, x0, y0, x1, y1, 22, 22);
++				const LONG xf = x0 + (x1 - x0) * bar_percent / 100;
++				if (xf > x0 + 22)
++				{
++					SelectObject(dc, fill);
++					RoundRect(dc, x0, y0, xf, y1, 22, 22);
++				}
++				SelectObject(dc, old_brush);
++				SelectObject(dc, old_pen);
++				DeleteObject(track);
++				DeleteObject(fill);
++			}
++
 +			wchar_t wide[1024]{};
-+			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide, 1023);
++			MultiByteToWideChar(CP_UTF8, 0, msg_body.c_str(), -1, wide, 1023);
 +			SelectObject(dc, body);
 +			SetTextColor(dc, RGB(235, 235, 240));
 +			RECT rb{48, 130, static_cast<LONG>(panel_w) - 48, static_cast<LONG>(panel_h) - 30};
@@ -1144,6 +1298,108 @@ index 000000000..8a924a66f
 +				xr.screen_center.x, xr.screen_center.y, xr.screen_center.z, xr.screen_yaw * 57.29578f, xr.screen_width, xr.screen_distance);
 +		}
 +
++		// Rotates a LOCAL-space vector into the virtual screen's frame (x right, y up, z towards the player),
++		// which is the frame of the emulated PS Eye camera.
++		vec3 to_screen(const xr_state& xr, vec3 v)
++		{
++			const f32 c = std::cos(xr.screen_yaw), s = std::sin(xr.screen_yaw);
++			return {v.x * c - v.z * s, v.y, v.x * s + v.z * c};
++		}
++
++		// Fills the PS Move motion fields from the real controller pose and velocity.
++		void compute_motion(xr_state& xr, const XrSpaceLocation& aim, const XrSpaceVelocity& sv, pointer_state& out, f32 dt, f32 width, f32 height)
++		{
++			const XrQuaternionf qs{0.f, std::sin(xr.screen_yaw * 0.5f), 0.f, std::cos(xr.screen_yaw * 0.5f)};
++			const XrQuaternionf qc = qnorm(qmul(qconj(qs), aim.pose.orientation)); // controller orientation, screen frame
++			const vec3 p = to_screen(xr, to_vec(aim.pose.position) - xr.screen_center); // metres
++
++			// Split the orientation into "aiming at the screen" (already sent as the pointer) and the rest (twist, or
++			// pointing past the screen edge, as in a flick). The rest is what the game would see a real Move do.
++			const vec3 d = rotate(qc, {0.f, 0.f, -1.f});
++			const f32 dist = std::max(p.z, 0.2f);
++			f32 tx = d.z < -0.05f ? d.x / -d.z : (d.x >= 0.f ? 10.f : -10.f);
++			f32 ty = d.z < -0.05f ? d.y / -d.z : (d.y >= 0.f ? 10.f : -10.f);
++			tx = std::clamp(tx, (-width * 0.5f - p.x) / dist, (width * 0.5f - p.x) / dist);
++			ty = std::clamp(ty, (-height * 0.5f - p.y) / dist, (height * 0.5f - p.y) / dist);
++			const vec3 dc = normalize({tx, ty, -1.f});
++			const vec3 fwd{0.f, 0.f, -1.f};
++			const vec3 axis = cross(fwd, dc);
++			const XrQuaternionf qdir = qnorm({axis.x, axis.y, axis.z, 1.f + dot(fwd, dc)});
++			XrQuaternionf r = qnorm(qmul(qconj(qdir), qc));
++			if (r.w < 0.f) r = {-r.x, -r.y, -r.z, -r.w};
++			out.rq[0] = r.x; out.rq[1] = r.y; out.rq[2] = r.z; out.rq[3] = r.w;
++
++			vec3 v{}, av{};
++			if (sv.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) v = to_screen(xr, to_vec(sv.linearVelocity)) * 1000.f;
++			if (sv.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) av = to_screen(xr, to_vec(sv.angularVelocity));
++			if (xr.have_prev && dt > 0.f)
++			{
++				xr.accel = xr.accel * 0.5f + ((v - xr.prev_vel) * (1.f / dt)) * 0.5f;
++				xr.angaccel = xr.angaccel * 0.5f + ((av - xr.prev_angvel) * (1.f / dt)) * 0.5f;
++			}
++			xr.prev_vel = v;
++			xr.prev_angvel = av;
++			xr.have_prev = true;
++
++			// Quick hand movement relative to where the hand has been over the last ~quarter second
++			const vec3 pm = p * 1000.f;
++			if (!xr.lp_init) { xr.lp_pos = pm; xr.lp_init = true; }
++			xr.lp_pos = xr.lp_pos + (pm - xr.lp_pos) * std::min(1.f, dt / 0.25f);
++			const vec3 disp = pm - xr.lp_pos;
++
++			for (int i = 0; i < 3; i++)
++			{
++				out.vel[i] = (&v.x)[i];
++				out.accel[i] = (&xr.accel.x)[i];
++				out.angvel[i] = (&av.x)[i];
++				out.angaccel[i] = (&xr.angaccel.x)[i];
++				out.disp[i] = (&disp.x)[i];
++			}
++
++			// Inertial sensors in device axes (Move: x right, y towards the sphere, z up)
++			const XrQuaternionf qi = qconj(qc);
++			const vec3 a_dev = rotate(qi, xr.accel * (1.f / 9810.f) + vec3{0.f, 1.f, 0.f});
++			const vec3 g_dev = rotate(qi, av);
++			out.acc_dev[0] = a_dev.x; out.acc_dev[1] = -a_dev.z; out.acc_dev[2] = a_dev.y;
++			out.gyro_dev[0] = g_dev.x; out.gyro_dev[1] = -g_dev.z; out.gyro_dev[2] = g_dev.y;
++			out.motion = true;
++		}
++
++		// Stick-flick flip: plays a clean half-circle flip on top of the real motion, for when a real flick is not
++		// recognised. Wrist rotates up and back (about 150 degrees) while the hand traces a half circle.
++		void apply_flip_assist(xr_state& xr, pointer_state& out)
++		{
++			if (!xr.assist_start) return;
++			constexpr f32 duration = 0.45f, pi = 3.14159265f, radius = 120.f, max_angle = 2.6f, h = 0.01f;
++			const f32 t = (GetTickCount64() - xr.assist_start) / 1000.f;
++			if (t >= duration) { xr.assist_start = 0; return; }
++
++			const auto pos = [&](f32 tt) { const f32 u = std::clamp(tt / duration, 0.f, 1.f); return vec3{-radius * std::cos(pi * u) * std::sin(pi * u), radius * std::sin(pi * u), 0.f}; };
++			const auto ang = [&](f32 tt) { const f32 u = std::clamp(tt / duration, 0.f, 1.f); return max_angle * std::sin(pi * u); };
++
++			const vec3 p0 = pos(t), p1 = pos(t - h), p2 = pos(t - 2 * h);
++			const vec3 vel = (p0 - p1) * (1.f / h);
++			const vec3 acc = (p0 - p1 * 2.f + p2) * (1.f / (h * h));
++			const f32 a0 = ang(t), a1 = ang(t - h), a2 = ang(t - 2 * h);
++			const f32 w = (a0 - a1) / h, wa = (a0 - 2 * a1 + a2) / (h * h);
++
++			const XrQuaternionf rq{out.rq[0], out.rq[1], out.rq[2], out.rq[3]};
++			const XrQuaternionf flip{std::sin(a0 * 0.5f), 0.f, 0.f, std::cos(a0 * 0.5f)};
++			const XrQuaternionf r = qnorm(qmul(rq, flip));
++			out.rq[0] = r.x; out.rq[1] = r.y; out.rq[2] = r.z; out.rq[3] = r.w;
++			for (int i = 0; i < 3; i++)
++			{
++				out.vel[i] += (&vel.x)[i];
++				out.accel[i] += (&acc.x)[i];
++				out.disp[i] += (&p0.x)[i];
++			}
++			out.angvel[0] += w;
++			out.angaccel[0] += wa;
++			out.gyro_dev[0] += w;
++			out.acc_dev[2] += acc.y / 9810.f;
++			out.motion = true;
++		}
++
 +		void update_input(xr_state& xr, XrTime time, f32 dt)
 +		{
 +			pointer_state out;
@@ -1169,9 +1425,10 @@ index 000000000..8a924a66f
 +				const f32 trig[2] = {get_float(xr, xr.trigger, 0), get_float(xr, xr.trigger, 1)};
 +				const f32 grip[2] = {get_float(xr, xr.squeeze, 0), get_float(xr, xr.squeeze, 1)};
 +
-+				// The hand that pulls its trigger while the other one is idle becomes the pointer hand.
++				// The hand that pulls its trigger or grip while the other one is idle becomes the pointer hand.
 +				const int other = 1 - xr.active_hand;
-+				if (trig[other] > 0.5f && trig[xr.active_hand] < 0.2f)
++				const f32 press_other = std::max(trig[other], grip[other]), press_active = std::max(trig[xr.active_hand], grip[xr.active_hand]);
++				if (press_other > 0.5f && press_active < 0.2f)
 +				{
 +					xr.active_hand = other;
 +					vr_log("Pointer hand: %s", other ? "right" : "left");
@@ -1186,12 +1443,21 @@ index 000000000..8a924a66f
 +				const XrVector2f rs = get_stick(xr, 1);
 +				const XrVector2f ls = get_stick(xr, 0);
 +				bool moved = false;
-+				if (std::fabs(rs.y) > 0.6f)
++				const bool grabbing = grip[hand] > 0.5f;
++				const XrVector2f hs = hand ? rs : ls;
++				if (grabbing && hs.y > 0.75f && xr.flick_armed && !xr.assist_start)
++				{
++					xr.assist_start = GetTickCount64();
++					xr.flick_armed = false;
++					vr_log("Flip assist (stick flick)");
++				}
++				if (hs.y < 0.4f) xr.flick_armed = true;
++				if (!grabbing && std::fabs(rs.y) > 0.6f)
 +				{
 +					xr.screen_distance = std::clamp(xr.screen_distance + rs.y * dt * 1.0f, 1.0f, 8.0f);
 +					moved = true;
 +				}
-+				if (std::fabs(ls.y) > 0.6f)
++				if (!grabbing && std::fabs(ls.y) > 0.6f)
 +				{
 +					xr.screen_width = std::clamp(xr.screen_width + ls.y * dt * 1.5f, 1.0f, 10.0f);
 +				}
@@ -1204,7 +1470,8 @@ index 000000000..8a924a66f
 +				}
 +
 +				// Aim ray -> screen coordinates
-+				XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION};
++				XrSpaceVelocity aim_vel{XR_TYPE_SPACE_VELOCITY};
++				XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION, &aim_vel};
 +				if (XR_SUCCEEDED(xrLocateSpace(xr.aim_space[hand], xr.local_space, time, &aim)) &&
 +					(aim.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (aim.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
 +				{
@@ -1235,11 +1502,15 @@ index 000000000..8a924a66f
 +						out.x = -1.0f;
 +						out.y = -1.0f;
 +					}
++
++					compute_motion(xr, aim, aim_vel, out, dt, width, height);
 +				}
 +
-+				out.trigger = trig[hand];
-+				out.t = trig[hand] > 0.5f;
-+				out.move = grip[hand] > 0.5f;
++				// Grip grabs (the game's T button), trigger selects (the Move button), as in most VR games.
++				out.trigger = grip[hand];
++				out.t = grip[hand] > 0.5f;
++				out.move = trig[hand] > 0.5f;
++				apply_flip_assist(xr, out);
 +				out.cross = get_bool(xr, xr.btn_a);
 +				out.circle = get_bool(xr, xr.btn_b);
 +				out.square = get_bool(xr, xr.btn_x);
@@ -1563,10 +1834,10 @@ index 000000000..8a924a66f
 +#endif
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..8fcf74712
+index 000000000..29dbc672b
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,64 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -1597,6 +1868,18 @@ index 000000000..8fcf74712
 +		bool triangle = false;
 +		bool start = false;
 +		bool select = false;
++
++		// Real controller motion, in the emulated PS Eye camera frame (= the virtual screen: x right, y up,
++		// z towards the player). A real PS Move reports the same quantities, so the game's motion gestures work.
++		bool motion = false;
++		f32 rq[4] = {0.f, 0.f, 0.f, 1.f}; // rotation beyond aiming (wrist twist, flicking past the screen), x y z w
++		f32 vel[3] = {};       // mm/s
++		f32 accel[3] = {};     // mm/s^2
++		f32 angvel[3] = {};    // rad/s
++		f32 angaccel[3] = {};  // rad/s^2
++		f32 disp[3] = {};      // mm, quick hand movement (slow drift removed)
++		f32 acc_dev[3] = {0.f, 0.f, 1.f}; // accelerometer in device axes, G (gravity included)
++		f32 gyro_dev[3] = {};  // gyroscope in device axes, rad/s
 +	};
 +
 +	// Called by the renderer when a game boots / shuts down.
