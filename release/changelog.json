@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.6.0",
+    "date": "2026-11-17",
+    "notes": [
+      "True VR, first step: in the kitchen and the restaurant you are now inside the game in 3D instead of in front of a screen. The game is drawn separately for each eye from where your head really is, so you get real depth, can look around and lean in. Built from the camera data you collected: the mod recognises the game's camera in every 3D draw and re-renders it from your eyes.",
+      "The game's own horizon is levelled with the real one (the kitchen camera looks down at the counter, so you look down at it too, like a real cook) and the scale matches the real world.",
+      "Move with the left stick (walks where you look) and turn with the right stick in 30 degree steps. Left stick click recentres you at the game's camera.",
+      "The game's HUD, order tickets and pop-ups are placed in the world in front of you instead of being glued to your face, at the distance of the things you work on.",
+      "Pointing works in 3D: aim at things in the scene; the laser and ring follow into the scene.",
+      "Menus and loading screens switch to the big screen by themselves. Hold the left stick click for 1 second to switch between 3D and the big screen at any time (remembered for next time), for example if something looks wrong.",
+      "The How to play guide and the Controls card in the headset are updated with the new controls, and the launcher shows the guide again once.",
+      "Not yet tried in a headset. If 3D looks wrong, switch to the big screen (hold left stick click), then press Collect logs after the session and send the zip."
+    ]
+  },
+  {
     "version": "0.5.0",
     "date": "2026-11-17",
     "notes": [

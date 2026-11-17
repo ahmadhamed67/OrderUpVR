@@ -57,6 +57,7 @@ namespace OrderUpVR
         public bool Uninstalled { get; set; }        // removed with "keep my data"; setup offers to reuse it
         public string PreparedVersion { get; set; }  // mod version that already finished its first-start preparation
         public bool SeenHowTo { get; set; }          // the controls guide was shown once
+        public int HowToSeen { get; set; }           // revision of the controls guide last shown (shown again when controls change)
 
         public static string Folder { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OrderUpVR"); } }
         public static string FilePath { get { return Path.Combine(Folder, "settings.json"); } }

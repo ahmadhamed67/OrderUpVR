@@ -10,41 +10,63 @@ game sends to the PS3 graphics chip with every draw. RPCS3 sees those numbers. O
 of them is the camera, it can:
 
 1. **Head tracking**: replace the game's camera with the headset's position and rotation.
-2. **Stereo 3D**: draw each frame twice, once per eye, with the eyes about 6.4 cm apart, and send both
-   images to the headset as a real 3D view instead of a flat screen.
-3. **Free movement**: move that camera with the left stick (smooth or teleport, with comfort options).
+2. **Stereo 3D**: draw the scene from each eye, with the eyes about 6.4 cm apart, and send the images to the
+   headset as a real 3D view instead of a flat screen.
+3. **Free movement**: move that camera with the left stick.
 
 Hands and interaction come next:
 
 4. **Hands**: draw hand models at the controller positions inside the same 3D scene.
 5. **Direct grabbing**: when a hand closes (grip) on a food item or tool, translate the 3D hand position into
-   the game's own pointer and "grab" input, so the game's logic does the rest. Moving the hand moves the item;
-   flicking the wrist flips the burger, using the Move motion data that 0.4.0 already sends.
+   the game's own pointer and "grab" input, so the game's logic does the rest.
 
 ## Steps
 
-| Step | What | Needs |
+| Step | What | State |
 |---|---|---|
-| A | Find the camera: which shader constants are the view/projection, and how the kitchen's camera zooms between stations | Research data from normal play (built into 0.5.0) |
-| B | Stereo + head tracking on the kitchen (seated, camera at the counter) | Step A |
-| C | Comfort: recenter, height, smooth or snap turn, left-stick movement | Step B |
-| D | Hands drawn in the scene; grab and use items with the hands | Step B, and mapping 3D hand positions to the game's pointer |
-| E | Menus and 2D screens stay on the virtual screen; cutscenes on a cinema screen | Step B |
+| A | Find the camera | **Done** (from the 0.5.0 logs, see below) |
+| B | Stereo + head tracking in the kitchen and restaurant | **Built in 0.6.0**, waiting for a headset test |
+| C | Comfort: recenter, levelled horizon, snap turn, left-stick movement | **Built in 0.6.0** |
+| D | Hands drawn in the scene; grab and use items with the hands | Next |
+| E | Menus and 2D screens on the virtual screen | **Built in 0.6.0** (automatic switch) |
 
 Each step ships as one release once it works end to end, not as small pieces.
 
-## What step A needs from you
+## Step A results (0.5.0 research logs, one restaurant day)
 
-Version 0.5.0 records the game's camera data while you play, without slowing the game:
-`log/orderup_research.log` (camera-like matrices sampled every 20 s) and the game's vertex shader programs.
-After one normal session that reaches the kitchen and a few stations, press **Collect logs** in the launcher
-and send the zip. That is the data needed to locate the camera without trial-and-error runs.
+- Every 3D draw reads vertex constants **c1..c4 = the rows of one model-view-projection matrix**.
+- The projection is a standard right-handed perspective (w = -z) with no off-centre terms; its picture shape
+  matches the 1280x736 render target exactly (aspect 1.739).
+- Kitchen camera: near 1, far 20, pitched 45° down at the counter. Restaurant camera: near 2, far about 150,
+  level. The kitchen zooms between stations by changing the field of view.
+- 2D programs (HUD, menus, cursor) do not use c1..c4.
+- Units look like feet (a station close-up is about 4 units away), so 1 unit = 0.3048 m by default
+  (`worldscale=` in `config/orderupvr_state.txt` changes it).
 
-## Risks
+## How 0.6.0 renders in 3D
 
-- PS3 games often combine model, view and projection into one matrix per object. Then stereo needs the
-  projection split out in the shader rather than a single swapped number. The research data shows which case
-  this game is.
-- Effects drawn in screen space (shadows, glow, HUD) may need per-eye handling.
-- The game's own fixed camera cuts (zooming into a station) must be blended with free head movement so
-  they don't cause motion sickness.
+- The projection's depth terms (A, B) can be read exactly from any MVP whatever the model matrix, so each draw
+  is classified: same A/B as the main camera = 3D scene draw; flat draws on the same render target = 2D overlay;
+  everything else (shadow maps, other passes) is left alone.
+- The main camera's projection P is read from the first draw each frame whose picture shape matches the render
+  target. For a 3D draw the mod applies `X3 = Peye · Eye · Level · P⁻¹` after the game's vertex program, through
+  RPCS3's viewport (scale/offset) matrix. This replaces the game's projection with the headset eye's projection
+  and view, for any model, with no shader changes.
+- 2D overlays get `X2 = Peye · Eye · Level · S`, where S puts the overlay on a plane that exactly fills the game
+  camera's view at the median distance of the scene's objects. The HUD therefore sits in the world.
+- Level: world up is voted from the objects' own up axes (most scenery is not rotated), and removes the game
+  camera's pitch and roll so the real and game horizons agree.
+- Eyes alternate every frame (the game runs at 60 fps, so 30 per eye). Each eye image is submitted as an OpenXR
+  projection layer with the pose it was rendered from, so the runtime reprojects head motion at full headset rate.
+  `stereo=0` in the state file switches to one head-tracked image for both eyes (no depth, full rate).
+- Pointing: the controller ray is followed into the game camera's space to the overlay plane and projected with
+  the game's own camera, which gives the PS Move pointer position. The laser and ring are drawn at that point.
+- The game's own camera still decides the view and which objects exist (it culls what it cannot see), so
+  looking far past the game's view can show empty areas.
+
+## Risks and open questions for the headset test
+
+- Screen-space effects (glow, fades) may look off in one eye.
+- Objects the game culls outside its own view are missing when looking far to the side.
+- The world-up vote and the HUD distance need confirmation in the real kitchen.
+- If anything looks wrong, hold the left stick click for 1 second to go back to the big screen.

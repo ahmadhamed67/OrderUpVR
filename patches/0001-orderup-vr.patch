@@ -497,10 +497,10 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..8de8e9565
+index 000000000..ec62cf8db
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,1676 @@
+@@ -0,0 +1,2347 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -616,9 +616,6 @@ index 000000000..8de8e9565
 +		// ---------------------------------------------------------- shared state
 +		std::mutex g_state_mutex;
 +		pointer_state g_pointer;            // guarded by g_state_mutex
-+		std::vector<u8> g_frame;            // guarded by g_state_mutex
-+		u32 g_frame_w = 0, g_frame_h = 0;   // guarded by g_state_mutex
-+		bool g_frame_bgra = false;          // guarded by g_state_mutex
 +		u64 g_frame_id = 0;                 // guarded by g_state_mutex
 +		std::atomic<u64> g_last_frame_tick{0};          // GetTickCount64() of the newest game frame
 +		std::atomic<u64> g_window_unavailable_tick{0};  // last time the renderer had no window to present to
@@ -627,6 +624,136 @@ index 000000000..8de8e9565
 +		std::atomic<bool> g_stop{false};
 +		std::atomic<bool> g_session_running{false};
 +		std::thread g_thread;
++
++		// ------------------------------------------------------------- true VR
++		XrQuaternionf yaw_q(f32 yaw) { return {0.f, std::sin(yaw * 0.5f), 0.f, std::cos(yaw * 0.5f)}; }
++
++		// Rotation that takes the unit vector u onto +Y (sign = -1: the inverse rotation).
++		vec3 level(vec3 u, vec3 v, f32 sign = 1.f)
++		{
++			const vec3 a = cross(u, {0.f, 1.f, 0.f});
++			const f32 s = std::sqrt(dot(a, a)) * sign, c = u.y;
++			if (std::fabs(s) < 1e-6f) return c >= 0.f ? v : vec3{v.x, -v.y, -v.z};
++			const vec3 k = a * (1.f / std::fabs(s));
++			return v * c + cross(k, v) * s + k * (dot(k, v) * (1.f - c));
++		}
++
++		struct mat4 { f32 m[16]{}; };
++
++		mat4 mmul(const mat4& a, const mat4& b)
++		{
++			mat4 r;
++			for (int i = 0; i < 4; i++)
++				for (int j = 0; j < 4; j++)
++					r.m[i * 4 + j] = a.m[i * 4] * b.m[j] + a.m[i * 4 + 1] * b.m[4 + j] + a.m[i * 4 + 2] * b.m[8 + j] + a.m[i * 4 + 3] * b.m[12 + j];
++			return r;
++		}
++
++		bool minv(const mat4& in, mat4& out)
++		{
++			double a[4][8];
++			for (int i = 0; i < 4; i++)
++				for (int j = 0; j < 8; j++)
++					a[i][j] = j < 4 ? in.m[i * 4 + j] : (j - 4 == i ? 1.0 : 0.0);
++			for (int c = 0; c < 4; c++)
++			{
++				int p = c;
++				for (int r = c + 1; r < 4; r++) if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
++				if (std::fabs(a[p][c]) < 1e-12) return false;
++				if (p != c) for (int j = 0; j < 8; j++) std::swap(a[p][j], a[c][j]);
++				const double d = a[c][c];
++				for (int j = 0; j < 8; j++) a[c][j] /= d;
++				for (int r = 0; r < 4; r++)
++				{
++					if (r == c) continue;
++					const double f = a[r][c];
++					for (int j = 0; j < 8; j++) a[r][j] -= f * a[c][j];
++				}
++			}
++			for (int i = 0; i < 4; i++)
++				for (int j = 0; j < 4; j++)
++					out.m[i * 4 + j] = static_cast<f32>(a[i][j + 4]);
++			return true;
++		}
++
++		// The headset side publishes where the eyes are; the renderer side reads it once per game frame.
++		struct view_snapshot
++		{
++			bool valid = false;
++			XrPosef eye[2]{};
++			XrFovf fov[2]{};
++			vec3 player_pos{};   // the game camera's place in the room (LOCAL space)
++			f32 player_yaw = 0.f;
++			f32 unit = 0.3048f;  // metres per game unit
++			bool mode3d = true;
++			bool stereo = true;  // false = one image for both eyes (head tracked, no depth)
++		};
++		view_snapshot g_views;  // guarded by g_state_mutex
++
++		// The renderer side publishes the game camera, for pointing at things in 3D.
++		struct cam_info
++		{
++			bool valid = false;
++			f32 sx = 1.f, sy = 1.f, cx = 0.f, cy = 0.f;
++			vec3 up{0.f, 1.f, 0.f};  // world up, in the game camera's view space
++			f32 depth = 3.5f;         // typical distance of things in front of the camera (game units)
++		};
++		cam_info g_cam;         // guarded by g_state_mutex
++
++		// How a captured frame was rendered: eye -1 = flat (no true VR), 0/1 = that eye, 2 = one image for both eyes.
++		struct frame_tag
++		{
++			int eye = -1;
++			XrPosef rel{};       // eye pose relative to the player frame (metres)
++			XrFovf fov{};
++		};
++
++		// Renderer-thread state (only touched on the RSX thread).
++		struct rsx_vr_state
++		{
++			std::atomic<u64> gen{1};
++			bool begun = false;
++			bool enabled = false;
++			frame_tag tag;
++			mat4 E;              // levelled game camera space -> eye space (game units)
++			mat4 Pn;             // the headset eye's projection
++
++			struct proj { bool valid = false; f32 sx = 1.f, sy = 1.f, cx = 0.f, cy = 0.f, A = -1.f, B = -1.f; };
++			proj cam;
++			bool cam_this_frame = false;
++			bool x3_ready = false, x2_ready = false;
++			mat4 X3, X2;
++
++			vec3 up{0.f, 1.f, 0.f};
++			bool have_up = false;
++			f32 depth = 3.5f;
++
++			u32 scene_off = ~0u, scene_w = 0, scene_h = 0;
++
++			int n3 = 0, n2 = 0, n0 = 0;
++			struct bucket { vec3 sum; int n; };
++			std::vector<bucket> votes;
++			std::vector<f32> depths;
++
++			int frames_with = 0, frames_without = 0;
++			bool want3d = false;
++			f32 unit = 0.3048f;
++
++			u64 last_log = 0, tot3 = 0, tot2 = 0, tot0 = 0, frames = 0;
++		};
++		rsx_vr_state g_rv;
++		frame_tag rv_end_frame();
++
++		// Newest captured frame per slot: 0 = left eye (or the one image for both eyes), 1 = right eye, 2 = flat.
++		struct pending_frame
++		{
++			std::vector<u8> px;
++			u32 w = 0, h = 0;
++			bool bgra = false;
++			u64 id = 0;
++			frame_tag tag;
++		};
++		pending_frame g_pending[3];  // guarded by g_state_mutex
 +
 +		// --------------------------------------------------------- OpenXR state
 +		struct xr_state
@@ -697,10 +824,34 @@ index 000000000..8de8e9565
 +			vec3 prev_vel{}, accel{}, prev_angvel{}, angaccel{}, lp_pos{};
 +			u64 assist_start = 0;     // GetTickCount64() when a stick-flick flip started, 0 = none
 +			bool flick_armed = true;
++
++			// True VR
++			bool mode3d = true;       // user choice: inside the game (true) or the big screen (false)
++			bool stereo = true;       // depth (eyes alternate) or one image for both eyes
++			f32 unit = 0.3048f;       // metres per game unit
++			vec3 player_pos{};        // where the game camera sits in the room
++			f32 player_yaw = 0.f;
++			XrSwapchain eye_sc[2]{};
++			std::vector<XrSwapchainImageD3D11KHR> eye_images[2];
++			bool eye_bgra[2]{};
++			u32 eye_w[2]{}, eye_h[2]{};
++			bool eye_has[2]{};
++			XrPosef eye_rel[2]{};
++			XrFovf eye_fov[2]{};
++			bool mono3d = false;
++			u64 last_3d_tick = 0;
++			bool live3d = false;
++			XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
++			bool views_valid = false;
++			u64 stick_down_since = 0; // left stick click: short = recentre, hold = switch 3D / screen
++			bool snap_armed = true;
 +		};
 +
++		vec3 to_player(const xr_state& xr, vec3 local) { return rotate(qconj(yaw_q(xr.player_yaw)), local - xr.player_pos); }
++		vec3 from_player(const xr_state& xr, vec3 rel) { return xr.player_pos + rotate(yaw_q(xr.player_yaw), rel); }
++
 +		constexpr u32 panel_w = 1024, panel_h = 512;
-+		constexpr u32 help_w = 1024, help_h = 600;
++		constexpr u32 help_w = 1024, help_h = 700;
 +		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
 +
@@ -1276,7 +1427,9 @@ index 000000000..8de8e9565
 +				"A / B / X / Y  -  Cross / Circle / Square / Triangle\n"
 +				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
 +				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
-+				"Screen  -  left stick click: recentre,  right stick: nearer / farther,\n      left stick: bigger / smaller\n"
++				"In the kitchen  -  look around and lean in. Left stick: walk,\n      right stick: turn\n"
++				"Big screen (menus)  -  right stick: nearer / farther,  left stick: size\n"
++				"Left stick click: recentre.  Hold it 1 s: switch 3D / big screen\n"
 +				"Hold Left MENU for 2 seconds to show this card again.");
 +		}
 +
@@ -1393,49 +1546,105 @@ index 000000000..8de8e9565
 +			return true;
 +		}
 +
-+		// Copies the newest game frame (if any) into the swapchain.
-+		void upload_frame(xr_state& xr)
++		bool upload_image(xr_state& xr, XrSwapchain sc, std::vector<XrSwapchainImageD3D11KHR>& images, std::vector<u8>& frame, u32 w, bool src_bgra, bool dst_bgra)
 +		{
-+			std::vector<u8> frame;
-+			u32 w = 0, h = 0;
-+			bool bgra = false;
-+			{
-+				std::lock_guard lock(g_state_mutex);
-+				if (g_frame_id == xr.shown_frame_id || g_frame.empty()) return;
-+				frame.swap(g_frame);
-+				w = g_frame_w;
-+				h = g_frame_h;
-+				bgra = g_frame_bgra;
-+				xr.shown_frame_id = g_frame_id;
-+			}
-+
-+			if (!w || !h || frame.size() < static_cast<usz>(w) * h * 4) return;
-+
-+			if (xr.swapchain == XR_NULL_HANDLE || xr.sc_w != w || xr.sc_h != h)
-+			{
-+				if (!create_swapchain(xr, w, h)) return;
-+			}
-+
-+			if (bgra != xr.swapchain_is_bgra)
++			if (src_bgra != dst_bgra)
 +			{
 +				u8* p = frame.data();
-+				for (usz i = 0, n = static_cast<usz>(w) * h; i < n; i++, p += 4) std::swap(p[0], p[2]);
++				for (usz i = 0, n = frame.size() / 4; i < n; i++, p += 4) std::swap(p[0], p[2]);
 +			}
 +
 +			u32 index = 0;
 +			XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-+			if (XR_FAILED(xrAcquireSwapchainImage(xr.swapchain, &acquire, &index))) return;
++			if (XR_FAILED(xrAcquireSwapchainImage(sc, &acquire, &index))) return false;
 +
++			bool ok = false;
 +			XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
 +			wait.timeout = XR_INFINITE_DURATION;
-+			if (XR_SUCCEEDED(xrWaitSwapchainImage(xr.swapchain, &wait)))
++			if (XR_SUCCEEDED(xrWaitSwapchainImage(sc, &wait)))
 +			{
-+				xr.context->UpdateSubresource(xr.images[index].texture, 0, nullptr, frame.data(), w * 4, 0);
-+				xr.have_image = true;
++				xr.context->UpdateSubresource(images[index].texture, 0, nullptr, frame.data(), w * 4, 0);
++				ok = true;
 +			}
 +
 +			XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-+			xrReleaseSwapchainImage(xr.swapchain, &release);
++			xrReleaseSwapchainImage(sc, &release);
++			return ok;
++		}
++
++		bool create_eye_swapchain(xr_state& xr, int eye, u32 w, u32 h)
++		{
++			if (xr.eye_sc[eye] != XR_NULL_HANDLE)
++			{
++				xrDestroySwapchain(xr.eye_sc[eye]);
++				xr.eye_sc[eye] = XR_NULL_HANDLE;
++				xr.eye_images[eye].clear();
++				xr.eye_has[eye] = false;
++			}
++			const s64 format = pick_format(xr, xr.eye_bgra[eye]);
++			if (!format) return false;
++			XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
++			info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
++			info.format = format; info.sampleCount = 1; info.width = w; info.height = h; info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
++			if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &xr.eye_sc[eye]), "xrCreateSwapchain(eye)")) return false;
++			u32 count = 0;
++			xrEnumerateSwapchainImages(xr.eye_sc[eye], 0, &count, nullptr);
++			xr.eye_images[eye].assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
++			if (!xr_ok(xr, xrEnumerateSwapchainImages(xr.eye_sc[eye], count, &count,
++				reinterpret_cast<XrSwapchainImageBaseHeader*>(xr.eye_images[eye].data())), "xrEnumerateSwapchainImages(eye)"))
++			{
++				xrDestroySwapchain(xr.eye_sc[eye]);
++				xr.eye_sc[eye] = XR_NULL_HANDLE;
++				return false;
++			}
++			xr.eye_w[eye] = w;
++			xr.eye_h[eye] = h;
++			vr_log("Eye %d swapchain: %ux%u", eye, w, h);
++			return true;
++		}
++
++		// Copies the newest game frames (if any) into the swapchains: flat frames to the screen, 3D frames to their eye.
++		void upload_frame(xr_state& xr)
++		{
++			for (int slot = 0; slot < 3; slot++)
++			{
++				pending_frame f;
++				{
++					std::lock_guard lock(g_state_mutex);
++					auto& p = g_pending[slot];
++					if (p.px.empty()) continue;
++					f.px.swap(p.px);
++					f.w = p.w; f.h = p.h; f.bgra = p.bgra; f.id = p.id; f.tag = p.tag;
++				}
++				if (!f.w || !f.h || f.px.size() < static_cast<usz>(f.w) * f.h * 4) continue;
++				xr.shown_frame_id = std::max(xr.shown_frame_id, f.id);
++
++				if (slot == 2)
++				{
++					if (xr.swapchain == XR_NULL_HANDLE || xr.sc_w != f.w || xr.sc_h != f.h)
++					{
++						if (!create_swapchain(xr, f.w, f.h)) continue;
++					}
++					if (upload_image(xr, xr.swapchain, xr.images, f.px, f.w, f.bgra, xr.swapchain_is_bgra)) xr.have_image = true;
++					continue;
++				}
++
++				const int eye = slot;
++				if (xr.eye_sc[eye] == XR_NULL_HANDLE || xr.eye_w[eye] != f.w || xr.eye_h[eye] != f.h)
++				{
++					if (!create_eye_swapchain(xr, eye, f.w, f.h)) continue;
++				}
++				const u64 now = GetTickCount64();
++				if (now - xr.last_3d_tick > 400) xr.eye_has[0] = xr.eye_has[1] = false; // do not pair with an old image
++				if (upload_image(xr, xr.eye_sc[eye], xr.eye_images[eye], f.px, f.w, f.bgra, xr.eye_bgra[eye]))
++				{
++					xr.eye_has[eye] = true;
++					xr.eye_rel[eye] = f.tag.rel;
++					xr.eye_fov[eye] = f.tag.fov;
++					xr.mono3d = f.tag.eye == 2;
++					xr.last_3d_tick = now;
++				}
++			}
 +		}
 +
 +		f32 get_float(xr_state& xr, XrAction action, int hand)
@@ -1479,6 +1688,10 @@ index 000000000..8de8e9565
 +			xr.screen_center.y = xr.last_head.y - 0.10f;
 +			xr.screen_yaw = std::atan2(-f.x, -f.z);
 +			xr.screen_placed = true;
++
++			// True VR: the game camera sits at the player's eyes, facing where they face
++			xr.player_pos = xr.last_head;
++			xr.player_yaw = xr.screen_yaw;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
 +				xr.screen_center.x, xr.screen_center.y, xr.screen_center.z, xr.screen_yaw * 57.29578f, xr.screen_width, xr.screen_distance);
 +		}
@@ -1492,11 +1705,13 @@ index 000000000..8de8e9565
 +		}
 +
 +		// Fills the PS Move motion fields from the real controller pose and velocity.
-+		void compute_motion(xr_state& xr, const XrSpaceLocation& aim, const XrSpaceVelocity& sv, pointer_state& out, f32 dt, f32 width, f32 height)
++		// center/yaw: the (virtual) screen the emulated PS Eye camera sits on.
++		void compute_motion(xr_state& xr, const XrSpaceLocation& aim, const XrSpaceVelocity& sv, pointer_state& out, f32 dt, f32 width, f32 height, vec3 center, f32 yaw)
 +		{
-+			const XrQuaternionf qs{0.f, std::sin(xr.screen_yaw * 0.5f), 0.f, std::cos(xr.screen_yaw * 0.5f)};
++			const auto to_s = [yaw](vec3 v) { const f32 c = std::cos(yaw), s = std::sin(yaw); return vec3{v.x * c - v.z * s, v.y, v.x * s + v.z * c}; };
++			const XrQuaternionf qs = yaw_q(yaw);
 +			const XrQuaternionf qc = qnorm(qmul(qconj(qs), aim.pose.orientation)); // controller orientation, screen frame
-+			const vec3 p = to_screen(xr, to_vec(aim.pose.position) - xr.screen_center); // metres
++			const vec3 p = to_s(to_vec(aim.pose.position) - center); // metres
 +
 +			// Split the orientation into "aiming at the screen" (already sent as the pointer) and the rest (twist, or
 +			// pointing past the screen edge, as in a flick). The rest is what the game would see a real Move do.
@@ -1515,8 +1730,8 @@ index 000000000..8de8e9565
 +			out.rq[0] = r.x; out.rq[1] = r.y; out.rq[2] = r.z; out.rq[3] = r.w;
 +
 +			vec3 v{}, av{};
-+			if (sv.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) v = to_screen(xr, to_vec(sv.linearVelocity)) * 1000.f;
-+			if (sv.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) av = to_screen(xr, to_vec(sv.angularVelocity));
++			if (sv.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) v = to_s(to_vec(sv.linearVelocity)) * 1000.f;
++			if (sv.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) av = to_s(to_vec(sv.angularVelocity));
 +			if (xr.have_prev && dt > 0.f)
 +			{
 +				xr.accel = xr.accel * 0.5f + ((v - xr.prev_vel) * (1.f / dt)) * 0.5f;
@@ -1621,14 +1836,27 @@ index 000000000..8de8e9565
 +				}
 +				const int hand = xr.active_hand;
 +
-+				// Screen adjustment: left stick click = recentre, right stick up/down = distance, left stick up/down = size.
-+				const bool recenter = get_bool(xr, xr.stick_click, xr.hand_path[0]);
-+				if (recenter && !xr.recenter_held) place_screen(xr);
-+				xr.recenter_held = recenter;
++				// Left stick click: short = recentre (screen and game camera), hold 1 s = switch inside-the-game 3D / big screen.
++				const u64 now_ms = GetTickCount64();
++				if (get_bool(xr, xr.stick_click, xr.hand_path[0]))
++				{
++					if (!xr.stick_down_since) xr.stick_down_since = now_ms;
++					else if (xr.stick_down_since != ~0ull && now_ms - xr.stick_down_since > 1000)
++					{
++						xr.mode3d = !xr.mode3d;
++						persist_set("mode", xr.mode3d ? "3d" : "screen");
++						vr_log("View mode: %s", xr.mode3d ? "inside the game (3D)" : "big screen");
++						xr.stick_down_since = ~0ull;
++					}
++				}
++				else
++				{
++					if (xr.stick_down_since && xr.stick_down_since != ~0ull) place_screen(xr);
++					xr.stick_down_since = 0;
++				}
 +
 +				const XrVector2f rs = get_stick(xr, 1);
 +				const XrVector2f ls = get_stick(xr, 0);
-+				bool moved = false;
 +				const bool grabbing = grip[hand] > 0.5f;
 +				const XrVector2f hs = hand ? rs : ls;
 +				if (grabbing && hs.y > 0.75f && xr.flick_armed && !xr.assist_start)
@@ -1638,27 +1866,112 @@ index 000000000..8de8e9565
 +					vr_log("Flip assist (stick flick)");
 +				}
 +				if (hs.y < 0.4f) xr.flick_armed = true;
-+				if (!grabbing && std::fabs(rs.y) > 0.6f)
++
++				if (xr.live3d)
 +				{
-+					xr.screen_distance = std::clamp(xr.screen_distance + rs.y * dt * 1.0f, 1.0f, 8.0f);
-+					moved = true;
++					// Inside the game: left stick walks (where you look), right stick turns in 30 degree steps.
++					if (!grabbing && (std::fabs(ls.x) > 0.2f || std::fabs(ls.y) > 0.2f))
++					{
++						vec3 f = xr.last_forward;
++						f.y = 0.f;
++						f = normalize(f);
++						const vec3 r{-f.z, 0.f, f.x};
++						xr.player_pos = xr.player_pos - (r * ls.x + f * ls.y) * (1.4f * dt);
++					}
++					if (!grabbing && std::fabs(rs.x) > 0.7f && xr.snap_armed)
++					{
++						const vec3 head_rel = to_player(xr, xr.last_head);
++						xr.player_yaw += rs.x > 0.f ? 0.5236f : -0.5236f;
++						xr.player_pos = xr.last_head - rotate(yaw_q(xr.player_yaw), head_rel);
++						xr.snap_armed = false;
++					}
++					if (std::fabs(rs.x) < 0.3f) xr.snap_armed = true;
 +				}
-+				if (!grabbing && std::fabs(ls.y) > 0.6f)
++				else
 +				{
-+					xr.screen_width = std::clamp(xr.screen_width + ls.y * dt * 1.5f, 1.0f, 10.0f);
++					// Big screen: right stick up/down = distance, left stick up/down = size.
++					bool moved = false;
++					if (!grabbing && std::fabs(rs.y) > 0.6f)
++					{
++						xr.screen_distance = std::clamp(xr.screen_distance + rs.y * dt * 1.0f, 1.0f, 8.0f);
++						moved = true;
++					}
++					if (!grabbing && std::fabs(ls.y) > 0.6f)
++					{
++						xr.screen_width = std::clamp(xr.screen_width + ls.y * dt * 1.5f, 1.0f, 10.0f);
++					}
++					if (moved)
++					{
++						// Slide the screen along its own normal, keeping its direction.
++						const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++						const vec3 anchor = xr.screen_center + normal * dot(xr.last_head - xr.screen_center, normal);
++						xr.screen_center = anchor - normal * xr.screen_distance;
++					}
 +				}
-+				if (moved)
++
++				cam_info cam;
 +				{
-+					// Slide the screen along its own normal, keeping its direction.
-+					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
-+					const vec3 anchor = xr.screen_center + normal * dot(xr.last_head - xr.screen_center, normal);
-+					xr.screen_center = anchor - normal * xr.screen_distance;
++					std::lock_guard lock(g_state_mutex);
++					cam = g_cam;
 +				}
 +
 +				// Aim ray -> screen coordinates
 +				XrSpaceVelocity aim_vel{XR_TYPE_SPACE_VELOCITY};
 +				XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION, &aim_vel};
-+				if (XR_SUCCEEDED(xrLocateSpace(xr.aim_space[hand], xr.local_space, time, &aim)) &&
++				if (xr.live3d && cam.valid && XR_SUCCEEDED(xrLocateSpace(xr.aim_space[hand], xr.local_space, time, &aim)) &&
++					(aim.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (aim.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
++				{
++					// Inside the game: follow the ray into the game camera's space and see where it meets the game's picture
++					// plane at the typical object distance; that point, seen from the game camera, is the pointer.
++					const f32 D = cam.depth;
++					const vec3 origin = to_vec(aim.pose.position);
++					const vec3 dir = rotate(aim.pose.orientation, {0.0f, 0.0f, -1.0f});
++					const vec3 o = level(cam.up, to_player(xr, origin) * (1.f / xr.unit), -1.f);
++					const vec3 d = level(cam.up, rotate(qconj(yaw_q(xr.player_yaw)), dir), -1.f);
++					const auto to_local = [&](f32 nx, f32 ny)
++					{
++						const vec3 q{D * (nx + cam.cx) / cam.sx, D * (ny + cam.cy) / cam.sy, -D};
++						return from_player(xr, level(cam.up, q) * xr.unit);
++					};
++
++					out.active = true;
++					if (d.z < -0.001f && (-D - o.z) / d.z > 0.f)
++					{
++						const f32 t = (-D - o.z) / d.z;
++						const vec3 q = o + d * t;
++						const f32 nx = (cam.sx * q.x - cam.cx * D) / D, ny = (cam.sy * q.y - cam.cy * D) / D;
++						out.x = (nx + 1.f) * 0.5f;
++						out.y = (1.f - ny) * 0.5f;
++						out.on_screen = out.x > 0.0f && out.x < 1.0f && out.y > 0.0f && out.y < 1.0f;
++
++						const auto alpha = [dt](f32 cutoff) { const f32 r = 2.f * 3.14159265f * cutoff * dt; return r / (r + 1.f); };
++						if (!xr.filter_init || !out.on_screen) { xr.fx = out.x; xr.fy = out.y; xr.fdx = xr.fdy = 0.f; xr.filter_init = out.on_screen; }
++						else
++						{
++							const f32 dx = (out.x - xr.fx) / dt, dy = (out.y - xr.fy) / dt;
++							xr.fdx += (dx - xr.fdx) * alpha(1.f);
++							xr.fdy += (dy - xr.fdy) * alpha(1.f);
++							const f32 speed = std::sqrt(xr.fdx * xr.fdx + xr.fdy * xr.fdy);
++							const f32 a = alpha(1.2f + 0.6f * speed);
++							xr.fx += (out.x - xr.fx) * a;
++							xr.fy += (out.y - xr.fy) * a;
++							out.x = xr.fx;
++							out.y = xr.fy;
++						}
++						xr.aim_origin = origin;
++						xr.aim_hit = to_local(out.x * 2.f - 1.f, 1.f - out.y * 2.f);
++					}
++					else
++					{
++						out.x = -1.0f;
++						out.y = -1.0f;
++					}
++
++					// The emulated PS Eye faces the player from the game picture
++					const f32 width = 2.f * D / cam.sx * xr.unit, height = 2.f * D / cam.sy * xr.unit;
++					compute_motion(xr, aim, aim_vel, out, dt, width, height, to_local(0.f, 0.f), xr.player_yaw);
++				}
++				else if (XR_SUCCEEDED(xrLocateSpace(xr.aim_space[hand], xr.local_space, time, &aim)) &&
 +					(aim.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (aim.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
 +				{
 +					const f32 aspect = xr.sc_h ? static_cast<f32>(xr.sc_w) / xr.sc_h : 16.0f / 9.0f;
@@ -1708,14 +2021,13 @@ index 000000000..8de8e9565
 +						out.y = -1.0f;
 +					}
 +
-+					compute_motion(xr, aim, aim_vel, out, dt, width, height);
++					compute_motion(xr, aim, aim_vel, out, dt, width, height, xr.screen_center, xr.screen_yaw);
 +				}
 +				xr.show_pointer = out.on_screen;
 +
 +				// Hold Left MENU for 2 seconds: show the controls card
 +				if (get_bool(xr, xr.btn_menu))
 +				{
-+					const u64 now_ms = GetTickCount64();
 +					if (!xr.menu_down_since) xr.menu_down_since = now_ms;
 +					else if (now_ms - xr.menu_down_since > 2000) { xr.help_until = now_ms + 30000; xr.menu_down_since = now_ms + 600000; }
 +				}
@@ -1794,12 +2106,41 @@ index 000000000..8de8e9565
 +			update_input(xr, frame_state.predictedDisplayTime, dt);
 +			upload_frame(xr);
 +
++			// True VR: where the eyes are, for the renderer's next frame
++			{
++				XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
++				li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
++				li.displayTime = frame_state.predictedDisplayTime;
++				li.space = xr.local_space;
++				XrViewState vs{XR_TYPE_VIEW_STATE};
++				u32 n = 0;
++				xr.views[0] = {XR_TYPE_VIEW};
++				xr.views[1] = {XR_TYPE_VIEW};
++				xr.views_valid = XR_SUCCEEDED(xrLocateViews(xr.session, &li, &vs, 2, &n, xr.views)) && n == 2 &&
++					(vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
++
++				std::lock_guard lock(g_state_mutex);
++				g_views.valid = xr.views_valid && xr.screen_placed && xr.session_state == XR_SESSION_STATE_FOCUSED;
++				for (int i = 0; i < 2; i++) { g_views.eye[i] = xr.views[i].pose; g_views.fov[i] = xr.views[i].fov; }
++				g_views.player_pos = xr.player_pos;
++				g_views.player_yaw = xr.player_yaw;
++				g_views.unit = xr.unit;
++				g_views.mode3d = xr.mode3d;
++				g_views.stereo = xr.stereo;
++			}
++			const u64 now_tick = GetTickCount64();
++			const bool was3d = xr.live3d;
++			xr.live3d = xr.mode3d && now_tick - xr.last_3d_tick < 400 && xr.eye_has[0] && (xr.mono3d || xr.eye_has[1]);
++			if (xr.live3d != was3d) vr_log("Headset view: %s", xr.live3d ? "inside the game (3D)" : "big screen");
++
 +			XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad panel{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad help{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad beam{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad dot_layer{XR_TYPE_COMPOSITION_LAYER_QUAD};
-+			const XrCompositionLayerBaseHeader* layers[5]{};
++			XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
++			XrCompositionLayerProjectionView pviews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
++			const XrCompositionLayerBaseHeader* layers[6]{};
 +			u32 layer_count = 0;
 +
 +			const std::string message = panel_message();
@@ -1815,7 +2156,27 @@ index 000000000..8de8e9565
 +				vr_log("Panel hidden: game picture is live");
 +			}
 +
-+			if (frame_state.shouldRender && xr.have_image && xr.screen_placed)
++			if (frame_state.shouldRender && xr.live3d && message.empty())
++			{
++				// Inside the game: each eye shows its newest image, from where that eye was when it was rendered
++				for (int i = 0; i < 2; i++)
++				{
++					const int src = xr.mono3d ? 0 : i;
++					const XrPosef& rel = xr.eye_rel[src];
++					const vec3 p = from_player(xr, to_vec(rel.position));
++					pviews[i].pose.position = {p.x, p.y, p.z};
++					pviews[i].pose.orientation = qnorm(qmul(yaw_q(xr.player_yaw), rel.orientation));
++					pviews[i].fov = xr.eye_fov[src];
++					pviews[i].subImage.swapchain = xr.eye_sc[src];
++					pviews[i].subImage.imageRect.offset = {0, 0};
++					pviews[i].subImage.imageRect.extent = {static_cast<s32>(xr.eye_w[src]), static_cast<s32>(xr.eye_h[src])};
++				}
++				proj.space = xr.local_space;
++				proj.viewCount = 2;
++				proj.views = pviews;
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
++			}
++			else if (frame_state.shouldRender && xr.have_image && xr.screen_placed)
 +			{
 +				quad.space = xr.local_space;
 +				quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1831,7 +2192,7 @@ index 000000000..8de8e9565
 +			if (!xr.pointer_images_tried) { xr.pointer_images_tried = true; make_pointer_images(xr); }
 +
 +			// Laser from the hand to the screen, and a cursor where it lands (no emulator delay)
-+			if (frame_state.shouldRender && xr.show_pointer && xr.have_image && message.empty())
++			if (frame_state.shouldRender && xr.show_pointer && (xr.have_image || xr.live3d) && message.empty())
 +			{
 +				const vec3 along = xr.aim_hit - xr.aim_origin;
 +				const f32 len = std::sqrt(dot(along, along));
@@ -1854,14 +2215,14 @@ index 000000000..8de8e9565
 +				}
 +				if (xr.cursor_ok)
 +				{
-+					const f32 size = std::clamp(xr.screen_width * 0.018f, 0.03f, 0.12f);
++					const f32 size = xr.live3d ? 0.03f : std::clamp(xr.screen_width * 0.018f, 0.03f, 0.12f);
 +					dot_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					dot_layer.space = xr.local_space;
 +					dot_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +					dot_layer.subImage.swapchain = xr.cursor;
 +					dot_layer.subImage.imageRect.extent = {64, 64};
 +					dot_layer.pose.position = {xr.aim_hit.x, xr.aim_hit.y, xr.aim_hit.z};
-+					dot_layer.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
++					dot_layer.pose.orientation = yaw_q(xr.live3d ? xr.player_yaw : xr.screen_yaw);
 +					dot_layer.size = {size, size};
 +					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot_layer);
 +				}
@@ -1884,12 +2245,13 @@ index 000000000..8de8e9565
 +				if (want && !xr.help_drawn) { draw_help(xr); xr.help_drawn = true; }
 +				if (want && xr.help_has && xr.screen_placed && frame_state.shouldRender)
 +				{
-+					// To the left of the screen, turned slightly towards the player
++					// To the left of the screen, turned slightly towards the player (inside the game: front left, facing the player)
 +					const vec3 right{std::cos(xr.screen_yaw), 0.0f, -std::sin(xr.screen_yaw)};
 +					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
 +					const f32 sh = xr.sc_w ? xr.screen_width * xr.sc_h / xr.sc_w : xr.screen_width * 9.f / 16.f;
-+					const vec3 pos = xr.screen_center - right * (xr.screen_width * 0.5f + help_width_m * 0.55f) + normal * 0.35f + vec3{0.f, sh * 0.5f - help_width_m * help_h / help_w * 0.5f, 0.f};
-+					const f32 yaw = xr.screen_yaw + 0.35f;
++					const vec3 pos = xr.live3d ? from_player(xr, {-0.95f, -0.15f, -1.1f})
++						: xr.screen_center - right * (xr.screen_width * 0.5f + help_width_m * 0.55f) + normal * 0.35f + vec3{0.f, sh * 0.5f - help_width_m * help_h / help_w * 0.5f, 0.f};
++					const f32 yaw = xr.live3d ? xr.player_yaw + 0.7f : xr.screen_yaw + 0.35f;
 +					help.space = xr.local_space;
 +					help.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +					help.subImage.swapchain = xr.help;
@@ -1938,6 +2300,13 @@ index 000000000..8de8e9565
 +			if (xr.help != XR_NULL_HANDLE) xrDestroySwapchain(xr.help);
 +			if (xr.cursor != XR_NULL_HANDLE) xrDestroySwapchain(xr.cursor);
 +			if (xr.laser != XR_NULL_HANDLE) xrDestroySwapchain(xr.laser);
++			for (auto sc : xr.eye_sc) if (sc != XR_NULL_HANDLE) xrDestroySwapchain(sc);
++			{
++				std::lock_guard lock(g_state_mutex);
++				g_views = {};
++				g_cam = {};
++				for (auto& p : g_pending) p = {};
++			}
 +			if (xr.session != XR_NULL_HANDLE) xrDestroySession(xr.session);
 +			if (xr.instance != XR_NULL_HANDLE) xrDestroyInstance(xr.instance);
 +			if (xr.context) xr.context->Release();
@@ -1950,6 +2319,14 @@ index 000000000..8de8e9565
 +			vr_log("Order Up VR starting (title %s)", Emu.GetTitleID().c_str());
 +
 +			xr_state xr;
++			xr.mode3d = persist_get("mode") != "screen";
++			xr.stereo = persist_get("stereo") != "0";
++			if (const std::string ws = persist_get("worldscale"); !ws.empty())
++			{
++				xr.unit = std::clamp(static_cast<f32>(std::atof(ws.c_str())), 0.02f, 5.0f);
++			}
++			vr_log("True VR settings: view %s, %s, %.4f m per game unit", xr.mode3d ? "inside the game" : "big screen",
++				xr.stereo ? "stereo" : "mono", xr.unit);
 +			if (create_instance(xr) && wait_for_system(xr) && create_device(xr) && create_session(xr) && create_actions(xr))
 +			{
 +				vr_log("VR session created. Waiting for the headset to become ready.");
@@ -1996,6 +2373,14 @@ index 000000000..8de8e9565
 +		g_start_tick = GetTickCount64();
 +		g_last_frame_tick = 0;
 +		g_window_unavailable_tick = 0;
++		g_rv.begun = false;
++		g_rv.enabled = false;
++		g_rv.want3d = false;
++		g_rv.frames_with = g_rv.frames_without = 0;
++		g_rv.cam = {};
++		g_rv.have_up = false;
++		g_rv.depth = 3.5f;
++		g_rv.scene_off = ~0u;
 +		g_thread = std::thread(thread_main);
 +	}
 +
@@ -2013,12 +2398,15 @@ index 000000000..8de8e9565
 +
 +	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra)
 +	{
++		const frame_tag tag = rv_end_frame(); // how this frame was rendered (which eye, from where)
 +		std::lock_guard lock(g_state_mutex);
-+		g_frame = std::move(pixels);
-+		g_frame_w = width;
-+		g_frame_h = height;
-+		g_frame_bgra = is_bgra;
-+		g_frame_id++;
++		auto& slot = g_pending[tag.eye == 1 ? 1 : tag.eye < 0 ? 2 : 0];
++		slot.px = std::move(pixels);
++		slot.w = width;
++		slot.h = height;
++		slot.bgra = is_bgra;
++		slot.tag = tag;
++		slot.id = ++g_frame_id;
 +		g_last_frame_tick = GetTickCount64();
 +	}
 +
@@ -2128,6 +2516,286 @@ index 000000000..8de8e9565
 +		std::fflush(out);
 +	}
 +
++	namespace
++	{
++		// The headset eye's projection, with the game's own depth mapping (A, B) so depth testing behaves the same.
++		mat4 eye_projection(const XrFovf& fov, f32 A, f32 B)
++		{
++			const f32 l = std::tan(fov.angleLeft), r = std::tan(fov.angleRight), u = std::tan(fov.angleUp), d = std::tan(fov.angleDown);
++			mat4 p;
++			p.m[0] = 2.f / (r - l); p.m[2] = (r + l) / (r - l);
++			p.m[5] = 2.f / (u - d); p.m[6] = (u + d) / (u - d);
++			p.m[10] = A; p.m[11] = B;
++			p.m[14] = -1.f;
++			return p;
++		}
++
++		mat4 level_mat(vec3 up)
++		{
++			mat4 L;
++			const vec3 axes[3] = {{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}};
++			for (int j = 0; j < 3; j++)
++			{
++				const vec3 c = level(up, axes[j]);
++				L.m[j] = c.x; L.m[4 + j] = c.y; L.m[8 + j] = c.z;
++			}
++			L.m[15] = 1.f;
++			return L;
++		}
++
++		void rv_begin_frame()
++		{
++			auto& s = g_rv;
++			s.begun = true;
++			s.cam_this_frame = false;
++			s.x3_ready = s.x2_ready = false;
++			s.n3 = s.n2 = s.n0 = 0;
++			s.votes.clear();
++			s.depths.clear();
++			s.tag = {};
++
++			view_snapshot v;
++			{
++				std::lock_guard lock(g_state_mutex);
++				v = g_views;
++			}
++			s.unit = v.unit;
++			s.enabled = v.valid && v.mode3d && s.want3d;
++			if (!s.enabled) return;
++
++			XrPosef pose;
++			XrFovf fov;
++			if (v.stereo)
++			{
++				// Alternate eyes every frame; the headset shows each eye's newest image from where it was rendered.
++				const int e = static_cast<int>(s.gen.load() & 1);
++				pose = v.eye[e];
++				fov = v.fov[e];
++				s.tag.eye = e;
++			}
++			else
++			{
++				const auto& a = v.eye[0];
++				const auto& b = v.eye[1];
++				pose.position = {(a.position.x + b.position.x) * 0.5f, (a.position.y + b.position.y) * 0.5f, (a.position.z + b.position.z) * 0.5f};
++				pose.orientation = qnorm({a.orientation.x + b.orientation.x, a.orientation.y + b.orientation.y, a.orientation.z + b.orientation.z, a.orientation.w + b.orientation.w});
++				fov.angleLeft = std::min(v.fov[0].angleLeft, v.fov[1].angleLeft);
++				fov.angleRight = std::max(v.fov[0].angleRight, v.fov[1].angleRight);
++				fov.angleUp = std::max(v.fov[0].angleUp, v.fov[1].angleUp);
++				fov.angleDown = std::min(v.fov[0].angleDown, v.fov[1].angleDown);
++				s.tag.eye = 2;
++			}
++			// Keep the field of view sane (the game picture has a fixed number of pixels)
++			const auto cl = [](f32 a) { return std::clamp(a, -0.9f, 0.9f); };
++			fov = {cl(fov.angleLeft), cl(fov.angleRight), cl(fov.angleUp), cl(fov.angleDown)};
++
++			// Eye relative to the player frame (= where the game camera sits in the room)
++			const XrQuaternionf py = yaw_q(v.player_yaw);
++			const vec3 rel_p = rotate(qconj(py), to_vec(pose.position) - v.player_pos);
++			const XrQuaternionf rel_q = qnorm(qmul(qconj(py), pose.orientation));
++			s.tag.rel.position = {rel_p.x, rel_p.y, rel_p.z};
++			s.tag.rel.orientation = rel_q;
++			s.tag.fov = fov;
++
++			// World -> eye, in game units
++			const vec3 t = rel_p * (1.f / s.unit);
++			const vec3 ax = rotate(rel_q, {1.f, 0.f, 0.f}), ay = rotate(rel_q, {0.f, 1.f, 0.f}), az = rotate(rel_q, {0.f, 0.f, 1.f});
++			mat4 E;
++			E.m[0] = ax.x; E.m[1] = ax.y; E.m[2] = ax.z; E.m[3] = -dot(ax, t);
++			E.m[4] = ay.x; E.m[5] = ay.y; E.m[6] = ay.z; E.m[7] = -dot(ay, t);
++			E.m[8] = az.x; E.m[9] = az.y; E.m[10] = az.z; E.m[11] = -dot(az, t);
++			E.m[15] = 1.f;
++			s.E = E;
++		}
++
++		void rv_build(bool scene)
++		{
++			auto& s = g_rv;
++			const auto& c = s.cam;
++			if (scene ? s.x3_ready : s.x2_ready) return;
++			const mat4 base = mmul(mmul(eye_projection(s.tag.fov, c.A, c.B), s.E), level_mat(s.have_up ? s.up : vec3{0.f, 1.f, 0.f}));
++			if (scene)
++			{
++				// Undo the game's projection, then view from the eye with the eye's projection
++				mat4 P;
++				P.m[0] = c.sx; P.m[2] = c.cx; P.m[5] = c.sy; P.m[6] = c.cy; P.m[10] = c.A; P.m[11] = c.B; P.m[14] = -1.f;
++				mat4 Pi;
++				if (minv(P, Pi)) { s.X3 = mmul(base, Pi); s.x3_ready = true; }
++			}
++			else
++			{
++				// 2D (HUD, menus): a flat plane that exactly fills the game camera's view at the typical object distance
++				const f32 D = s.depth;
++				mat4 S2;
++				S2.m[0] = D / c.sx; S2.m[3] = D * c.cx / c.sx;
++				S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
++				S2.m[11] = -D;
++				S2.m[15] = 1.f;
++				s.X2 = mmul(base, S2);
++				s.x2_ready = true;
++			}
++		}
++
++		frame_tag rv_end_frame()
++		{
++			auto& s = g_rv;
++			frame_tag out = (s.begun && s.enabled) ? s.tag : frame_tag{};
++
++			// World up: the direction most scenery agrees on
++			if (!s.votes.empty())
++			{
++				const auto best = std::max_element(s.votes.begin(), s.votes.end(), [](const auto& a, const auto& b) { return a.n < b.n; });
++				if (best->n >= 3 && best->n * 3 >= s.n3)
++				{
++					const vec3 u = normalize(best->sum);
++					if (!s.have_up || dot(u, s.up) < 0.99f) s.up = u;    // camera cut: follow at once
++					else s.up = normalize(s.up * 0.8f + u * 0.2f);
++					s.have_up = true;
++				}
++			}
++			// Typical distance of things in view
++			if (s.depths.size() >= 3)
++			{
++				auto mid = s.depths.begin() + s.depths.size() / 2;
++				std::nth_element(s.depths.begin(), mid, s.depths.end());
++				const f32 med = *mid;
++				if (std::fabs(med - s.depth) > 0.5f * s.depth) s.depth = med;
++				else s.depth += (med - s.depth) * 0.1f;
++				s.x2_ready = false;
++			}
++
++			// Is the game showing a 3D scene? (menus and loading screens are flat)
++			if (s.n3 >= 10) { s.frames_with++; s.frames_without = 0; }
++			else if (++s.frames_without >= 30) s.frames_with = 0;
++			const bool want = s.frames_with >= 3;
++			if (want != s.want3d)
++			{
++				s.want3d = want;
++				vr_log("True VR: game %s a 3D scene", want ? "shows" : "no longer shows");
++			}
++
++			{
++				std::lock_guard lock(g_state_mutex);
++				g_cam.valid = s.cam.valid && s.want3d;
++				g_cam.sx = s.cam.sx; g_cam.sy = s.cam.sy; g_cam.cx = s.cam.cx; g_cam.cy = s.cam.cy;
++				g_cam.up = s.have_up ? s.up : vec3{0.f, 1.f, 0.f};
++				g_cam.depth = s.depth;
++			}
++
++			s.tot3 += s.n3; s.tot2 += s.n2; s.tot0 += s.n0; s.frames++;
++			const u64 now = GetTickCount64();
++			if (now - s.last_log > 15000)
++			{
++				vr_log("True VR: %s, eye=%d, per frame 3D=%llu 2D=%llu other=%llu; camera %s sx=%.3f sy=%.3f A=%.4f B=%.4f; up (%.2f %.2f %.2f); depth %.2f",
++					s.enabled ? "rendering for the headset" : "flat", out.eye,
++					static_cast<unsigned long long>(s.tot3 / std::max<u64>(s.frames, 1)), static_cast<unsigned long long>(s.tot2 / std::max<u64>(s.frames, 1)),
++					static_cast<unsigned long long>(s.tot0 / std::max<u64>(s.frames, 1)), s.cam.valid ? "found" : "not found",
++					s.cam.sx, s.cam.sy, s.cam.A, s.cam.B, s.up.x, s.up.y, s.up.z, s.depth);
++				s.last_log = now;
++				s.tot3 = s.tot2 = s.tot0 = s.frames = 0;
++			}
++
++			s.begun = false;
++			s.gen++;
++			return out;
++		}
++	}
++
++	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u32 color_offset, f32 x[16])
++	{
++		if (!g_session_running.load(std::memory_order_relaxed)) return 0;
++		auto& s = g_rv;
++		if (!s.begun) rv_begin_frame();
++
++		int kind = 0;
++		bool perspective = false;
++		if (uses_mvp && consts)
++		{
++			// c1..c4 = rows of the model-view-projection matrix
++			const f32* m = consts + 4;
++			const vec3 r0{m[0], m[1], m[2]}, r1{m[4], m[5], m[6]}, r2{m[8], m[9], m[10]}, r3{m[12], m[13], m[14]};
++			const f32 l2 = dot(r3, r3);
++			if (l2 > 1e-8f && std::isfinite(l2) && std::isfinite(m[15]))
++			{
++				perspective = true;
++				// The projection's depth terms survive any model matrix exactly
++				const f32 A = -dot(r2, r3) / l2;
++				const f32 B = m[11] + A * m[15];
++				const auto same = [](f32 a, f32 b) { return std::fabs(a - b) <= 1e-3f * std::fabs(b) + 1e-5f; };
++				const f32 len = std::sqrt(l2);
++				const f32 cx = -dot(r0, r3) / l2, cy = -dot(r1, r3) / l2;
++				const vec3 xr = r0 + r3 * cx, yr = r1 + r3 * cy;
++				const f32 sx = std::sqrt(dot(xr, xr)) / len, sy = std::sqrt(dot(yr, yr)) / len;
++
++				bool is_cam = s.cam.valid && same(A, s.cam.A) && same(B, s.cam.B);
++				if (!s.cam_this_frame && surface_w && surface_h && A < 0.f && B < 0.f && sx > 0.2f && sx < 8.f && sy > 0.2f && sy < 8.f &&
++					std::fabs((sy / sx) / (static_cast<f32>(surface_w) / surface_h) - 1.f) < 0.12f)
++				{
++					// The main camera: its picture shape matches the render target. Take this frame's zoom from it.
++					if (!s.cam.valid || !same(A, s.cam.A) || !same(B, s.cam.B) || std::fabs(sx - s.cam.sx) > 1e-4f || std::fabs(cx - s.cam.cx) > 1e-4f)
++					{
++						s.x3_ready = s.x2_ready = false;
++					}
++					s.cam = {true, sx, sy, cx, cy, A, B};
++					s.cam_this_frame = true;
++					s.scene_off = color_offset;
++					s.scene_w = surface_w;
++					s.scene_h = surface_h;
++					is_cam = true;
++				}
++
++				if (is_cam)
++				{
++					kind = 1;
++					// World up = the model's own up axis, for the (many) objects that are not rotated
++					const vec3 xn = normalize(xr), yn = normalize(yr), zn = r3 * (-1.f / len);
++					if (dot(cross(xn, yn), zn) > 0.9f && s.votes.size() < 32)
++					{
++						const vec3 up{xn.y, yn.y, zn.y};
++						bool added = false;
++						for (auto& b : s.votes)
++						{
++							const vec3 avg = normalize(b.sum);
++							if (dot(avg, up) > 0.997f) { b.sum = b.sum + up; b.n++; added = true; break; }
++						}
++						if (!added) s.votes.push_back({up, 1});
++					}
++					const f32 near_plane = B / A;
++					if (m[15] > near_plane && m[15] < 60.f && s.depths.size() < 512) s.depths.push_back(m[15]);
++				}
++			}
++		}
++
++		if (!kind && !perspective && s.cam.valid && color_offset == s.scene_off && surface_w == s.scene_w && surface_h == s.scene_h)
++		{
++			kind = 2;
++		}
++
++		if (kind == 1) s.n3++;
++		else if (kind == 2) s.n2++;
++		else s.n0++;
++
++		if (!s.enabled || !kind || !s.cam.valid) return 0;
++		rv_build(kind == 1);
++		if (kind == 1 && !s.x3_ready) return 0;
++		std::memcpy(x, (kind == 1 ? s.X3 : s.X2).m, sizeof(f32) * 16);
++		return kind;
++	}
++
++	u64 stereo_generation()
++	{
++		return g_rv.gen.load(std::memory_order_relaxed);
++	}
++
++	void stereo_apply(void* rows, const f32 x[16])
++	{
++		mat4 S, X;
++		std::memcpy(S.m, rows, sizeof(S.m));
++		std::memcpy(X.m, x, sizeof(X.m));
++		const mat4 R = mmul(S, X);
++		std::memcpy(rows, R.m, sizeof(R.m));
++	}
++
 +	void note(const char* fmt, ...)
 +	{
 +		char buf[512];
@@ -2174,15 +2842,18 @@ index 000000000..8de8e9565
 +	void trace(const char*) {}
 +	void research_constants(u32, const f32*, const u16*, usz) {}
 +	void note(const char*, ...) {}
++	int stereo_draw_transform(const f32*, bool, u32, u32, u32, f32*) { return 0; }
++	u64 stereo_generation() { return 0; }
++	void stereo_apply(void*, const f32*) {}
 +}
 +
 +#endif
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..54ff991dc
+index 000000000..971131bbd
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,83 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -2251,9 +2922,23 @@ index 000000000..54ff991dc
 +	// (log/orderup_research.log). consts = all 468 transform constants (4 floats each), ids = constants the program reads.
 +	void research_constants(u32 program_id, const f32* consts, const u16* ids, usz id_count);
 +	void note(const char* fmt, ...);
++
++	// True VR (stereo + head tracking), called by the renderer for every draw on the RSX thread.
++	// The game draws every 3D object with one model-view-projection matrix in constants c1..c4; the mod finds the
++	// camera projection in it and re-renders the scene from the headset's eye. consts = the 468 transform constants,
++	// uses_mvp = the vertex program reads c1..c4.
++	// Returns 0 = leave the draw alone, 1 = 3D scene draw, 2 = 2D overlay draw (HUD, menus: placed on a plane in
++	// the 3D world). For 1 and 2, x receives a row-major 4x4 matrix to apply to the program's clip-space output.
++	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u32 color_offset, f32 x[16]);
++
++	// Changes once per presented frame (the eye being rendered changes); the renderer re-applies the transform then.
++	u64 stereo_generation();
++
++	// rows = the renderer's 4x4 viewport (scale/offset) matrix, row-major; it becomes rows * x.
++	void stereo_apply(void* rows, const f32 x[16]);
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
-index 51fc9092b..43ad58ce4 100644
+index 51fc9092b..61ae86f00 100644
 --- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 @@ -7,6 +7,7 @@
@@ -2282,7 +2967,46 @@ index 51fc9092b..43ad58ce4 100644
  	if (m_device == VK_NULL_HANDLE)
  	{
  		//Initialization failed
-@@ -2283,6 +2288,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
+@@ -2042,7 +2047,29 @@ void VKGSRender::load_program_env()
+ 
+ 	const bool update_transform_constants = m_stale_constants.test(rsx::draw_state_t::group::transform_constants);
+ 	const bool update_fragment_constants = m_stale_constants.test(rsx::draw_state_t::group::fragment_constants);
+-	const bool update_vertex_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::vertex_env);
++	// Order Up VR: true VR. Each draw may get a transform (head-tracked eye view) applied with the viewport transform.
++	f32 vr_xform[16];
++	int vr_kind = 0;
++	bool vr_force_env = false;
++	{
++		bool uses_mvp = is_interpreter || !m_vertex_prog || m_vertex_prog->has_indexed_constants;
++		if (!uses_mvp)
++		{
++			int found = 0;
++			for (const u16 id : m_vertex_prog->constant_ids) if (id >= 1 && id <= 4) found++;
++			uses_mvp = found == 4;
++		}
++		vr_kind = ouvr::stereo_draw_transform(reinterpret_cast<const f32*>(REGS(m_ctx)->transform_constants.data()), uses_mvp,
++			REGS(m_ctx)->surface_clip_width(), REGS(m_ctx)->surface_clip_height(), REGS(m_ctx)->surface_offset(0), vr_xform);
++		static thread_local int s_vr_kind = 0;
++		static thread_local u64 s_vr_gen = 0;
++		const u64 vr_gen = ouvr::stereo_generation();
++		vr_force_env = vr_kind != s_vr_kind || (vr_kind && vr_gen != s_vr_gen);
++		s_vr_kind = vr_kind;
++		s_vr_gen = vr_gen;
++	}
++
++	const bool update_vertex_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::vertex_env) || vr_force_env;
+ 	const bool update_fragment_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env);
+ 	const bool update_fragment_texture_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_texture_env);
+ 	const bool update_instruction_buffers = (m_interpreter_state.test(rsx::draw_state_t::group::programs) && is_interpreter);
+@@ -2057,6 +2084,7 @@ void VKGSRender::load_program_env()
+ 		auto buf = m_vertex_env_ring_info.map<char>(mem, 96);
+ 
+ 		RSX(m_ctx)->draw_processor()->fill_vertex_env(buf, RSX(m_ctx)->resolution_scaling_config.scale_factor());
++		if (vr_kind) ouvr::stereo_apply(buf, vr_xform); // Order Up VR
+ 
+ 		m_vertex_env_ring_info.unmap();
+ 		m_vertex_env_dynamic_offset = mem;
+@@ -2283,6 +2311,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
  			? std::span<const u16>{}
  			: std::span<const u16>(m_vertex_prog->constant_ids);
  		RSX(m_ctx)->draw_processor()->fill_vertex_program_constants_data(buf, constant_ids);

@@ -28,17 +28,21 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 
 | Feature | State |
 |---|---|
-| Game on a large virtual screen in the headset | Works in a headset simulator; not yet confirmed on a real headset |
-| VR controller as the game's PlayStation Move pointer and buttons | Built; aim accuracy not yet confirmed |
-| Real stereo 3D and head-tracked camera | Not started |
+| Menus on a large virtual screen | Works (confirmed on Quest 3) |
+| Quest controllers as the PlayStation Move (pointer, buttons, motion) | Works (confirmed on Quest 3) |
+| Inside the game in 3D: stereo, head tracking, walking, HUD placed in the world | New in 0.6.0, not yet confirmed in a headset |
+| Hands and direct grabbing | Planned (see [docs/TRUE_VR_PLAN.md](docs/TRUE_VR_PLAN.md)) |
 
-## Controls (0.4.0)
+## Controls (0.6.0)
 
-- Aim a controller at the screen to point. The hand you press GRIP or TRIGGER with becomes the pointing hand.
+- In the kitchen and the restaurant you are inside the game in 3D: look around and lean in. Menus and loading screens use the big screen.
+- Aim a controller at what you want to use; a laser and a ring show where you point. The hand you press GRIP or TRIGGER with becomes the pointing hand.
 - GRIP = grab and hold (the game's T button). TRIGGER = select (the Move button). A/B/X/Y = Cross/Circle/Square/Triangle. Left menu = START. Right stick click = SELECT.
 - Motion actions (flipping, etc.): hold GRIP and make the movement with the controller, as with a PlayStation Move. Backup: hold GRIP and flick that hand's thumbstick up.
+- Inside the game (when not holding GRIP): left stick walks where you look, right stick turns in 30 degree steps.
+- Big screen (when not holding GRIP): right stick up/down moves it nearer or farther, left stick up/down resizes it.
+- Left stick click recentres. Hold it for 1 second to switch between 3D and the big screen (remembered).
 - Calibration screen: point at the middle of the screen, press X (the game's Square), then pull the TRIGGER.
-- Screen (when not holding GRIP): left stick click recentres it, right stick up/down moves it nearer or farther, left stick up/down resizes it.
 
 ## Source layout
 

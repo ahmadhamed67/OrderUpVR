@@ -1,7 +1,7 @@
 Video:
   Renderer: Vulkan
   Debug output: false
-  Log shader programs: true
+  Log shader programs: false
   Record With Overlays: true
 Input/Output:
   Move: "Mouse"
