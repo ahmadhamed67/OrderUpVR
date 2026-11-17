@@ -771,6 +771,7 @@ namespace OrderUpVR
                             {
                                 SetStatus("Ready to play", 0, "Version " + m.version + " installed.");
                                 ShowToast("Order Up VR " + m.version + " is installed. See What's new for the changes.", true);
+                                if (!Core.VcRedistOk(VcMinimum)) EnsureVcRuntime(null);
                                 if (WindowState == WindowState.Minimized) TaskbarItemInfo.ProgressState = TaskbarItemProgressState.None;
                             }
                             else SetStatus("Install failed", 3, error);
@@ -830,10 +831,70 @@ namespace OrderUpVR
             {
                 ShowDialog("No VR software is running",
                     "Start Quest Link, Air Link, Virtual Desktop or SteamVR first and make it the active OpenXR runtime. Without it the game only shows on the monitor.",
-                    null, false, Btn("Play on monitor", delegate { StartGame(); }), Btn("Cancel", null));
+                    null, false, Btn("Play on monitor", delegate { EnsureVcRuntime(StartGame); }), Btn("Cancel", null));
                 return;
             }
-            StartGame();
+            EnsureVcRuntime(StartGame);
+        }
+
+        // ------------------------------------------------------------------ Microsoft Visual C++ runtime
+        // RPCS3 needs Microsoft's VC++ 2015-2022 runtime installed in Windows (it refuses private copies).
+        string VcMinimum { get { return manifest != null && !string.IsNullOrEmpty(manifest.vcredistMin) ? manifest.vcredistMin : "14.44.0.0"; } }
+
+        static string ShortVersion(string v) { Version x; return Version.TryParse(v ?? "", out x) ? x.Major + "." + x.Minor : v; }
+
+        void EnsureVcRuntime(Action then)
+        {
+            if (Core.VcRedistOk(VcMinimum)) { if (then != null) then(); return; }
+            Version have = Core.VcRedistVersion();
+            ShowDialog(have == null ? "One component from Microsoft is needed" : "A Microsoft component needs an update",
+                "RPCS3 needs the Microsoft Visual C++ Runtime" + (have == null ? "" : " (this PC has " + have.Major + "." + have.Minor + ", it needs " + ShortVersion(VcMinimum) + " or newer)") +
+                ". It is free, about 25 MB, and downloaded directly from Microsoft. Windows will ask for permission to install it.",
+                null, false, Btn("Install it", delegate { InstallVcRuntime(then); }), Btn("Not now", null));
+        }
+
+        void InstallVcRuntime(Action then)
+        {
+            busy = true; RefreshAll();
+            SetStatus("Downloading the Microsoft Visual C++ Runtime...", 1, "From microsoft.com");
+            SetProgress(double.NaN);
+            string url = manifest != null && !string.IsNullOrEmpty(manifest.vcredistUrl) ? manifest.vcredistUrl : Core.DefaultVcRedistUrl;
+            string exe = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_vc_redist.x64.exe");
+            Task.Factory.StartNew(delegate
+            {
+                string error = null;
+                int code = 0;
+                try
+                {
+                    using (var wc = Core.NewClient()) wc.DownloadFile(new Uri(url), exe);
+                    if (!Core.SignedByMicrosoft(exe)) throw new InvalidDataException("the download is not signed by Microsoft, so it was not run");
+                    Ui(delegate { SetStatus("Installing the Microsoft Visual C++ Runtime...", 1, "Allow it in the Windows permission prompt."); });
+                    var psi = new ProcessStartInfo(exe, "/install /passive /norestart");
+                    psi.UseShellExecute = true; // lets Windows show its permission prompt
+                    using (Process p = Process.Start(psi)) { p.WaitForExit(); code = p.ExitCode; }
+                }
+                catch (System.ComponentModel.Win32Exception) { error = "the Windows permission prompt was declined"; }
+                catch (Exception ex) { error = ex.Message; }
+                try { File.Delete(exe); } catch { }
+                Ui(delegate
+                {
+                    busy = false; SetProgress(-1); RefreshAll();
+                    // 0 = installed, 3010 = installed (restart suggested), 1638 = a newer version is already there
+                    if (error == null && Core.VcRedistOk(VcMinimum))
+                    {
+                        SetStatus("Ready to play", 0, "Microsoft Visual C++ Runtime installed.");
+                        ShowToast("Microsoft Visual C++ Runtime installed." + (code == 3010 ? " Windows suggests a restart, but you can play now." : ""), true);
+                        if (then != null) then();
+                    }
+                    else
+                    {
+                        string why = error ?? ("the installer ended with code " + code);
+                        SetStatus("The Microsoft component was not installed", 2, why);
+                        ShowDialog("Could not install the Microsoft component", "Reason: " + why + ".\n\nYou can also install it yourself from Microsoft (search for \"Visual C++ Redistributable latest\"), then press Play again.",
+                            null, false, Btn("Open Microsoft's download", delegate { OpenUrl(url); }), Btn("Close", null));
+                    }
+                });
+            });
         }
 
         void StartGame()

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.3.1",
+    "date": "2026-11-17",
+    "notes": [
+      "Fixed: 0.3.0 showed \"RPCS3: Fatal Error - the module msvcp140.dll was incorrectly installed\" when pressing Play. RPCS3 refuses to run with its own copy of Microsoft's Visual C++ files, so the mod no longer includes them, and updating removes the ones 0.3.0 left behind.",
+      "Instead, the launcher checks that Microsoft's Visual C++ Runtime is installed in Windows. If it is missing or too old, it offers to download and install the official package from Microsoft (it only runs it after checking Microsoft's digital signature).",
+      "Updates now remove any program files a new version no longer uses, so nothing outdated is left behind.",
+      "The VR part is unchanged and still needs its first test on a real headset."
+    ]
+  },
+  {
     "version": "0.3.0",
     "date": "2026-11-17",
     "notes": [

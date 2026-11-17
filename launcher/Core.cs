@@ -41,6 +41,8 @@ namespace OrderUpVR
         public long size { get; set; }
         public LauncherInfo launcher { get; set; }
         public List<ChangelogEntry> changelog { get; set; }
+        public string vcredistMin { get; set; }   // minimum Microsoft Visual C++ runtime the RPCS3 build needs
+        public string vcredistUrl { get; set; }
     }
 
     public class Settings
@@ -215,7 +217,9 @@ namespace OrderUpVR
             try
             {
                 ZipFile.ExtractToDirectory(zipPath, tmp);
+                RemoveStaleFiles(emu, Path.Combine(tmp, "rpcs3"));
                 CopyTree(Path.Combine(tmp, "rpcs3"), emu, true);
+                WriteFileList(emu, Path.Combine(tmp, "rpcs3"));
 
                 // Firmware and saves stay in the user's RPCS3; the VR copy only links to them.
                 foreach (string d in new[] { "dev_flash", "dev_flash2", "dev_flash3", "dev_hdd0", "dev_hdd1", "dev_bdvd", "dev_usb000" })
@@ -245,6 +249,74 @@ namespace OrderUpVR
             {
                 try { Directory.Delete(tmp, true); } catch { }
             }
+        }
+
+        const string FileListName = "orderupvr_files.txt";
+
+        // Program files from an older version that the new package no longer contains are deleted, so nothing stale
+        // (for example DLLs RPCS3 refuses to run with) survives an update. User data folders are never listed.
+        static void RemoveStaleFiles(string emu, string fresh)
+        {
+            if (!Directory.Exists(emu)) return;
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string f in Directory.GetFiles(fresh, "*", SearchOption.AllDirectories)) keep.Add(f.Substring(fresh.Length + 1));
+
+            var old = new List<string>();
+            string list = Path.Combine(emu, FileListName);
+            if (File.Exists(list)) old.AddRange(File.ReadAllLines(list));
+            // Installs made before the file list existed: their program files are the DLLs next to rpcs3.exe.
+            foreach (string f in Directory.GetFiles(emu, "*.dll")) old.Add(Path.GetFileName(f));
+
+            foreach (string rel in old)
+            {
+                if (string.IsNullOrEmpty(rel) || rel.Contains("..") || Path.IsPathRooted(rel) || keep.Contains(rel)) continue;
+                try { File.Delete(Path.Combine(emu, rel)); } catch { }
+            }
+        }
+
+        static void WriteFileList(string emu, string fresh)
+        {
+            var lines = new List<string>();
+            foreach (string f in Directory.GetFiles(fresh, "*", SearchOption.AllDirectories)) lines.Add(f.Substring(fresh.Length + 1));
+            File.WriteAllLines(Path.Combine(emu, FileListName), lines.ToArray());
+        }
+
+        // ----------------------------------------------------------------- Microsoft Visual C++ runtime
+        public const string DefaultVcRedistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
+
+        public static Version VcRedistVersion()
+        {
+            try
+            {
+                using (RegistryKey k = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64).OpenSubKey(@"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"))
+                {
+                    if (k == null || Convert.ToInt32(k.GetValue("Installed", 0)) != 1) return null;
+                    return new Version(Convert.ToInt32(k.GetValue("Major", 0)), Convert.ToInt32(k.GetValue("Minor", 0)), Convert.ToInt32(k.GetValue("Bld", 0)), 0);
+                }
+            }
+            catch { return null; }
+        }
+
+        public static bool VcRedistOk(string minimum)
+        {
+            Version have = VcRedistVersion();
+            if (have == null) return false;
+            Version need;
+            if (!Version.TryParse(minimum ?? "", out need)) need = new Version(14, 44, 0, 0);
+            return have >= need;
+        }
+
+        // The downloaded installer must carry a valid Authenticode signature from Microsoft before it is run.
+        public static bool SignedByMicrosoft(string file)
+        {
+            try
+            {
+                if (WinTrust.Verify(file) != 0) return false;
+                var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(
+                    System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(file));
+                return cert.Subject.Contains("O=Microsoft Corporation");
+            }
+            catch { return false; }
         }
 
         public static void Shortcut(string lnk, string target, string workDir)
@@ -409,6 +481,40 @@ namespace OrderUpVR
             if (p.Contains("vive")) return "VIVE Hub";
             if (p.Contains("alvr")) return "ALVR";
             return Path.GetFileNameWithoutExtension(manifestPath);
+        }
+    }
+
+    static class WinTrust
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct FileInfo { public uint cbStruct; public string pcwszFilePath; public IntPtr hFile; public IntPtr pgKnownSubject; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct Data
+        {
+            public uint cbStruct; public IntPtr pPolicyCallbackData; public IntPtr pSIPClientData; public uint dwUIChoice;
+            public uint fdwRevocationChecks; public uint dwUnionChoice; public IntPtr pFile; public uint dwStateAction;
+            public IntPtr hWVTStateData; public IntPtr pwszURLReference; public uint dwProvFlags; public uint dwUIContext;
+            public IntPtr pSignatureSettings;
+        }
+
+        [DllImport("wintrust.dll", CharSet = CharSet.Unicode)]
+        static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid action, ref Data data);
+
+        static readonly Guid GenericVerifyV2 = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+        // 0 = the file's Authenticode signature is valid and trusted.
+        public static int Verify(string path)
+        {
+            var fi = new FileInfo { cbStruct = (uint)Marshal.SizeOf(typeof(FileInfo)), pcwszFilePath = path };
+            IntPtr pFile = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
+            try
+            {
+                Marshal.StructureToPtr(fi, pFile, false);
+                var d = new Data { cbStruct = (uint)Marshal.SizeOf(typeof(Data)), dwUIChoice = 2 /* none */, fdwRevocationChecks = 0, dwUnionChoice = 1 /* file */, pFile = pFile, dwStateAction = 0, dwProvFlags = 0x40 /* safer */ };
+                return WinVerifyTrust(new IntPtr(-1), GenericVerifyV2, ref d);
+            }
+            finally { Marshal.FreeHGlobal(pFile); }
         }
     }
 

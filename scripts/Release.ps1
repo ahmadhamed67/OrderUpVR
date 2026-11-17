@@ -20,23 +20,30 @@ $bin = Join-Path $root 'rpcs3-src\bin'
 $skip = 'test', 'config', 'log', 'cache', 'dev_hdd0', 'dev_hdd1', 'dev_flash', 'dev_usb000', 'games', 'captures', 'savestates', 'shaderlog', 'patches', 'sounds', 'ppu_progs', 'spu_progs'
 Get-ChildItem $bin | Where-Object { $_.Name -notin $skip -and $_.Extension -notin '.pdb', '.exp', '.lib', '.buf', '.log' } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path $stage 'rpcs3') -Recurse -Force }
-# Microsoft Visual C++ runtime, app-local (users may not have it, or have an older one).
+# Microsoft Visual C++ runtime: RPCS3 refuses to start with app-local copies (module_verifier.cpp), so it is NOT shipped.
+# Instead the manifest names the minimum runtime version and the launcher installs Microsoft's official package when needed.
 $crt = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' -Directory | Sort-Object FullName | Select-Object -Last 1
 if (-not $crt) { throw 'Visual C++ redistributable files not found' }
-Copy-Item (Join-Path $crt.FullName '*.dll') (Join-Path $stage 'rpcs3') -Force
+$crtVer = (Get-Item (Join-Path $crt.FullName 'msvcp140.dll')).VersionInfo
+$vcMin = '{0}.{1}.0.0' -f $crtVer.FileMajorPart, $crtVer.FileMinorPart
 
 # Every DLL the shipped binaries import must be shipped or be part of Windows / the GPU driver.
 # Developer-only files (Vulkan SDK layers, VC++ runtime, debug runtimes) must never be assumed present.
 $dumpbin = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe' | Select-Object -Last 1
 $shipped = @{}; Get-ChildItem (Join-Path $stage 'rpcs3') -Recurse -Include *.dll, *.exe | ForEach-Object { $shipped[$_.Name.ToLower()] = $true }
 $fromDriver = 'vulkan-1.dll'   # installed by every Vulkan-capable GPU driver; RPCS3 itself needs it
+$fromRedist = '^(msvcp140|vcruntime140)(_\w+)?\.dll$'   # installed by the launcher (Microsoft's VC++ package)
 $neverSystem = '^(msvcp|vcruntime|concrt|vccorlib|ucrtbased|vcomp|mfc)\d*'
+# RPCS3 aborts if these are found anywhere but the Windows folder.
+foreach ($bad in 'vulkan-1.dll', 'msvcp140.dll', 'vcruntime140.dll', 'msvcp140_1.dll', 'vcruntime140_1.dll') {
+    if ($shipped[$bad]) { throw "$bad must not be shipped: RPCS3 refuses to start when it is next to rpcs3.exe" }
+}
 $missing = @()
 foreach ($f in Get-ChildItem (Join-Path $stage 'rpcs3') -Recurse -Include *.dll, *.exe) {
     foreach ($line in & $dumpbin.FullName /nologo /dependents $f.FullName) {
         if ($line -notmatch '^\s+(\S+\.dll)\s*$') { continue }
         $dll = $Matches[1].ToLower()
-        if ($shipped[$dll] -or $dll -eq $fromDriver -or $dll -like 'api-ms-win-*' -or $dll -like 'ext-ms-*') { continue }
+        if ($shipped[$dll] -or $dll -eq $fromDriver -or $dll -match $fromRedist -or $dll -like 'api-ms-win-*' -or $dll -like 'ext-ms-*') { continue }
         if ($dll -match $neverSystem -or -not (Test-Path (Join-Path $env:WINDIR "System32\$dll"))) { $missing += "$($f.Name) -> $dll" }
     }
 }
@@ -64,6 +71,8 @@ $manifest = [ordered]@{
         url     = "$base/download/v$Version/OrderUpVR-Setup.exe"
         sha256  = (Get-FileHash (Join-Path $out 'OrderUpVR-Setup.exe') -Algorithm SHA256).Hash.ToLower()
     }
+    vcredistMin = $vcMin
+    vcredistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
     changelog = @($changelog)
 }
 $manifest | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'manifest.json') -Encoding UTF8
