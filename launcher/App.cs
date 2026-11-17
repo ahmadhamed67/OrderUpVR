@@ -515,6 +515,8 @@ namespace OrderUpVR
             new[] { "huddist", "Menus and HUD distance", "Where the order tickets, timers and menus float", "1.5", "1.5 m", "1.0", "1.0 m", "2.0", "2.0 m", "3.0", "3.0 m" },
             new[] { "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "On", "off", "Off" },
             new[] { "pointing", "Pointing in the kitchen", "Hands: the pointer is where your hand covers things", "hand", "Hands", "laser", "Laser" },
+            new[] { "kitchen", "Kitchen world", "Room: the kitchen stays still around you and every station is where it really is", "room", "Room (true VR)", "follow", "Follows the game camera" },
+            new[] { "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there (A and B still work)", "on", "On", "off", "Off" },
         };
 
         string VrGet(string key, string def) { string v; return s.Vr != null && s.Vr.TryGetValue(key, out v) ? v : def; }
@@ -573,14 +575,15 @@ namespace OrderUpVR
             catch { }
         }
 
-        const int HowToRevision = 4; // raise when the controls change, so players see the guide again
+        const int HowToRevision = 5; // raise when the controls change, so players see the guide again
 
         void ShowHowTo()
         {
             s.SeenHowTo = true; s.HowToSeen = HowToRevision; s.Save();
             ShowDialog("How to play in VR",
                 "1.  Connect your headset (Quest Link, Air Link, Virtual Desktop or SteamVR), then press PLAY.\n" +
-                "2.  Menus appear on a big screen in front of you. In the kitchen and the restaurant you are inside the game in 3D with your own body and hands: look around and lean in.\n" +
+                "2.  Menus hang as a menu board in a diner around you. In the kitchen and the restaurant you are inside the game in 3D with your own body and hands: look around and lean in.\n" +
+                "    The kitchen stays still around you. Press A or B once to move to the next station; after that, just turn your head toward a station and the game goes there.\n" +
                 "3.  Reach for things: inside the game the pointer is wherever your hand covers them. On the big screen, aim the laser.\n\n" +
                 "GRIP: grab and hold (the game's T button)\n" +
                 "TRIGGER: select and confirm (the Move button)\n" +

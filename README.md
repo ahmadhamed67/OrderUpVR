@@ -33,8 +33,10 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | Inside the game in 3D: stereo, head tracking, walking, HUD placed in the world | Works since 0.6.0; 0.7.0 fixes the double image |
 | Body (male/female chef), arms, animated hands; pointing by reaching | New in 0.7.0/0.8.0, being tested |
 | Comfort settings (snap/smooth turn, angles, speeds, vignette, seated/standing, HUD distance) | New in 0.8.0, in the launcher's Settings |
+| Kitchen fixed in your room; turn your head to change station | New in 0.9.0, being tested |
+| Menus as a menu board in a diner around you | New in 0.9.0, being tested |
 
-## Controls (0.8.0)
+## Controls (0.9.0)
 
 - In the kitchen and the restaurant you are inside the game in 3D: look around and lean in. Menus and loading screens use the big screen.
 - Inside the game, reach for what you want: the pointer is where your hand covers it. On the big screen, aim the laser. The hand you press GRIP or TRIGGER with becomes the pointing hand.
@@ -43,6 +45,7 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 - Inside the game (when not holding GRIP): left stick walks where you look, right stick left/right turns in 30 degree steps, up/down moves you lower or higher.
 - Big screen (when not holding GRIP): right stick up/down moves it nearer or farther, left stick up/down resizes it.
 - Left stick click recentres. Hold it for 1 second to switch between 3D and the big screen (remembered).
+- Kitchen stations: A and B move along the kitchen. After the first press, turn your head toward the next station and the game goes there. The kitchen stays still around you while the game camera moves.
 - Start-up screen asking for the pink SQUARE: point at the middle of the screen and press X (or pull the TRIGGER).
 
 ## Source layout

@@ -110,3 +110,38 @@ Method, fully automatic during normal play (log/orderup_research.log):
    log/orderup_camdump.bin.z (at most 2000 pages). tools/analyze_camdump.py searches it for every camera form
    matching camera A in copy A and camera B in copy B, and as a fallback lists unit directions that turned by the
    camera's own angle. So a form nobody predicted can still be found without another play session.
+
+## What the game files show (offline analysis, 0.9.0)
+
+- `USRDIR/EBOOT.BIN` is a disc SELF (APP key revision 0x16); it decrypts with the keys in RPCS3's own key vault.
+  The program is SuperVillain Studios' engine with its own compiled script language (`.csl`, "MLSC" bytecode, names
+  and strings readable). Kitchen behaviour lives in scripts: `kitchen_ui.csl` has `MoveStationLeft`,
+  `MoveStationRight`, `EnterKitchenView`, `SetCameraName("KitchenCam")`; tutorials mention station views
+  "up", "down" and "sidescroll".
+- `USRDIR/Chef.wad` ('0DAW' v4): 5251 entries named by CRC32 (no final xor) of their path, e.g.
+  `wad/startup_scripts.wad`. Header 0x30 bytes, then n x (name hash, index) sorted by hash, then n x (offset, size).
+  119 entries are nested WADs with the same layout whose files follow the table as one zlib stream.
+  `tools/order_up_wad.py` reads a player's own copy.
+- Kitchen stations are named camera nodes in the scene data: `KitchenCam`, `CookingCam`, `fryer_cam`,
+  `fryer_ticket_cam`, `cutting_area_cam`, `plate_cam`, `trash_cam`, `sink_cam`, `patron_cam`, `grater_cam`,
+  `buffet_cam`. The intro movies come in male and female versions (`movies/cin01m.pam`, `cin01f.pam`).
+- Station change buttons: Cross and Circle (Quest A and B).
+
+## Room mode and look-to-change station (0.9.0)
+
+The renderer knows each 3D draw's view-space transform VM = V*M (MVP with the known projection removed). Between
+two frames, static objects satisfy VM_now = Delta * VM_before, where Delta = V_now * V_before^-1 is the camera's
+motion. Its rotation comes from the rotation most unrotated scenery shares; its translation is the value most
+paired objects agree on (pairs by draw order with a +-3 shift, rotation-checked; moving objects disagree and are
+outvoted). D = V_anchor * V_now^-1 is accumulated (D <- D * Delta^-1) and every 3D draw becomes
+Peye * E * Level(up in anchor space) * D_predicted * P^-1, so the kitchen is fixed in the room and a station change
+shows the new station where it really is. D for the frame being drawn is predicted at constant velocity from the
+last two frames (logged as "worst guess off by"). Three unsolved frames in a row (a cut) re-anchor at the new view.
+Simulated: 40 frames of motion with culled, moving and rotated objects recover D to 1e-14.
+
+Pointing maps the hand into the anchor's view, then by D^-1 into the current camera's view before projecting.
+
+Stations: the mod learns from your own A/B press which way each one moves the camera (stored as
+`station_cross` in orderupvr_state.txt), remembers each station's look target in the room, and when your head
+turns more than 30 degrees past the current station (or closer to a known neighbour), presses the button for you.
+A press that does nothing marks the end of the row on that side.

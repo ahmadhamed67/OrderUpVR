@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..761deefac
+index 000000000..e26be9cfd
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,4222 @@
+@@ -0,0 +1,4733 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -653,6 +653,20 @@ index 000000000..761deefac
 +
 +		struct mat4 { f32 m[16]{}; };
 +
++		mat4 ident() { mat4 r; r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.f; return r; }
++		vec3 xform(const mat4& a, vec3 p) { return {a.m[0] * p.x + a.m[1] * p.y + a.m[2] * p.z + a.m[3], a.m[4] * p.x + a.m[5] * p.y + a.m[6] * p.z + a.m[7], a.m[8] * p.x + a.m[9] * p.y + a.m[10] * p.z + a.m[11]}; }
++		vec3 xdir(const mat4& a, vec3 p) { return {a.m[0] * p.x + a.m[1] * p.y + a.m[2] * p.z, a.m[4] * p.x + a.m[5] * p.y + a.m[6] * p.z, a.m[8] * p.x + a.m[9] * p.y + a.m[10] * p.z}; }
++		// Inverse of a rotation + translation
++		mat4 rigid_inv(const mat4& a)
++		{
++			mat4 r;
++			for (int i = 0; i < 3; i++)
++				for (int j = 0; j < 3; j++) r.m[i * 4 + j] = a.m[j * 4 + i];
++			for (int i = 0; i < 3; i++) r.m[i * 4 + 3] = -(r.m[i * 4] * a.m[3] + r.m[i * 4 + 1] * a.m[7] + r.m[i * 4 + 2] * a.m[11]);
++			r.m[15] = 1.f;
++			return r;
++		}
++
 +		mat4 mmul(const mat4& a, const mat4& b)
 +		{
 +			mat4 r;
@@ -701,6 +715,7 @@ index 000000000..761deefac
 +			bool mode3d = true;
 +			bool stereo = true;  // false = one image for both eyes (head tracked, no depth)
 +			f32 hud_dist = 1.5f; // metres: where the game's HUD and menus float
++			bool room = true;    // kitchen stays still in the room while the game camera moves
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
 +
@@ -711,6 +726,12 @@ index 000000000..761deefac
 +			f32 sx = 1.f, sy = 1.f, cx = 0.f, cy = 0.f;
 +			vec3 up{0.f, 1.f, 0.f};  // world up, in the game camera's view space
 +			f32 depth = 3.5f;         // typical distance of things in front of the camera (game units)
++			// Room mode: D maps the current game camera's view space to the anchor camera's (where you stand)
++			bool room = false;
++			mat4 D = ident();
++			vec3 up_a{0.f, 1.f, 0.f}; // world up in the anchor's view space
++			int still = 0;            // frames the game camera has not moved
++			u64 moves = 0;            // frames it moved (changes when a station change starts)
 +		};
 +		cam_info g_cam;         // guarded by g_state_mutex
 +
@@ -776,6 +797,18 @@ index 000000000..761deefac
 +			int n2b = 0;
 +
 +			u64 last_log = 0, tot3 = 0, tot2 = 0, tot2b = 0, tot0 = 0, frames = 0;
++
++			// Room mode: how the game camera moved since the anchor, measured from static objects in consecutive frames
++			struct vm34 { f32 m[12]; };
++			std::vector<vm34> vms, vms_prev;     // view-space transform of each 3D draw (this frame, last frame)
++			vec3 R_prev[3]{};
++			bool have_R_prev = false;
++			bool room_on = true, anchored = false;
++			mat4 D = ident(), Dpred = ident(), step_inv = ident();
++			vec3 up_a{0.f, 1.f, 0.f};
++			int still = 0, fails = 0;
++			u64 moves = 0, resets = 0, matched = 0, solved = 0;
++			f32 pred_err = 0.f;
 +		};
 +		rsx_vr_state g_rv;
 +		frame_tag rv_end_frame(u64 display_key);
@@ -890,6 +923,9 @@ index 000000000..761deefac
 +
 +			// Controls card (first session, or left MENU held)
 +			XrSwapchain help = XR_NULL_HANDLE;
++			XrSwapchain sign = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> sign_images;
++			bool sign_bgra = false, sign_has = false, sign_drawn = false;
 +			std::vector<XrSwapchainImageD3D11KHR> help_images;
 +			bool help_bgra = false, help_has = false, help_drawn = false;
 +			u64 help_until = 0;
@@ -950,7 +986,28 @@ index 000000000..761deefac
 +				bool body = true, female = false, seated = false;
 +				bool smooth_turn = false, vignette = true;
 +				f32 snap_deg = 45.f, turn_speed = 120.f, move_speed = 1.4f, hud_dist = 1.5f;
++				bool room = true, look_switch = true;
 +			} comfort;
++
++			// Kitchen stations: turn your head to the next station and the game moves there
++			struct nav_t
++			{
++				bool ready = false;           // the station buttons moved the camera in this scene
++				int side_cross = 0;           // +1: Cross (A) moves the view to your left, -1: to your right
++				int idx = 0;                  // station number (left is +1)
++				std::map<int, vec3> target;   // where each station's camera looks, in the room
++				int pending_btn = 0;          // 1 Cross, 2 Circle: a press waiting for the camera to settle
++				bool pending_auto = false;
++				vec3 before{};
++				u64 pending_since = 0, moves_at_press = 0;
++				bool moved = false;
++				u64 press_until = 0;
++				int press_btn = 0;
++				u64 off_since = 0;
++				int off_side = 0;
++				int blocked_side = 0, blocked_idx = 0;
++				bool prev_a = false, prev_b = false;
++			} nav;
 +			u64 comfort_read = 0;
 +			f32 walk_phase = 0.f, walk_amount = 0.f;
 +			vec3 walk_prev{};
@@ -970,7 +1027,8 @@ index 000000000..761deefac
 +		vec3 from_player(const xr_state& xr, vec3 rel) { return xr.player_pos + rotate(yaw_q(xr.player_yaw), rel); }
 +
 +		constexpr u32 panel_w = 1024, panel_h = 512;
-+		constexpr u32 help_w = 1024, help_h = 700;
++		constexpr u32 help_w = 1024, help_h = 760;
++		constexpr u32 sign_w = 1280, sign_h = 300;
 +		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
 +
@@ -1547,6 +1605,15 @@ index 000000000..761deefac
 +			draw_card(xr, xr.panel, xr.panel_images, xr.panel_is_bgra, xr.panel_has_image, panel_w, panel_h, L"ORDER UP VR", text);
 +		}
 +
++		// The sign over the menu board in the restaurant
++		void draw_sign(xr_state& xr, bool first_time)
++		{
++			draw_card(xr, xr.sign, xr.sign_images, xr.sign_bgra, xr.sign_has, sign_w, sign_h, L"ORDER UP!!  VR",
++				first_time
++					? "Welcome to your kitchen, Chef!\nPoint with your hand and pull the TRIGGER to choose.\nIn the kitchen everything is around you: reach for it, and turn to change station."
++					: "Welcome back, Chef. Your kitchen is waiting.\nPoint with your hand and pull the TRIGGER to choose.");
++		}
++
 +		void draw_help(xr_state& xr)
 +		{
 +			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, L"CONTROLS",
@@ -1556,6 +1623,7 @@ index 000000000..761deefac
 +				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
 +				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
 +				"In the kitchen  -  reach for things: the pointer is where your hand\n      covers them. Left stick: walk, right stick: turn and height\n"
++				"Stations  -  A / B move along the kitchen; after one press, just turn\n      your head toward the next station and the game goes there\n"
 +				"Big screen (menus)  -  right stick: nearer / farther,  left stick: size\n"
 +				"Left stick click: recentre.  Hold it 1 s: switch 3D / big screen\n"
 +				"Hold Left MENU for 2 seconds to show this card again.");
@@ -1947,7 +2015,8 @@ index 000000000..761deefac
 +			XrSwapchain body_sc[2]{}, env_sc[2]{};
 +			std::vector<XrSwapchainImageD3D11KHR> body_img[2], env_img[2];
 +			u32 bw = 0, bh = 0;
-+			static constexpr u32 ew = 512, eh = 512;
++			u32 ew = 512, eh = 512;          // the room's images (same size as the body's)
++			vec3 pattern_size{1.f, 1.f, 1.f}; // room boxes: their size, for floor and wall patterns
 +			ID3D11Texture2D* depth[2]{};
 +			ID3D11DepthStencilView* dsv[2]{};
 +			std::map<ID3D11Texture2D*, ID3D11RenderTargetView*> rtv;
@@ -1972,6 +2041,31 @@ index 000000000..761deefac
 +}
 +float4 ps_main(VO i) : SV_Target
 +{
++	if (params.x > 1.5)
++	{
++		// The restaurant room: params.x = 2 checker floor, 3 wall tiles, 4 lamp glow; params.yzw = box size (m)
++		float3 n = normalize(i.n);
++		float3 q = i.lp * params.yzw;
++		float3 an = abs(i.lp);
++		float2 uv = an.y >= max(an.x, an.z) ? q.xz : an.z >= an.x ? q.xy : q.zy;
++		if (params.x > 3.5) return float4(color.rgb, 1);
++		float key = saturate(dot(n, normalize(float3(0.2, 0.95, 0.15))));
++		float lit = 0.55 + 0.45 * key;
++		if (params.x < 2.5)
++		{
++			float2 t = floor(uv / 0.32);
++			float k = fmod(abs(t.x + t.y), 2.0);
++			float2 f = frac(uv / 0.32);
++			float grout = (f.x < 0.03 || f.y < 0.03) ? 0.85 : 1.0;
++			float3 c = lerp(float3(0.80, 0.78, 0.72), float3(0.10, 0.10, 0.11), k) * grout;
++			return float4(c * lit, 1);
++		}
++		// Subway tiles: 15 x 7.5 cm, every other row shifted by half a tile
++		float row = floor(uv.y / 0.075);
++		float2 g = frac(float2(uv.x / 0.15 + fmod(row, 2.0) * 0.5, uv.y / 0.075));
++		float edge = (g.x < 0.04 || g.y < 0.08) ? 0.72 : 1.0;
++		return float4(color.rgb * edge * lit, 1);
++	}
 +	if (params.x > 0.5)
 +	{
 +		// The room around the game: a calm, warm, dark studio
@@ -2160,6 +2254,8 @@ index 000000000..761deefac
 +				imgs.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
 +				return xr_ok(xr, xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data())), "xrEnumerateSwapchainImages(body)");
 +			};
++			g.ew = g.bw;
++			g.eh = g.bh;
 +			for (int e = 0; e < 2 && ok; e++)
 +			{
 +				ok = make_sc(g.body_sc[e], g.body_img[e], g.bw, g.bh) && make_sc(g.env_sc[e], g.env_img[e], g.ew, g.eh);
@@ -2213,6 +2309,7 @@ index 000000000..761deefac
 +			std::memcpy(cb.model, model.m, sizeof(cb.model));
 +			cb.color[0] = color.x; cb.color[1] = color.y; cb.color[2] = color.z; cb.color[3] = 1.f;
 +			cb.params[0] = env;
++			cb.params[1] = g.pattern_size.x; cb.params[2] = g.pattern_size.y; cb.params[3] = g.pattern_size.z;
 +			xr.context->UpdateSubresource(g.cb, 0, nullptr, &cb, 0, 0);
 +			const UINT stride = sizeof(gvert), offset = 0;
 +			xr.context->IASetVertexBuffers(0, 1, &m.vb, &stride, &offset);
@@ -2525,6 +2622,86 @@ index 000000000..761deefac
 +			xrReleaseSwapchainImage(sc, &ri);
 +		}
 +
++		// The restaurant around the menus and the big screen: a diner with a checkered floor, tiled walls, counters
++		// and lamps, built around the screen so the game's menu hangs on the front wall like a menu board.
++		void draw_room(xr_state& xr)
++		{
++			auto& g = g_gfx;
++			const vec3 normal{std::sin(xr.screen_yaw), 0.f, std::cos(xr.screen_yaw)};   // from the screen toward you
++			const vec3 F = normal * -1.f, Rt{std::cos(xr.screen_yaw), 0.f, -std::sin(xr.screen_yaw)}, Up{0.f, 1.f, 0.f};
++			const f32 floor = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.65f;
++			const f32 sw = xr.screen_width, sh = xr.sc_w ? sw * xr.sc_h / xr.sc_w : sw * 9.f / 16.f;
++			const vec3 front = xr.screen_center + F * 0.04f;           // front wall surface, just behind the screen
++			const f32 W = std::max(9.f, sw + 4.f), Dp = 9.f, H = std::max(3.3f, xr.screen_center.y - floor + sh * 0.5f + 0.9f);
++			const vec3 base{front.x, floor, front.z};
++			const vec3 mid = base - F * (Dp * 0.5f);
++			// A box: centre c, size along (right, up, forward)
++			const auto box = [&](vec3 c, vec3 size, vec3 col, f32 mode)
++			{
++				g.pattern_size = size;
++				gfx_draw(xr, g.box, m_cols(Rt * size.x, Up * size.y, F * size.z, c), col, mode);
++			};
++			const vec3 tile{0.62f, 0.80f, 0.76f}, cream{0.93f, 0.89f, 0.80f}, wood{0.36f, 0.22f, 0.13f}, steel{0.72f, 0.74f, 0.76f}, red{0.72f, 0.12f, 0.10f};
++			// Floor and ceiling
++			box(mid + Up * -0.01f, {W, 0.02f, Dp}, {1.f, 1.f, 1.f}, 2.f);
++			box(mid + Up * (H + 0.05f), {W, 0.1f, Dp}, {0.20f, 0.17f, 0.15f}, 0.f);
++			// Walls: tiles up to 1.2 m, painted above, with a red trim line
++			const auto wall = [&](vec3 c, vec3 dir_len, f32 len)
++			{
++				const bool along_x = std::fabs(dot(dir_len, Rt)) > 0.5f;
++				const vec3 s_low = along_x ? vec3{len, 1.2f, 0.06f} : vec3{0.06f, 1.2f, len};
++				const vec3 s_trim = along_x ? vec3{len, 0.08f, 0.08f} : vec3{0.08f, 0.08f, len};
++				const vec3 s_up = along_x ? vec3{len, H - 1.28f, 0.06f} : vec3{0.06f, H - 1.28f, len};
++				box(c + Up * 0.6f, s_low, tile, 3.f);
++				box(c + Up * 1.24f, s_trim, red, 0.f);
++				box(c + Up * (1.28f + (H - 1.28f) * 0.5f), s_up, cream, 0.f);
++			};
++			wall(base + F * 0.03f, Rt, W);                                  // front (behind the menu board)
++			wall(base - F * (Dp + 0.03f), Rt, W);                           // back
++			wall(mid - Rt * (W * 0.5f + 0.03f), F, Dp);                     // left
++			wall(mid + Rt * (W * 0.5f + 0.03f), F, Dp);                     // right
++			// The menu board: a wooden frame around the game's picture
++			{
++				const vec3 sc = xr.screen_center + F * 0.02f;
++				const f32 t = 0.12f;
++				box(sc + Up * (sh * 0.5f + t * 0.5f), {sw + 2.f * t, t, 0.06f}, wood, 0.f);
++				box(sc - Up * (sh * 0.5f + t * 0.5f), {sw + 2.f * t, t, 0.06f}, wood, 0.f);
++				box(sc - Rt * (sw * 0.5f + t * 0.5f), {t, sh, 0.06f}, wood, 0.f);
++				box(sc + Rt * (sw * 0.5f + t * 0.5f), {t, sh, 0.06f}, wood, 0.f);
++				box(sc + F * 0.03f, {sw + 2.f * t, sh + 2.f * t, 0.02f}, {0.05f, 0.05f, 0.05f}, 0.f);
++				// Ticket rail under the board
++				box(sc - Up * (sh * 0.5f + t + 0.06f) - F * 0.04f, {sw * 0.9f, 0.04f, 0.04f}, steel, 0.f);
++			}
++			// Counters along both sides: wooden body, steel top, a grill and a fryer on the left
++			for (int side = -1; side <= 1; side += 2)
++			{
++				const vec3 c = mid + Rt * (side * (W * 0.5f - 0.4f));
++				box(c + Up * 0.45f, {0.75f, 0.9f, Dp * 0.8f}, wood, 0.f);
++				box(c + Up * 0.92f, {0.8f, 0.04f, Dp * 0.8f + 0.04f}, steel, 0.f);
++				if (side < 0)
++				{
++					box(c + Up * 0.98f - F * 1.2f, {0.6f, 0.08f, 0.9f}, {0.12f, 0.12f, 0.12f}, 0.f);   // grill
++					box(c + Up * 1.06f - F * 2.4f, {0.5f, 0.24f, 0.5f}, steel, 0.f);                  // fryer
++					box(c + Up * 1.19f - F * 2.4f, {0.4f, 0.02f, 0.4f}, {0.75f, 0.55f, 0.18f}, 4.f);   // oil
++				}
++			}
++			// Back counter with stools, facing the board
++			{
++				const vec3 c = base - F * (Dp - 0.6f);
++				box(c + Up * 0.5f, {W * 0.6f, 1.0f, 0.6f}, red, 0.f);
++				box(c + Up * 1.02f, {W * 0.6f + 0.05f, 0.04f, 0.66f}, cream, 0.f);
++			}
++			// Hanging lamps (warm glow)
++			for (int k = -1; k <= 1; k++)
++			{
++				const vec3 c = mid + Rt * (k * W * 0.28f) + F * 1.0f + Up * (H - 0.75f);
++				box(c + Up * 0.4f, {0.015f, 0.7f, 0.015f}, {0.1f, 0.1f, 0.1f}, 0.f);
++				g.pattern_size = {1.f, 1.f, 1.f};
++				gfx_draw(xr, g.sphere, m_cols(Rt * 0.13f, Up * 0.09f, F * 0.13f, c), {1.f, 0.86f, 0.62f}, 4.f);
++			}
++			g.pattern_size = {1.f, 1.f, 1.f};
++		}
++
 +		// Draws the room (env) and the body with hands for both eyes. Returns false if nothing could be drawn.
 +		bool gfx_render(xr_state& xr, bool want_env, bool want_body)
 +		{
@@ -2553,10 +2730,18 @@ index 000000000..761deefac
 +						{
 +							const D3D11_VIEWPORT vp{0.f, 0.f, static_cast<f32>(g.ew), static_cast<f32>(g.eh), 0.f, 1.f};
 +							ctx->RSSetViewports(1, &vp);
-+							ctx->OMSetRenderTargets(1, &rtv, nullptr);
++							ctx->OMSetRenderTargets(1, &rtv, g.dsv[e]);
++							ctx->ClearDepthStencilView(g.dsv[e], D3D11_CLEAR_DEPTH, 1.f, 0);
 +							ctx->OMSetDepthStencilState(g.ds_off, 0);
-+							g.vp = view_proj(xr.views[e], 0.1f, 200.f, true);
++							g.vp = view_proj(xr.views[e], 0.05f, 200.f, true);
 +							gfx_draw(xr, g.sphere, m_cols({50, 0, 0}, {0, 50, 0}, {0, 0, 50}, {0, 0, 0}), {0, 0, 0}, 1.f);
++							// Menus and the big screen: the restaurant around you
++							if (!xr.live3d && xr.screen_placed)
++							{
++								ctx->OMSetDepthStencilState(g.ds_on, 0);
++								g.vp = view_proj(xr.views[e], 0.05f, 200.f, false);
++								draw_room(xr);
++							}
 +						}
 +						release(g.env_sc[e]);
 +					}
@@ -2629,6 +2814,8 @@ index 000000000..761deefac
 +			c.turn_speed = num("turnspeed", 120.f, 20.f, 400.f);
 +			c.move_speed = num("movespeed", 1.4f, 0.3f, 5.f);
 +			c.hud_dist = num("huddist", 1.5f, 0.6f, 6.f);
++			c.room = get("kitchen", "room") != "follow";
++			c.look_switch = get("lookswitch", "on") != "off";
 +			if (const std::string st = get("stereo", ""); !st.empty()) xr.stereo = st != "off";
 +			if (const std::string pt = get("pointing", ""); !pt.empty()) xr.pointing_laser = pt == "laser";
 +			if (std::memcmp(&old, &c, sizeof(c)) != 0 || !xr.comfort_read)
@@ -2637,7 +2824,116 @@ index 000000000..761deefac
 +					!c.body ? "hidden" : c.female ? "female chef" : "male chef", c.seated ? "seated" : "standing", c.smooth_turn ? "smooth" : "snap",
 +					c.snap_deg, c.turn_speed, c.move_speed, c.vignette ? "on" : "off", c.hud_dist, xr.stereo ? "3D depth" : "no depth",
 +					xr.pointing_laser ? "the laser" : "the hands");
++				vr_log("Comfort: kitchen %s, look to change station %s", c.room ? "stays still in the room" : "follows the game camera", c.look_switch ? "on" : "off");
 +			}
++		}
++
++		// Kitchen stations in room mode. The game changes station with Cross and Circle (A and B). The mod learns which
++		// way each one goes from the camera's own move, remembers where every station's camera looks, and when you
++		// turn your head well past the current station toward a neighbour, it presses the button for you.
++		void update_stations(xr_state& xr, const cam_info& cam, pointer_state& out, u64 now, bool grabbing)
++		{
++			auto& n = xr.nav;
++			if (!xr.live3d || !cam.valid || !cam.room)
++			{
++				if (n.ready || !n.target.empty()) vr_log("Stations: left the kitchen view");
++				const int side = n.side_cross;
++				n = {};
++				n.side_cross = side;
++				return;
++			}
++			if (!n.side_cross)
++			{
++				const std::string v = persist_get("station_cross");
++				if (v == "1" || v == "-1") n.side_cross = v == "1" ? 1 : -1;
++			}
++			// Where the game camera looks, in the room
++			const vec3 look_v = xform(cam.D, {0.f, 0.f, -cam.depth});
++			const vec3 tgt = from_player(xr, level(cam.up_a, look_v) * xr.unit);
++			const auto heading = [&](vec3 p) { const vec3 v = p - xr.last_head; return std::atan2(-v.x, -v.z); };
++			const bool settled = cam.still >= 18;
++
++			const auto start = [&](int btn, bool automatic)
++			{
++				n.pending_btn = btn;
++				n.pending_auto = automatic;
++				n.before = tgt;
++				n.pending_since = now;
++				n.moves_at_press = cam.moves;
++				n.moved = false;
++			};
++
++			// Your own presses (A = Cross, B = Circle) teach the mod which way they go
++			const bool a = get_bool(xr, xr.btn_a), b = get_bool(xr, xr.btn_b);
++			if (!n.pending_btn && a && !n.prev_a) start(1, false);
++			else if (!n.pending_btn && b && !n.prev_b) start(2, false);
++			n.prev_a = a;
++			n.prev_b = b;
++
++			// A press of ours is being held
++			if (now < n.press_until)
++			{
++				if (n.press_btn == 1) out.cross = true;
++				else out.circle = true;
++			}
++
++			if (n.pending_btn)
++			{
++				if (cam.moves != n.moves_at_press) n.moved = true;
++				if (n.moved && settled)
++				{
++					const f32 dh = std::remainder(heading(tgt) - heading(n.before), 6.2831853f);
++					if (std::fabs(dh) > 0.07f && std::fabs(dh) < 2.2f)
++					{
++						const int side = dh > 0.f ? 1 : -1;
++						const int sc = n.pending_btn == 1 ? side : -side;
++						if (sc != n.side_cross)
++						{
++							n.side_cross = sc;
++							persist_set("station_cross", sc > 0 ? "1" : "-1");
++						}
++						if (!n.ready) vr_log("Stations: %s changes station to your %s; look-to-change is ready", n.pending_btn == 1 ? "Cross (A)" : "Circle (B)", side > 0 ? "left" : "right");
++						n.ready = true;
++						n.target[n.idx] = n.before;
++						n.idx += side;
++						n.target[n.idx] = tgt;
++						n.blocked_side = 0;
++					}
++					n.pending_btn = 0;
++				}
++				else if (!n.moved && now - n.pending_since > 1500)
++				{
++					// Nothing happened: no station that way from here (only remembered for our own presses)
++					if (n.pending_auto) { n.blocked_side = (n.pending_btn == 1) == (n.side_cross > 0) ? 1 : -1; n.blocked_idx = n.idx; }
++					n.pending_btn = 0;
++				}
++				else if (now - n.pending_since > 6000) n.pending_btn = 0;
++			}
++			else if (settled && n.ready) n.target[n.idx] = tgt;
++
++			// Look to change station
++			if (!xr.comfort.look_switch || !n.ready || !n.side_cross || n.pending_btn || !settled || grabbing || now < n.press_until + 300) { n.off_since = 0; return; }
++			vec3 f = xr.last_forward;
++			const f32 hh = std::atan2(-f.x, -f.z);
++			const f32 diff = std::remainder(hh - heading(tgt), 6.2831853f);
++			const int side = diff > 0.f ? 1 : -1;
++			if (std::fabs(diff) < 0.26f && n.blocked_side) n.blocked_side = 0;
++			bool want = std::fabs(diff) > 0.52f;    // more than 30 degrees past this station
++			if (const auto it = n.target.find(n.idx + side); it != n.target.end())
++			{
++				// A known neighbour: go when you look closer to it than to this station
++				const f32 dn = std::fabs(std::remainder(hh - heading(it->second), 6.2831853f));
++				want = std::fabs(diff) > 0.17f && dn < std::fabs(diff);
++			}
++			if (n.blocked_side == side && n.blocked_idx == n.idx) want = false;
++			if (!want) { n.off_since = 0; return; }
++			if (!n.off_since || n.off_side != side) { n.off_since = now; n.off_side = side; return; }
++			if (now - n.off_since < 350) return;
++			n.press_btn = side == n.side_cross ? 1 : 2;
++			n.press_until = now + 150;
++			n.off_since = 0;
++			start(n.press_btn, true);
++			vr_log("Stations: you looked %s, pressing %s", side > 0 ? "left" : "right", n.press_btn == 1 ? "Cross" : "Circle");
 +		}
 +
 +		void update_input(xr_state& xr, XrTime time, f32 dt)
@@ -2842,12 +3138,14 @@ index 000000000..761deefac
 +					const f32 D = cam.depth;
 +					const vec3 origin = to_vec(aim.pose.position);
 +					const vec3 dir = rotate(aim.pose.orientation, {0.0f, 0.0f, -1.0f});
-+					const vec3 o = level(cam.up, to_player(xr, origin) * (1.f / xr.unit), -1.f);
-+					const vec3 d = level(cam.up, rotate(qconj(yaw_q(xr.player_yaw)), dir), -1.f);
++					// Room mode: where you stand is the anchor camera; the game sees from the current camera (D maps it to the anchor)
++					const mat4 Di = rigid_inv(cam.D);
++					const vec3 o = xform(Di, level(cam.up_a, to_player(xr, origin) * (1.f / xr.unit), -1.f));
++					const vec3 d = xdir(Di, level(cam.up_a, rotate(qconj(yaw_q(xr.player_yaw)), dir), -1.f));
 +					const auto to_local = [&](f32 nx, f32 ny)
 +					{
 +						const vec3 q{D * (nx + cam.cx) / cam.sx, D * (ny + cam.cy) / cam.sy, -D};
-+						return from_player(xr, level(cam.up, q) * xr.unit);
++						return from_player(xr, level(cam.up_a, xform(cam.D, q)) * xr.unit);
 +					};
 +
 +					// Hands: the game's pointer is wherever your hand covers the game's picture, as seen from the game
@@ -2857,7 +3155,7 @@ index 000000000..761deefac
 +					if (!xr.pointing_laser && xr.hand_valid[hand])
 +					{
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
-+						const vec3 gp = level(cam.up, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f);
++						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f));
 +						if (gp.z < -0.05f)
 +						{
 +							nx = (cam.sx * gp.x + cam.cx * gp.z) / -gp.z;
@@ -2982,6 +3280,8 @@ index 000000000..761deefac
 +				out.triangle = get_bool(xr, xr.btn_y);
 +				out.start = get_bool(xr, xr.btn_menu);
 +				out.select = get_bool(xr, xr.stick_click, xr.hand_path[1]);
++
++				update_stations(xr, cam, out, now_ms, grabbing);
 +			}
 +
 +			if ((xr.frames % 600) == 0)
@@ -3067,6 +3367,7 @@ index 000000000..761deefac
 +				g_views.mode3d = xr.mode3d;
 +				g_views.stereo = xr.stereo;
 +				g_views.hud_dist = xr.comfort.hud_dist;
++				g_views.room = xr.comfort.room;
 +			}
 +			const u64 now_tick = GetTickCount64();
 +			const bool was3d = xr.live3d;
@@ -3085,7 +3386,7 @@ index 000000000..761deefac
 +			XrCompositionLayerProjectionView body_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 +			XrCompositionLayerQuad calib{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad vig{XR_TYPE_COMPOSITION_LAYER_QUAD};
-+			const XrCompositionLayerBaseHeader* layers[12]{};
++			const XrCompositionLayerBaseHeader* layers[16]{};
 +			u32 layer_count = 0;
 +
 +			// The room around the game, and your body and hands: drawn by the mod at full headset rate
@@ -3202,6 +3503,28 @@ index 000000000..761deefac
 +					dot_layer.pose.orientation = yaw_q(xr.live3d ? xr.player_yaw : xr.screen_yaw);
 +					dot_layer.size = {size, size};
 +					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot_layer);
++				}
++			}
++
++			// The restaurant's sign over the menu board (menus and the big screen)
++			XrCompositionLayerQuad sign{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			if (frame_state.shouldRender && drew && !xr.live3d && xr.screen_placed)
++			{
++				if (!xr.sign_drawn) { draw_sign(xr, persist_get("intro") != "1"); xr.sign_drawn = true; }
++				if (xr.sign_has)
++				{
++					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++					const f32 sh = xr.sc_w ? xr.screen_width * xr.sc_h / xr.sc_w : xr.screen_width * 9.f / 16.f;
++					const f32 width = std::min(xr.screen_width * 0.9f, 2.6f), height = width * sign_h / sign_w;
++					const vec3 pos = xr.screen_center + vec3{0.f, sh * 0.5f + 0.16f + height * 0.5f, 0.f} + normal * 0.02f;
++					sign.space = xr.local_space;
++					sign.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					sign.subImage.swapchain = xr.sign;
++					sign.subImage.imageRect.extent = {static_cast<s32>(sign_w), static_cast<s32>(sign_h)};
++					sign.pose.position = {pos.x, pos.y, pos.z};
++					sign.pose.orientation = yaw_q(xr.screen_yaw);
++					sign.size = {width, height};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sign);
 +				}
 +			}
 +
@@ -3329,6 +3652,7 @@ index 000000000..761deefac
 +			if (xr.swapchain != XR_NULL_HANDLE) xrDestroySwapchain(xr.swapchain);
 +			if (xr.panel != XR_NULL_HANDLE) xrDestroySwapchain(xr.panel);
 +			if (xr.help != XR_NULL_HANDLE) xrDestroySwapchain(xr.help);
++			if (xr.sign != XR_NULL_HANDLE) xrDestroySwapchain(xr.sign);
 +			if (xr.cursor != XR_NULL_HANDLE) xrDestroySwapchain(xr.cursor);
 +			if (xr.laser != XR_NULL_HANDLE) xrDestroySwapchain(xr.laser);
 +			for (auto sc : xr.eye_sc) if (sc != XR_NULL_HANDLE) xrDestroySwapchain(sc);
@@ -3619,6 +3943,8 @@ index 000000000..761deefac
 +			}
 +			s.unit = v.unit;
 +			s.hud_dist = v.hud_dist;
++			s.room_on = v.room;
++			s.vms.clear();
 +			s.enabled = v.valid && v.mode3d && s.want3d;
 +			if (!s.enabled) return;
 +
@@ -3704,7 +4030,11 @@ index 000000000..761deefac
 +			const auto* r = rv_ring(gen);
 +			if (!r) return false;
 +			if (scene ? s.x3_ready : backdrop ? (s.x2b_ready && s.x2b_gen == gen) : (s.x2_ready && s.x2_gen == gen)) return true;
-+			const mat4 base = mmul(mmul(eye_projection(r->tag.fov, c.A, c.B), r->E), level_mat(s.have_up ? s.up : vec3{0.f, 1.f, 0.f}));
++			// Levelled with world up as seen from where you stand (the anchor camera; the current camera when not in room mode)
++			const vec3 up_here = s.anchored ? s.up_a : (s.have_up ? s.up : vec3{0.f, 1.f, 0.f});
++			const mat4 base = mmul(mmul(eye_projection(r->tag.fov, c.A, c.B), r->E), level_mat(up_here));
++			// Room mode: the 3D scene (and backdrops) move back by how far the game camera moved since the anchor
++			const mat4 room = s.anchored ? mmul(base, s.Dpred) : base;
 +			if (scene)
 +			{
 +				// Undo the game's projection, then view from the eye with the eye's projection
@@ -3712,7 +4042,7 @@ index 000000000..761deefac
 +				P.m[0] = c.sx; P.m[2] = c.cx; P.m[5] = c.sy; P.m[6] = c.cy; P.m[10] = c.A; P.m[11] = c.B; P.m[14] = -1.f;
 +				mat4 Pi;
 +				if (!minv(P, Pi)) return false;
-+				s.X3 = mmul(base, Pi);
++				s.X3 = mmul(room, Pi);
 +				s.x3_ready = true;
 +			}
 +			else
@@ -3726,10 +4056,153 @@ index 000000000..761deefac
 +				S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
 +				S2.m[11] = -D;
 +				S2.m[15] = 1.f;
-+				if (backdrop) { s.X2b = mmul(base, S2); s.x2b_ready = true; s.x2b_gen = gen; }
++				if (backdrop) { s.X2b = mmul(room, S2); s.x2b_ready = true; s.x2b_gen = gen; }
 +				else { s.X2 = mmul(base, S2); s.x2_ready = true; s.x2_gen = gen; }
 +			}
 +			return true;
++		}
++
++		// Room mode. The game camera's motion between two frames (V_now = M * V_before) is found from objects that did
++		// not move: their view-space transforms differ by exactly M. The camera's rotation change comes from the
++		// rotation most scenery shares; the shift is the value most objects agree on. D (current view -> anchor view)
++		// then keeps the kitchen still in the room, so a station change shows the new station where it really is.
++		void rv_room_update(bool have_R, const vec3 R[3])
++		{
++			auto& s = g_rv;
++			const auto reset = [&]()
++			{
++				s.D = s.Dpred = s.step_inv = ident();
++				s.fails = 0;
++				s.still = 0;
++			};
++			const auto finish = [&]()
++			{
++				s.up_a = normalize(xdir(s.D, s.up));
++				s.vms_prev.swap(s.vms);
++				if (have_R) { for (int i = 0; i < 3; i++) s.R_prev[i] = R[i]; }
++				s.have_R_prev = have_R;
++			};
++			if (!s.room_on || !s.want3d || !have_R)
++			{
++				if (s.anchored) { reset(); s.anchored = false; }
++				finish();
++				return;
++			}
++			if (!s.anchored)
++			{
++				reset();
++				s.anchored = true;
++				vr_log("Room: the kitchen is now fixed in your room");
++				finish();
++				return;
++			}
++			if (!s.have_R_prev || s.vms_prev.empty() || s.vms.empty()) { finish(); return; }
++
++			// Rotation change: rows of R are the view axes, so dR = R_now * R_before^T
++			f32 dR[9];
++			for (int i = 0; i < 3; i++)
++				for (int j = 0; j < 3; j++) dR[i * 3 + j] = dot(R[i], s.R_prev[j]);
++
++			// Pair objects across the two frames (draw order, allowing a few draws added or culled) and keep the
++			// pairs whose rotation changed exactly by dR; each gives a candidate shift.
++			std::vector<vec3> best;
++			for (int shift = -3; shift <= 3; shift++)
++			{
++				std::vector<vec3> cand;
++				const int np = static_cast<int>(s.vms_prev.size()), nc = static_cast<int>(s.vms.size());
++				for (int i = 0; i < np && cand.size() < 256; i++)
++				{
++					const int j = i + shift;
++					if (j < 0 || j >= nc) continue;
++					const auto& p = s.vms_prev[i].m;
++					const auto& c = s.vms[j].m;
++					const f32 scale = std::max(1.f, std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]));
++					bool ok = true;
++					for (int a = 0; a < 3 && ok; a++)
++						for (int k = 0; k < 3 && ok; k++)
++						{
++							const f32 want = dR[a * 3] * p[k] + dR[a * 3 + 1] * p[4 + k] + dR[a * 3 + 2] * p[8 + k];
++							ok = std::fabs(want - c[a * 4 + k]) <= 3e-3f * scale;
++						}
++					if (!ok) continue;
++					const vec3 tp{p[3], p[7], p[11]}, tc{c[3], c[7], c[11]};
++					const vec3 rt{dR[0] * tp.x + dR[1] * tp.y + dR[2] * tp.z, dR[3] * tp.x + dR[4] * tp.y + dR[5] * tp.z, dR[6] * tp.x + dR[7] * tp.y + dR[8] * tp.z};
++					cand.push_back(tc - rt);
++				}
++				if (cand.size() > best.size()) best.swap(cand);
++			}
++			// The shift most pairs agree on (moving objects disagree)
++			int top = -1, top_n = 0;
++			for (usz i = 0; i < best.size(); i++)
++			{
++				int n = 0;
++				for (const auto& b : best)
++				{
++					const vec3 d = b - best[i];
++					if (dot(d, d) < 0.02f * 0.02f) n++;
++				}
++				if (n > top_n) { top_n = n; top = static_cast<int>(i); }
++			}
++			if (top >= 0 && top_n >= 4 && top_n * 10 >= static_cast<int>(best.size()) * 3)
++			{
++				vec3 sum{};
++				int n = 0;
++				for (const auto& b : best)
++				{
++					const vec3 d = b - best[top];
++					if (dot(d, d) < 0.02f * 0.02f) { sum = sum + b; n++; }
++				}
++				const vec3 dt = sum * (1.f / n);
++				mat4 M;
++				for (int i = 0; i < 3; i++)
++					for (int j = 0; j < 3; j++) M.m[i * 4 + j] = dR[i * 3 + j];
++				M.m[3] = dt.x; M.m[7] = dt.y; M.m[11] = dt.z; M.m[15] = 1.f;
++				const mat4 Minv = rigid_inv(M);
++				mat4 Dn = mmul(s.D, Minv);
++				// Keep the rotation exact (no slow drift)
++				{
++					vec3 x{Dn.m[0], Dn.m[4], Dn.m[8]}, y{Dn.m[1], Dn.m[5], Dn.m[9]};
++					x = normalize(x);
++					y = normalize(y - x * dot(x, y));
++					const vec3 z = cross(x, y);
++					Dn.m[0] = x.x; Dn.m[4] = x.y; Dn.m[8] = x.z;
++					Dn.m[1] = y.x; Dn.m[5] = y.y; Dn.m[9] = y.z;
++					Dn.m[2] = z.x; Dn.m[6] = z.y; Dn.m[10] = z.z;
++				}
++				const vec3 pe{Dn.m[3] - s.Dpred.m[3], Dn.m[7] - s.Dpred.m[7], Dn.m[11] - s.Dpred.m[11]};
++				s.pred_err = std::max(s.pred_err, std::sqrt(dot(pe, pe)));
++				const f32 rot_change = std::fabs(dR[0] - 1.f) + std::fabs(dR[4] - 1.f) + std::fabs(dR[8] - 1.f);
++				const bool still = dot(dt, dt) < 1e-6f && rot_change < 1e-5f;
++				if (still) s.still++;
++				else { s.still = 0; s.moves++; }
++				s.D = Dn;
++				s.step_inv = Minv;
++				s.Dpred = still ? Dn : mmul(Dn, Minv);
++				s.fails = 0;
++				s.solved++;
++				s.matched += top_n;
++				const vec3 away{s.D.m[3], s.D.m[7], s.D.m[11]};
++				if (dot(away, away) > 60.f * 60.f)
++				{
++					vr_log("Room: the game camera went far away; the kitchen is fixed again where you stand");
++					s.resets++;
++					reset();
++				}
++			}
++			else if (++s.fails <= 3)
++			{
++				// Not sure this frame (few objects in common): continue the motion
++				s.D = s.Dpred;
++				s.still = 0;
++			}
++			else
++			{
++				// A camera cut to somewhere unrelated: start again from here
++				if (s.fails == 4) { s.resets++; vr_log("Room: camera cut (%zu objects, %d agreed); the kitchen is fixed again where you stand", best.size(), top_n); }
++				reset();
++				s.fails = 4;
++			}
++			finish();
 +		}
 +
 +		frame_tag rv_end_frame(u64 display_key)
@@ -3769,6 +4242,18 @@ index 000000000..761deefac
 +					s.have_up = true;
 +				}
 +			}
++			// Room mode: how far has the game camera moved since the anchor?
++			{
++				const bool have_R = !s.votes.empty() && std::max_element(s.votes.begin(), s.votes.end(), [](const auto& a, const auto& b) { return a.n < b.n; })->n >= 3;
++				vec3 R[3]{};
++				if (have_R)
++				{
++					const auto best = std::max_element(s.votes.begin(), s.votes.end(), [](const auto& a, const auto& b) { return a.n < b.n; });
++					R[0] = best->rx; R[1] = best->ry; R[2] = best->rz;
++				}
++				rv_room_update(have_R, R);
++			}
++
 +			// Typical distance of things in view
 +			if (s.depths.size() >= 3)
 +			{
@@ -3800,6 +4285,11 @@ index 000000000..761deefac
 +				g_cam.sx = s.cam.sx; g_cam.sy = s.cam.sy; g_cam.cx = s.cam.cx; g_cam.cy = s.cam.cy;
 +				g_cam.up = s.have_up ? s.up : vec3{0.f, 1.f, 0.f};
 +				g_cam.depth = s.depth;
++				g_cam.room = s.anchored;
++				g_cam.D = s.anchored ? s.D : ident();
++				g_cam.up_a = s.anchored ? s.up_a : g_cam.up;
++				g_cam.still = s.still;
++				g_cam.moves = s.moves;
 +			}
 +
 +			s.tot3 += s.n3; s.tot2 += s.n2; s.tot2b += s.n2b; s.tot0 += s.n0; s.frames++;
@@ -3814,6 +4304,14 @@ index 000000000..761deefac
 +					static_cast<unsigned long long>(s.scene_key), static_cast<unsigned long long>(s.composite_key), static_cast<unsigned long long>(display_key),
 +					static_cast<unsigned long long>(s.lat_hist[0]), static_cast<unsigned long long>(s.lat_hist[1]),
 +					static_cast<unsigned long long>(s.lat_hist[2]), static_cast<unsigned long long>(s.lat_hist[3]));
++				if (s.anchored)
++				{
++					vr_log("Room: camera moved %.2f m from where you stand (%.1f deg), %llu frames solved with %.0f objects each, worst guess off by %.1f cm, %llu re-anchors",
++						std::sqrt(s.D.m[3] * s.D.m[3] + s.D.m[7] * s.D.m[7] + s.D.m[11] * s.D.m[11]) * s.unit, std::acos(std::clamp((s.D.m[0] + s.D.m[5] + s.D.m[10] - 1.f) * 0.5f, -1.f, 1.f)) * 57.29578f,
++						static_cast<unsigned long long>(s.solved), s.solved ? static_cast<double>(s.matched) / s.solved : 0.0, s.pred_err * s.unit * 100.f, static_cast<unsigned long long>(s.resets));
++					s.solved = s.matched = 0;
++					s.pred_err = 0.f;
++				}
 +				s.last_log = now;
 +				s.tot3 = s.tot2 = s.tot2b = s.tot0 = s.frames = 0;
 +				for (auto& h : s.lat_hist) h = 0;
@@ -4607,6 +5105,19 @@ index 000000000..761deefac
 +					}
 +					const f32 near_plane = B / A;
 +					if (m[15] > near_plane && m[15] < 60.f && s.depths.size() < 512) s.depths.push_back(m[15]);
++					// Room mode: this object's transform in the camera's view space (MVP with the projection taken off)
++					if (s.vms.size() < 1024)
++					{
++						const auto& c = s.cam;
++						rsx_vr_state::vm34 v;
++						for (int k = 0; k < 4; k++)
++						{
++							v.m[k] = (m[k] + c.cx * m[12 + k]) / c.sx;
++							v.m[4 + k] = (m[4 + k] + c.cy * m[12 + k]) / c.sy;
++							v.m[8 + k] = -m[12 + k];
++						}
++						s.vms.push_back(v);
++					}
 +				}
 +			}
 +		}

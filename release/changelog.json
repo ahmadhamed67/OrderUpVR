@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.9.0",
+    "date": "2026-11-17",
+    "notes": [
+      "The kitchen is now a real place around you. When the game moves its camera to another station, the kitchen no longer slides with it: it stays still in your room, and the new station appears where it really is. The mod measures the camera's motion from the kitchen itself every frame (Settings > VR comfort and body > Kitchen world; 'Follows the game camera' is the old behaviour).",
+      "Turn to change station: press A or B once in the kitchen so the mod learns which way they go, then just turn your head toward the next station and the game moves there (Look to change station, on by default). A and B keep working as before.",
+      "Reaching for things follows the room too, so your hand still lands on the burger after a station change.",
+      "Menus are now a menu board in a diner: checkered floor, tiled walls, counters with a grill and a fryer, and warm lamps around you, with a sign that welcomes first-time chefs. Point with your hand and pull the trigger to choose.",
+      "Still includes the camera research from 0.8.1. After a session, press Collect logs and attach the zip to the LogsRecordDump issue: the new room log lines show how well the kitchen stays still."
+    ]
+  },
+  {
     "version": "0.8.1",
     "date": "2026-11-17",
     "notes": [
