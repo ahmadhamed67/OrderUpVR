@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..4b386c10f
+index 000000000..761deefac
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,3499 @@
+@@ -0,0 +1,4222 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -516,6 +516,9 @@ index 000000000..4b386c10f
 +#include "Emu/System.h"
 +#include "Emu/system_progress.hpp"
 +#include "Utilities/File.h"
++#include "Emu/Memory/vm.h"
++
++#include <zlib.h>
 +
 +#ifndef WIN32_LEAN_AND_MEAN
 +#define WIN32_LEAN_AND_MEAN
@@ -532,6 +535,8 @@ index 000000000..4b386c10f
 +#include <openxr/openxr.h>
 +#include <openxr/openxr_platform.h>
 +
++#include <algorithm>
++#include <array>
 +#include <atomic>
 +#include <chrono>
 +#include <cmath>
@@ -755,7 +760,9 @@ index 000000000..4b386c10f
 +			u64 calib_tick = 0;
 +
 +			int n3 = 0, n2 = 0, n0 = 0;
-+			struct bucket { vec3 sum; int n; };
++			struct bucket { vec3 sum; int n; vec3 rx, ry, rz; };
++			f32 fp[16]{};           // first 3D draw's matrix this frame (to see whether the picture is still)
++			bool fp_set = false;
 +			std::vector<bucket> votes;
 +			std::vector<f32> depths;
 +
@@ -772,6 +779,8 @@ index 000000000..4b386c10f
 +		};
 +		rsx_vr_state g_rv;
 +		frame_tag rv_end_frame(u64 display_key);
++		void mr_frame(bool have_r, const vec3 R[3], f32 sx, f32 sy, const f32* fp, bool fp_valid);
++		void mr_shutdown();
 +		std::atomic<u64> g_calib_tick{0};  // last PS Move calibration the game started
 +
 +		// Newest captured frame per slot: 0 = left eye (or the one image for both eyes), 1 = right eye, 2 = flat.
@@ -3431,6 +3440,7 @@ index 000000000..4b386c10f
 +		if (!g_thread.joinable()) return;
 +		g_stop = true;
 +		g_thread.join();
++		mr_shutdown();
 +	}
 +
 +	bool wants_frames()
@@ -3512,6 +3522,7 @@ index 000000000..4b386c10f
 +
 +	void research_constants(u32 program_id, const f32* consts, const u16* ids, usz id_count)
 +	{
++		if (program_id != ~0u) return; // replaced by the camera memory research (same log file)
 +		static std::mutex mtx;
 +		static std::FILE* out = nullptr;
 +		static u64 window_end = 0, next_window = 0;
@@ -3595,6 +3606,7 @@ index 000000000..4b386c10f
 +			s.n3 = s.n2 = s.n0 = s.n2b = 0;
 +			s.votes.clear();
 +			s.depths.clear();
++			s.fp_set = false;
 +			s.tag = {};
 +			s.tainted.clear();
 +			if (s.scene_key != ~0ull) s.tainted.push_back(s.scene_key);
@@ -3743,6 +3755,12 @@ index 000000000..4b386c10f
 +			if (!s.votes.empty())
 +			{
 +				const auto best = std::max_element(s.votes.begin(), s.votes.end(), [](const auto& a, const auto& b) { return a.n < b.n; });
++				// Camera memory research: the view rotation is the rotation most unrotated scenery shows
++				if (s.want3d && best->n >= 3)
++				{
++					const vec3 R[3] = {best->rx, best->ry, best->rz};
++					mr_frame(true, R, s.cam.sx, s.cam.sy, s.fp, s.fp_set);
++				}
 +				if (best->n >= 3 && best->n * 3 >= s.n3)
 +				{
 +					const vec3 u = normalize(best->sum);
@@ -3804,6 +3822,710 @@ index 000000000..4b386c10f
 +			s.begun = false;
 +			s.gen++;
 +			return out;
++		}
++	}
++
++	// ---------------------------------------------------------------- camera memory research
++	// Finds where the game keeps its camera in PS3 memory while the player plays normally:
++	//  1. search memory for the camera rotation and field of view the renderer sees this frame;
++	//  2. keep only places that follow the camera when it moves or zooms;
++	//  3. confirm: change one place for a moment while the view is still and see if the picture moves, then restore it.
++	// Everything goes to log/orderup_research.log for the next step (steering the game's own camera).
++	namespace
++	{
++		u32 rd(u32 addr) { return _byteswap_ulong(*static_cast<const u32*>(vm::base(addr))); }
++		f32 rdf(u32 addr) { return std::bit_cast<f32>(rd(addr)); }
++		void wrf(u32 addr, f32 v) { *static_cast<u32*>(vm::base(addr)) = _byteswap_ulong(std::bit_cast<u32>(v)); }
++
++		// Every form the game might keep its camera in. Types 0..3 are 3x3 rotations (strided rows),
++		// types 10+ are "kinds": short runs of 1..4 floats compared value by value.
++		constexpr int mr_kinds = 40;
++
++		struct mr_kind
++		{
++			int n = 0;               // floats in the run (0 = not searched this time)
++			f32 v[4]{};
++			f32 tol = 0.f;           // absolute, or relative when rel
++			bool rel = false;
++			bool negok = false;      // the run may also be stored negated (quaternions)
++			int comp = 0;            // which float an experiment changes
++			f32 step = 0.f;          // experiment: add this (or multiply when mul)
++			bool mul = false;
++		};
++
++		struct mr_target
++		{
++			f32 m[4][9];
++			mr_kind k[mr_kinds];     // type 10 + i
++		};
++
++		struct mr_cand
++		{
++			u32 addr = 0;
++			int type = 0;        // 0..3 matrix layout, 10+ kind
++			int stride = 4;      // floats between matrix rows
++			int hits = 0, misses = 0;
++			int tests = 0, effects = 0;
++		};
++
++		// Kind numbers (type - 10)
++		enum : int
++		{
++			K_FOV = 0,           // 10 values, 0..9
++			K_POS_VIEW = 10, K_POS_WORLD = 11,
++			K_FWD = 12, K_BACK = 13,
++			K_QUAT = 14,         // 14..17: xyzw, xyzw of the inverse, wxyz, wxyz of the inverse
++			K_ANGLE = 20,        // 20..31: yaw/pitch in several conventions
++			K_END = 32,
++		};
++
++		const char* mr_type_name(int t)
++		{
++			static const char* m[] = {"view rows", "view transposed", "view rows (-z)", "view transposed (-z)"};
++			static const char* k[K_END] = {"projection sy", "projection sx", "1/sy (tan half fov y)", "1/sx", "fov y rad", "fov y deg", "half fov y rad", "half fov y deg", "fov x rad", "fov x deg",
++				"camera position (view)", "camera position (world matrix)", "forward vector", "backward vector",
++				"quaternion xyzw", "quaternion xyzw (inverse)", "quaternion wxyz", "quaternion wxyz (inverse)", "", "",
++				"yaw rad", "yaw rad (negated)", "yaw deg", "yaw deg (negated)", "yaw rad (+180)", "yaw deg (+180)", "yaw rad (other axis)", "yaw deg (other axis)",
++				"pitch rad", "pitch rad (negated)", "pitch deg", "pitch deg (negated)"};
++			if (t < 4) return m[t];
++			if (t >= 10 && t < 10 + K_END) return k[t - 10];
++			return "?";
++		}
++
++		bool mr_is_scalar(int type) { return (type >= 10 + K_FOV && type < 10 + K_POS_VIEW) || (type >= 10 + K_ANGLE && type < 10 + K_END); }
++
++		struct mr_write
++		{
++			u32 addr = 0;
++			int type = 0;
++			std::vector<u32> orig, neu;
++		};
++
++		struct mem_research
++		{
++			std::mutex mtx;                 // guards cands, log
++			std::vector<mr_cand> cands;
++			std::FILE* log = nullptr;
++			std::thread scan_thread;
++			std::atomic<bool> scanning{false};
++			u64 next_scan = 0;
++			int scans = 0;
++
++			// RSX-thread only
++			f32 fp_prev[16]{};
++			int fp_stable = 0;
++			u64 frame = 0;
++			std::vector<mr_write> exp;       // the running experiment (one candidate, or a group of values)
++			bool exp_group = false, exp_from_half = false;
++			int exp_frames = 0;
++			std::vector<std::pair<u32, int>> suspects, other_half;   // group narrowing down
++			u64 next_exp = 0;
++			int experiments = 0;
++			mr_target last_target{};
++
++			// Memory capture: two pictures of memory with the camera somewhere else, kept for offline analysis
++			std::atomic<int> snap_state{0};  // 0 none, 1 taking A, 2 have A, 3 taking B, 4 done
++			std::vector<u32> snap_pages;
++			std::vector<u8> snap_data;
++			f32 cam_a[27]{};                 // R (9), sx, sy, first 3D draw (16)
++			vec3 fwd_a{};
++			u64 snap_a_time = 0;
++		};
++		mem_research g_mr;
++
++		void mr_shutdown()
++		{
++			if (g_mr.scan_thread.joinable()) g_mr.scan_thread.join();
++		}
++
++		void mr_log(const char* fmt, ...)
++		{
++			std::lock_guard lock(g_mr.mtx);
++			if (!g_mr.log)
++			{
++				g_mr.log = std::fopen((fs::get_log_dir() + "orderup_research.log").c_str(), "w");
++				if (!g_mr.log) return;
++			}
++			va_list args;
++			va_start(args, fmt);
++			std::vfprintf(g_mr.log, fmt, args);
++			va_end(args);
++			std::fputc('\n', g_mr.log);
++			std::fflush(g_mr.log);
++		}
++
++		bool near_eq(f32 a, f32 b, f32 tol) { return std::fabs(a - b) <= tol; }
++
++		f32 kind_tol(const mr_kind& k, f32 v, f32 loosen) { return (k.rel ? std::max(2e-5f, std::fabs(v) * k.tol) : k.tol) * loosen; }
++
++		bool mr_match_kind(u32 a, const mr_kind& k, f32 loosen)
++		{
++			for (int sign = 1; sign >= -1; sign -= 2)
++			{
++				if (sign < 0 && !k.negok) break;
++				bool ok = true;
++				for (int i = 0; i < k.n && ok; i++)
++				{
++					const f32 want = k.v[i] * static_cast<f32>(sign);
++					ok = near_eq(rdf(a + i * 4), want, kind_tol(k, want, loosen));
++				}
++				if (ok) return true;
++			}
++			return false;
++		}
++
++		void mr_scan(mr_target t)
++		{
++			const u64 started = GetTickCount64();
++			std::vector<mr_cand> found;
++			int n_mat = 0, n_scalar = 0, n_vec = 0;
++			usz pages = 0;
++
++			// A zero word can only start a match when the wanted first value is zero too (for example a
++			// forward vector with x = 0); single zero values are never searched, memory is full of them.
++			bool zero_m[4]{};
++			for (int v = 0; v < 4; v++) zero_m[v] = std::fabs(t.m[v][0]) <= 2e-3f;
++			bool zero_k[mr_kinds]{};
++			for (int i = 0; i < mr_kinds; i++)
++			{
++				auto& k = t.k[i];
++				if (k.n == 1 && std::fabs(k.v[0]) <= kind_tol(k, k.v[0], 1.f) * 4.f) k.n = 0;
++				zero_k[i] = k.n > 1 && std::fabs(k.v[0]) <= kind_tol(k, k.v[0], 1.f);
++			}
++
++			for (u64 page = 0x00010000; page < 0x40000000; page += 4096)
++			{
++				if (g_stop) break;
++				if (!vm::check_addr(static_cast<u32>(page), vm::page_readable, 4096)) continue;
++				pages++;
++				const bool next_ok = vm::check_addr(static_cast<u32>(page + 4096), vm::page_readable, 4096);
++				for (u32 off = 0; off < 4096; off += 4)
++				{
++					const u32 a = static_cast<u32>(page) + off;
++					const f32 f = rdf(a);
++					if (!std::isfinite(f) || std::fabs(f) > 400.f) continue;
++					const bool zero = f == 0.f;
++					// Matrices: the first value must match one of the layouts, then the rest is checked
++					for (int v = 0; v < 4; v++)
++					{
++						if (zero ? !zero_m[v] : !near_eq(f, t.m[v][0], 2e-3f)) continue;
++						for (int stride : {3, 4})
++						{
++							if (off + (2 * stride + 3) * 4 > 4096 && !next_ok) continue;
++							bool ok = true;
++							for (int r = 0; r < 3 && ok; r++)
++								for (int c = 0; c < 3 && ok; c++)
++									ok = near_eq(rdf(a + (r * stride + c) * 4), t.m[v][r * 3 + c], 2e-3f);
++							if (ok && n_mat < 300) { found.push_back({a, v, stride}); n_mat++; }
++						}
++					}
++					// Single values and short runs
++					for (int i = 0; i < mr_kinds; i++)
++					{
++						const auto& k = t.k[i];
++						if (!k.n || (zero && !zero_k[i])) continue;
++						if (!zero && !near_eq(f, k.v[0], kind_tol(k, k.v[0], 1.f)) && !(k.negok && near_eq(f, -k.v[0], kind_tol(k, k.v[0], 1.f)))) continue;
++						if (off + k.n * 4 > 4096 && !next_ok) continue;
++						if (!mr_match_kind(a, k, 1.f)) continue;
++						int& count = k.n == 1 ? n_scalar : n_vec;
++						if (count < (k.n == 1 ? 3000 : 600)) { found.push_back({a, 10 + i, 0}); count++; }
++					}
++				}
++			}
++
++			std::lock_guard lock(g_mr.mtx);
++			int added = 0;
++			for (const auto& c : found)
++			{
++				auto it = std::find_if(g_mr.cands.begin(), g_mr.cands.end(), [&](const mr_cand& x) { return x.addr == c.addr && x.type == c.type; });
++				if (it != g_mr.cands.end()) it->hits++;
++				else if (g_mr.cands.size() < 5000) { g_mr.cands.push_back(c); g_mr.cands.back().hits = 1; added++; }
++			}
++			if (g_mr.log)
++			{
++				std::fprintf(g_mr.log, "scan %d: %zu readable pages, %d rotation / %d value / %d vector matches (%d new, %zu kept), %llu ms\n", g_mr.scans, pages, n_mat, n_scalar, n_vec, added,
++					g_mr.cands.size(), static_cast<unsigned long long>(GetTickCount64() - started));
++				std::fflush(g_mr.log);
++			}
++			g_mr.scanning = false;
++		}
++
++		bool mr_matches_now(const mr_cand& c, const mr_target& t)
++		{
++			if (!vm::check_addr(c.addr, vm::page_readable, 48)) return false;
++			if (c.type < 4)
++			{
++				for (int r = 0; r < 3; r++)
++					for (int k = 0; k < 3; k++)
++						if (!near_eq(rdf(c.addr + (r * c.stride + k) * 4), t.m[c.type][r * 3 + k], 3e-3f)) return false;
++				return true;
++			}
++			const auto& k = t.k[c.type - 10];
++			return k.n && mr_match_kind(c.addr, k, 2.5f);
++		}
++
++		void mr_dump(u32 addr)
++		{
++			std::string line;
++			for (int i = -16; i < 32; i++)
++			{
++				const u32 a = addr + i * 4;
++				if (!vm::check_addr(a, vm::page_readable, 4)) continue;
++				char b[64];
++				const u32 w = rd(a);
++				std::snprintf(b, sizeof(b), "%s%+d:%08x(%.5g)", i % 8 == 0 ? "\n    " : " ", i * 4, w, std::bit_cast<f32>(w));
++				line += b;
++			}
++			mr_log("  memory around 0x%08x:%s", addr, line.c_str());
++		}
++
++		// Memory capture A: a copy of all readable game memory while the camera is still.
++		void mr_snapshot_a()
++		{
++			auto& m = g_mr;
++			m.snap_pages.clear();
++			for (u64 page = 0x00010000; page < 0x40000000 && !g_stop; page += 4096)
++				if (vm::check_addr(static_cast<u32>(page), vm::page_readable, 4096)) m.snap_pages.push_back(static_cast<u32>(page));
++			// This build has no exception handling, so check free memory first: copy A, copy B of the changed
++			// pages (at most as big) and 1 GB to spare.
++			const u64 need = static_cast<u64>(m.snap_pages.size()) * 4096;
++			MEMORYSTATUSEX ms{};
++			ms.dwLength = sizeof(ms);
++			if (!GlobalMemoryStatusEx(&ms) || ms.ullAvailPhys < need * 2 + (1ull << 30))
++			{
++				mr_log("memory capture A: skipped, %llu MB free and %llu MB needed", static_cast<unsigned long long>(ms.ullAvailPhys >> 20), static_cast<unsigned long long>((need * 2 + (1ull << 30)) >> 20));
++				m.snap_pages.clear(); m.snap_pages.shrink_to_fit();
++				m.snap_state = 4;
++				m.scanning = false;
++				return;
++			}
++			m.snap_data.resize(need);
++			for (usz i = 0; i < m.snap_pages.size(); i++)
++				if (vm::check_addr(m.snap_pages[i], vm::page_readable, 4096)) std::memcpy(&m.snap_data[i * 4096], vm::base(m.snap_pages[i]), 4096);
++			mr_log("memory capture A: %zu pages (%zu MB) with the camera in its first position", m.snap_pages.size(), m.snap_data.size() >> 20);
++			m.snap_state = 2;
++			m.scanning = false;
++		}
++
++		// Memory capture B: with the camera somewhere else, keep the pages that changed (where any form of
++		// the camera must be) and the pages holding field-of-view values, both versions, for offline analysis.
++		void mr_snapshot_b(mr_target t, std::array<f32, 27> cam_b)
++		{
++			auto& m = g_mr;
++			struct pick { usz index; u32 addr; int score; bool fov; std::vector<u8> b; };
++			std::vector<pick> changed, fov;
++			std::vector<u8> buf(4096);
++			for (usz i = 0; i < m.snap_pages.size() && !g_stop; i++)
++			{
++				const u32 addr = m.snap_pages[i];
++				if (!vm::check_addr(addr, vm::page_readable, 4096)) continue;
++				std::memcpy(buf.data(), vm::base(addr), 4096);
++				const u8* a = &m.snap_data[i * 4096];
++				int floats = 0;
++				bool has_fov = false;
++				for (int w = 0; w < 1024; w++)
++				{
++					u32 be;
++					std::memcpy(&be, &buf[w * 4], 4);
++					const f32 f = std::bit_cast<f32>(_byteswap_ulong(be));
++					const f32 af = std::fabs(f);
++					if (std::isfinite(f) && af > 1e-4f && af < 1e5f) floats++;
++					for (int k = 0; k < 10 && !has_fov; k++)
++						if (t.k[K_FOV + k].n && near_eq(f, t.k[K_FOV + k].v[0], kind_tol(t.k[K_FOV + k], t.k[K_FOV + k].v[0], 1.f))) has_fov = true;
++				}
++				const bool diff = std::memcmp(a, buf.data(), 4096) != 0;
++				if (diff && floats >= 128) changed.push_back({i, addr, floats, false, buf});
++				else if (has_fov && floats >= 64) fov.push_back({i, addr, floats, true, buf});
++			}
++			std::sort(changed.begin(), changed.end(), [](const pick& x, const pick& y) { return x.score > y.score; });
++			if (changed.size() > 1800) changed.resize(1800);
++			std::sort(fov.begin(), fov.end(), [](const pick& x, const pick& y) { return x.score > y.score; });
++			if (fov.size() > 200) fov.resize(200);
++			changed.insert(changed.end(), fov.begin(), fov.end());
++			std::sort(changed.begin(), changed.end(), [](const pick& x, const pick& y) { return x.addr < y.addr; });
++
++			// File: "OUVRCAM1", u32 pages, camera A (27 floats), camera B (27 floats), then per page:
++			// u32 address, u32 flags (1 = changed, 2 = holds field-of-view values), 4096 bytes before, 4096 bytes after.
++			// Floats in the header are little-endian; page bytes are raw PS3 memory (big-endian). The whole thing is zlib-compressed.
++			std::vector<u8> raw;
++			auto put = [&](const void* p, usz n) { raw.insert(raw.end(), static_cast<const u8*>(p), static_cast<const u8*>(p) + n); };
++			put("OUVRCAM1", 8);
++			const u32 count = static_cast<u32>(changed.size());
++			put(&count, 4);
++			put(m.cam_a, sizeof(m.cam_a));
++			put(cam_b.data(), sizeof(f32) * 27);
++			for (const auto& p : changed)
++			{
++				const u32 flags = p.fov ? 2u : 1u;
++				put(&p.addr, 4);
++				put(&flags, 4);
++				put(&m.snap_data[p.index * 4096], 4096);
++				put(p.b.data(), 4096);
++			}
++			uLongf zlen = compressBound(static_cast<uLong>(raw.size()));
++			std::vector<u8> z(zlen);
++			bool ok = compress2(z.data(), &zlen, raw.data(), static_cast<uLong>(raw.size()), 6) == Z_OK;
++			if (ok)
++			{
++				if (std::FILE* f = std::fopen((fs::get_log_dir() + "orderup_camdump.bin.z").c_str(), "wb"))
++				{
++					ok = std::fwrite(z.data(), 1, zlen, f) == zlen;
++					std::fclose(f);
++				}
++				else ok = false;
++			}
++			mr_log("memory capture B: %u pages kept (%zu changed with the camera, %zu with field-of-view values), %s %.1f MB",
++				count, static_cast<usz>(count) - fov.size(), fov.size(), ok ? "saved" : "FAILED to save", zlen / 1048576.0);
++			m.snap_pages.clear(); m.snap_pages.shrink_to_fit();
++			m.snap_data.clear(); m.snap_data.shrink_to_fit();
++			m.snap_state = 4;
++			m.scanning = false;
++		}
++
++		bool mr_make_write(const mr_cand& c, const mr_target& t, mr_write& w)
++		{
++			const u32 n = c.type < 4 ? static_cast<u32>(2 * c.stride + 3) : static_cast<u32>(t.k[c.type - 10].n);
++			if (!n || !vm::check_addr(c.addr, vm::page_writable, n * 4)) return false;
++			w.addr = c.addr;
++			w.type = c.type;
++			w.orig.resize(n);
++			for (u32 i = 0; i < n; i++) w.orig[i] = rd(c.addr + i * 4);
++			if (c.type < 4)
++			{
++				// Turn the stored rotation by 2 degrees about the vertical axis
++				const f32 cs = std::cos(0.035f), sn = std::sin(0.035f);
++				for (int r = 0; r < 3; r++)
++				{
++					const u32 ra = c.addr + r * c.stride * 4;
++					const f32 x = rdf(ra), z = rdf(ra + 8);
++					wrf(ra, x * cs + z * sn);
++					wrf(ra + 8, -x * sn + z * cs);
++				}
++			}
++			else
++			{
++				const auto& k = t.k[c.type - 10];
++				const u32 a = c.addr + k.comp * 4;
++				wrf(a, k.mul ? rdf(a) * k.step : rdf(a) + k.step);
++			}
++			w.neu.resize(n);
++			for (u32 i = 0; i < n; i++) w.neu[i] = rd(c.addr + i * 4);
++			return true;
++		}
++
++		mr_cand* mr_find(u32 addr, int type)
++		{
++			auto it = std::find_if(g_mr.cands.begin(), g_mr.cands.end(), [&](const mr_cand& x) { return x.addr == addr && x.type == type; });
++			return it == g_mr.cands.end() ? nullptr : &*it;
++		}
++
++		// Called once per frame from the renderer with this frame's camera (R = rows of the view rotation).
++		void mr_frame(bool have_r, const vec3 R[3], f32 sx, f32 sy, const f32* fp, bool fp_valid)
++		{
++			auto& m = g_mr;
++			m.frame++;
++			if (!have_r || !fp_valid) { m.fp_stable = 0; return; }
++
++			// The camera this frame, in every form the game might use
++			mr_target t{};
++			for (int r = 0; r < 3; r++)
++			{
++				const f32 row[3] = {R[r].x, R[r].y, R[r].z};
++				for (int c = 0; c < 3; c++)
++				{
++					t.m[0][r * 3 + c] = row[c];
++					t.m[1][c * 3 + r] = row[c];
++					t.m[2][r * 3 + c] = r == 2 ? -row[c] : row[c];
++					t.m[3][c * 3 + r] = r == 2 ? -row[c] : row[c];
++				}
++			}
++			auto scalar = [&](int i, f32 v, f32 tol, bool rel, f32 step, bool mul)
++			{
++				auto& k = t.k[i];
++				k.n = 1; k.v[0] = v; k.tol = tol; k.rel = rel; k.step = step; k.mul = mul;
++			};
++			auto run = [&](int i, int n, const f32* v, f32 tol, bool negok, int comp, f32 step)
++			{
++				auto& k = t.k[i];
++				k.n = n; std::copy(v, v + n, k.v); k.tol = tol; k.negok = negok; k.comp = comp; k.step = step;
++			};
++			// Field of view
++			const f32 fy = 2.f * std::atan(1.f / sy), fx = 2.f * std::atan(1.f / sx);
++			const f32 fovs[10] = {sy, sx, 1.f / sy, 1.f / sx, fy, fy * 57.29578f, fy * 0.5f, fy * 28.64789f, fx, fx * 57.29578f};
++			for (int i = 0; i < 10; i++) scalar(K_FOV + i, fovs[i], 2e-5f, true, 1.04f, true);
++			// Direction the camera looks (view z is backwards)
++			const vec3 back = R[2], fwd = R[2] * -1.f;
++			const f32 fv[3] = {fwd.x, fwd.y, fwd.z}, bv[3] = {back.x, back.y, back.z};
++			run(K_FWD, 3, fv, 2e-3f, false, 0, 0.03f);
++			run(K_BACK, 3, bv, 2e-3f, false, 0, 0.03f);
++			// Quaternions of the view rotation and of the camera's own rotation (its inverse)
++			{
++				const f32 a00 = R[0].x, a01 = R[0].y, a02 = R[0].z, a10 = R[1].x, a11 = R[1].y, a12 = R[1].z, a20 = R[2].x, a21 = R[2].y, a22 = R[2].z;
++				f32 qw, qx, qy, qz;
++				const f32 tr = a00 + a11 + a22;
++				if (tr > 0.f) { const f32 s = std::sqrt(tr + 1.f) * 2.f; qw = 0.25f * s; qx = (a21 - a12) / s; qy = (a02 - a20) / s; qz = (a10 - a01) / s; }
++				else if (a00 > a11 && a00 > a22) { const f32 s = std::sqrt(1.f + a00 - a11 - a22) * 2.f; qw = (a21 - a12) / s; qx = 0.25f * s; qy = (a01 + a10) / s; qz = (a02 + a20) / s; }
++				else if (a11 > a22) { const f32 s = std::sqrt(1.f + a11 - a00 - a22) * 2.f; qw = (a02 - a20) / s; qx = (a01 + a10) / s; qy = 0.25f * s; qz = (a12 + a21) / s; }
++				else { const f32 s = std::sqrt(1.f + a22 - a00 - a11) * 2.f; qw = (a10 - a01) / s; qx = (a02 + a20) / s; qy = (a12 + a21) / s; qz = 0.25f * s; }
++				const f32 q0[4] = {qx, qy, qz, qw}, q1[4] = {-qx, -qy, -qz, qw}, q2[4] = {qw, qx, qy, qz}, q3[4] = {qw, -qx, -qy, -qz};
++				run(K_QUAT + 0, 4, q0, 2e-3f, true, 0, 0.03f);
++				run(K_QUAT + 1, 4, q1, 2e-3f, true, 0, 0.03f);
++				run(K_QUAT + 2, 4, q2, 2e-3f, true, 1, 0.03f);
++				run(K_QUAT + 3, 4, q3, 2e-3f, true, 1, 0.03f);
++			}
++			// Yaw and pitch angles
++			{
++				const f32 yaw = std::atan2(fwd.x, fwd.z), yaw2 = std::atan2(-fwd.x, -fwd.z), yaw3 = std::atan2(fwd.z, fwd.x);
++				const f32 pitch = std::asin(std::clamp(fwd.y, -1.f, 1.f));
++				const f32 d = 57.29578f;
++				scalar(K_ANGLE + 0, yaw, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 1, -yaw, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 2, yaw * d, 0.012f, false, 2.f, false);
++				scalar(K_ANGLE + 3, -yaw * d, 0.012f, false, 2.f, false);
++				scalar(K_ANGLE + 4, yaw2, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 5, yaw2 * d, 0.012f, false, 2.f, false);
++				scalar(K_ANGLE + 6, yaw3, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 7, yaw3 * d, 0.012f, false, 2.f, false);
++				scalar(K_ANGLE + 8, pitch, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 9, -pitch, 2e-4f, false, 0.035f, false);
++				scalar(K_ANGLE + 10, pitch * d, 0.012f, false, 2.f, false);
++				scalar(K_ANGLE + 11, -pitch * d, 0.012f, false, 2.f, false);
++			}
++			// Camera position from a 4x4 matrix candidate that already followed the camera
++			{
++				std::lock_guard lock(m.mtx);
++				for (const auto& c : m.cands)
++				{
++					if (c.type >= 2 || c.stride != 4 || c.hits < 3 || c.misses > c.hits) continue;
++					if (!vm::check_addr(c.addr, vm::page_readable, 64)) continue;
++					f32 tr[3];
++					for (int k = 0; k < 3; k++) tr[k] = c.type == 0 ? rdf(c.addr + (k * 4 + 3) * 4) : rdf(c.addr + (12 + k) * 4);
++					// view matrix: t = -R c  ->  c = -R^T t ; world matrix: the translation is the position
++					const vec3 tv{tr[0], tr[1], tr[2]};
++					const vec3 cpos = (R[0] * tv.x + R[1] * tv.y + R[2] * tv.z) * -1.f;
++					const f32 p0[3] = {cpos.x, cpos.y, cpos.z};
++					run(K_POS_VIEW, 3, p0, 2e-3f, false, 1, 0.05f);
++					run(K_POS_WORLD, 3, tr, 2e-3f, false, 1, 0.05f);
++					break;
++				}
++			}
++			m.last_target = t;
++
++			// Is the picture still? (the first 3D draw of the frame did not change)
++			f32 diff = 0.f;
++			for (int i = 0; i < 16; i++) diff = std::max(diff, std::fabs(fp[i] - m.fp_prev[i]));
++			const bool still = diff < 1e-5f;
++
++			const u64 now = GetTickCount64();
++
++			// A running experiment: did the picture react?
++			if (!m.exp.empty())
++			{
++				m.exp_frames++;
++				const bool reacted = diff > 1e-4f;
++				if (reacted || m.exp_frames >= 8)
++				{
++					int rewritten = 0;
++					for (const auto& w : m.exp)
++					{
++						bool over = false;
++						for (usz i = 0; i < w.neu.size(); i++) over |= rd(w.addr + static_cast<u32>(i) * 4) != w.neu[i];
++						if (over) { rewritten++; continue; }
++						if (vm::check_addr(w.addr, vm::page_writable, static_cast<u32>(w.orig.size() * 4)))
++							for (usz i = 0; i < w.orig.size(); i++) *static_cast<u32*>(vm::base(w.addr + static_cast<u32>(i) * 4)) = _byteswap_ulong(w.orig[i]);
++					}
++					std::vector<std::pair<u32, int>> keys;
++					for (const auto& w : m.exp) keys.emplace_back(w.addr, w.type);
++					const int frames = m.exp_frames;
++					const bool group = m.exp_group, from_half = m.exp_from_half;
++					m.exp.clear();
++					m.fp_stable = 0;
++					std::copy(fp, fp + 16, m.fp_prev);
++
++					if (!group)
++					{
++						{
++							std::lock_guard lock(m.mtx);
++							if (auto* c = mr_find(keys[0].first, keys[0].second)) { c->tests++; if (reacted) c->effects++; }
++						}
++						if (m.suspects.size() == 1 && m.suspects[0] == keys[0]) m.suspects.clear();
++						mr_log("test %d: %s at 0x%08x: picture %s after %d frame(s); the game %s the value", m.experiments, mr_type_name(keys[0].second), keys[0].first,
++							reacted ? "MOVED" : "did not move", frames, rewritten ? "rewrote" : "kept");
++						if (reacted) mr_dump(keys[0].first);
++					}
++					else if (reacted)
++					{
++						m.suspects = keys;
++						m.other_half.clear();
++						mr_log("test %d: group of %zu values: picture MOVED after %d frame(s), narrowing down (%d rewritten by the game)", m.experiments, keys.size(), frames, rewritten);
++					}
++					else if (from_half)
++					{
++						m.suspects = m.other_half;
++						m.other_half.clear();
++						mr_log("test %d: group of %zu values: no change, so it is among the other %zu", m.experiments, keys.size(), m.suspects.size());
++					}
++					else
++					{
++						{
++							std::lock_guard lock(m.mtx);
++							for (const auto& k : keys) if (auto* c = mr_find(k.first, k.second)) c->tests++;
++						}
++						mr_log("test %d: group of %zu values: no change", m.experiments, keys.size());
++					}
++				}
++				else std::copy(fp, fp + 16, m.fp_prev);
++				return;
++			}
++
++			m.fp_stable = still ? m.fp_stable + 1 : 0;
++			std::copy(fp, fp + 16, m.fp_prev);
++
++			// Re-check candidates every half second: keep the ones that follow the camera
++			if (m.frame % 30 == 0)
++			{
++				std::lock_guard lock(m.mtx);
++				for (auto& c : m.cands)
++				{
++					if (mr_matches_now(c, t)) c.hits++;
++					else c.misses++;
++				}
++				m.cands.erase(std::remove_if(m.cands.begin(), m.cands.end(), [](const mr_cand& c) { return c.misses > 4 + c.hits * 2; }), m.cands.end());
++				// A suspect that vanished cannot be narrowed down any more
++				std::erase_if(m.suspects, [&](const auto& k) { return !mr_find(k.first, k.second); });
++			}
++
++			// Memory capture for offline analysis (A when still, B once the camera is clearly somewhere else)
++			if (!m.scanning && m.fp_stable >= 30)
++			{
++				std::array<f32, 27> cam{};
++				for (int r = 0; r < 3; r++) { cam[r * 3] = R[r].x; cam[r * 3 + 1] = R[r].y; cam[r * 3 + 2] = R[r].z; }
++				cam[9] = sx; cam[10] = sy;
++				std::copy(fp, fp + 16, cam.begin() + 11);
++				if (m.snap_state == 0 && m.scans >= 1)
++				{
++					std::copy(cam.begin(), cam.end(), m.cam_a);
++					m.fwd_a = fwd;
++					m.snap_a_time = now;
++					m.snap_state = 1;
++					m.scanning = true;
++					if (m.scan_thread.joinable()) m.scan_thread.join();
++					m.scan_thread = std::thread(mr_snapshot_a);
++					return;
++				}
++				if (m.snap_state == 2 && now - m.snap_a_time > 5000)
++				{
++					f32 fpd = 0.f;
++					for (int i = 0; i < 16; i++) fpd = std::max(fpd, std::fabs(fp[i] - m.cam_a[11 + i]));
++					const bool turned = dot(fwd, m.fwd_a) < 0.9986f;                  // more than 3 degrees
++					const bool moved = fpd > 0.02f && now - m.snap_a_time > 120000;   // or anything changed, after two minutes
++					if (turned || moved)
++					{
++						mr_log("memory capture B: camera %s (forward %.3f %.3f %.3f, was %.3f %.3f %.3f)", turned ? "turned" : "changed", fwd.x, fwd.y, fwd.z, m.fwd_a.x, m.fwd_a.y, m.fwd_a.z);
++						m.snap_state = 3;
++						m.scanning = true;
++						if (m.scan_thread.joinable()) m.scan_thread.join();
++						m.scan_thread = std::thread(mr_snapshot_b, t, cam);
++						return;
++					}
++				}
++			}
++
++			// New memory search now and then (in the background)
++			if (now >= m.next_scan && !m.scanning && m.scans < 12)
++			{
++				if (m.scan_thread.joinable()) m.scan_thread.join();
++				m.scanning = true;
++				m.scans++;
++				m.next_scan = now + 25000;
++				m.scan_thread = std::thread(mr_scan, t);
++			}
++
++			// A test: the picture has been still for half a second, change one candidate (or a group of values) a little
++			if (m.fp_stable >= 30 && now >= m.next_exp && m.experiments < 150 && !m.scanning)
++			{
++				std::lock_guard lock(m.mtx);
++				std::vector<const mr_cand*> pick;
++				bool group = false, from_half = false;
++				if (!m.suspects.empty())
++				{
++					if (m.suspects.size() == 1)
++					{
++						if (auto* c = mr_find(m.suspects[0].first, m.suspects[0].second)) pick.push_back(c);
++					}
++					else
++					{
++						const usz half = m.suspects.size() / 2;
++						m.other_half.assign(m.suspects.begin() + half, m.suspects.end());
++						for (usz i = 0; i < half; i++) if (auto* c = mr_find(m.suspects[i].first, m.suspects[i].second)) pick.push_back(c);
++						group = from_half = true;
++					}
++					if (pick.empty()) m.suspects.clear();
++				}
++				else
++				{
++					// First the rotations, vectors and quaternions, one by one
++					const mr_cand* best = nullptr;
++					for (const auto& c : m.cands)
++					{
++						if (mr_is_scalar(c.type) || c.tests >= 2 || c.hits < 3 || c.misses > c.hits || !mr_matches_now(c, t)) continue;
++						if (!best || c.hits > best->hits) best = &c;
++					}
++					if (best) pick.push_back(best);
++					else
++					{
++						// Then all the single values at once; a change in the picture is narrowed down by halves
++						for (const auto& c : m.cands)
++						{
++							if (!mr_is_scalar(c.type) || c.tests || c.hits < 2 || c.misses > c.hits || !mr_matches_now(c, t)) continue;
++							pick.push_back(&c);
++							if (pick.size() >= 512) break;
++						}
++						group = true;
++					}
++				}
++				for (const auto* c : pick)
++				{
++					mr_write w;
++					if (mr_make_write(*c, t, w)) m.exp.push_back(std::move(w));
++				}
++				if (!m.exp.empty())
++				{
++					m.exp_group = group;
++					m.exp_from_half = from_half;
++					m.exp_frames = 0;
++					m.experiments++;
++					m.next_exp = now + 1500;
++					if (m.log)
++					{
++						if (group) std::fprintf(m.log, "test %d: changing a group of %zu values for a moment\n", m.experiments, m.exp.size());
++						else std::fprintf(m.log, "test %d: changing %s at 0x%08x for a moment\n", m.experiments, mr_type_name(m.exp[0].type), m.exp[0].addr);
++						std::fflush(m.log);
++					}
++				}
++				else if (from_half) m.other_half.clear();
++			}
++
++			// Summary every 30 s
++			static u64 last_summary = 0;
++			if (now - last_summary > 30000)
++			{
++				last_summary = now;
++				std::lock_guard lock(m.mtx);
++				if (m.log)
++				{
++					std::fprintf(m.log, "summary at frame %llu: camera rows (%.4f %.4f %.4f) (%.4f %.4f %.4f) (%.4f %.4f %.4f) sx %.4f sy %.4f; %zu candidates, %zu suspects, capture state %d\n",
++						static_cast<unsigned long long>(m.frame), R[0].x, R[0].y, R[0].z, R[1].x, R[1].y, R[1].z, R[2].x, R[2].y, R[2].z, sx, sy, m.cands.size(), m.suspects.size(), m.snap_state.load());
++					std::vector<mr_cand> top = m.cands;
++					std::sort(top.begin(), top.end(), [](const mr_cand& a, const mr_cand& b) { return a.effects != b.effects ? a.effects > b.effects : a.hits - a.misses > b.hits - b.misses; });
++					for (usz i = 0; i < top.size() && i < 40; i++)
++					{
++						const auto& c = top[i];
++						std::fprintf(m.log, "  0x%08x %-30s stride %d  followed %d  lost %d  tests %d  moved the picture %d\n", c.addr, mr_type_name(c.type), c.stride, c.hits, c.misses, c.tests, c.effects);
++					}
++					std::fflush(m.log);
++				}
++			}
 +		}
 +	}
 +
@@ -3869,6 +4591,7 @@ index 000000000..4b386c10f
 +				if (is_cam)
 +				{
 +					kind = 1;
++					if (!s.fp_set) { std::memcpy(s.fp, m, sizeof(s.fp)); s.fp_set = true; }
 +					// World up = the model's own up axis, for the (many) objects that are not rotated
 +					const vec3 xn = normalize(xr), yn = normalize(yr), zn = r3 * (-1.f / len);
 +					if (dot(cross(xn, yn), zn) > 0.9f && s.votes.size() < 32)
@@ -3880,7 +4603,7 @@ index 000000000..4b386c10f
 +							const vec3 avg = normalize(b.sum);
 +							if (dot(avg, up) > 0.997f) { b.sum = b.sum + up; b.n++; added = true; break; }
 +						}
-+						if (!added) s.votes.push_back({up, 1});
++						if (!added) s.votes.push_back({up, 1, xn, yn, zn});
 +					}
 +					const f32 near_plane = B / A;
 +					if (m[15] > near_plane && m[15] < 60.f && s.depths.size() < 512) s.depths.push_back(m[15]);

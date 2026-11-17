@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.8.1",
+    "date": "2026-11-17",
+    "notes": [
+      "Everything from 0.8.0, plus the first step to steering the game's own camera: while you play in the kitchen or the restaurant, the mod finds where the game keeps its camera (its direction and its field of view) in the PS3's memory.",
+      "It searches for the camera in every common form: rotation matrices, direction vectors, quaternions, yaw and pitch angles in radians or degrees, and ten forms of the field of view. It keeps only the places that follow the camera when it moves between stations.",
+      "It confirms each one by changing it for a split second while the view is still and watching whether the picture reacts; field-of-view values are tested in groups and narrowed down by halves. You may notice a tiny twitch now and then; the value is put back at once.",
+      "It also saves a compact copy of the game memory that changed when the camera moved, so if the camera is stored in a form nobody predicted, it can still be found from that copy without another play session.",
+      "After a session of a few minutes in the kitchen (let the camera move between stations at least once), press Collect logs and attach the zip to the LogsRecordDump issue as before."
+    ]
+  },
+  {
     "version": "0.8.0",
     "date": "2026-11-17",
     "notes": [

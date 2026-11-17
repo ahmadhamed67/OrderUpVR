@@ -82,3 +82,31 @@ Each step ships as one release once it works end to end, not as small pieces.
 - Objects the game culls outside its own view are missing when looking far to the side.
 - The world-up vote and the HUD distance need confirmation in the real kitchen.
 - If anything looks wrong, hold the left stick click for 1 second to go back to the big screen.
+
+## Camera memory research (0.8.1)
+
+Goal: find the game's camera in PS3 memory so the mod can (1) widen the game's field of view, so it culls less
+and draws more of the world around you, (2) turn the game's own camera with your head, and (3) find other state such
+as the chef chosen in the profile.
+
+The renderer already knows the camera exactly each frame: the view rotation is the rotation most unrotated scenery
+draws share (so a per-object model matrix cannot fool it), and the projection terms come from the MVP rows.
+
+Method, fully automatic during normal play (log/orderup_research.log):
+1. Every 25 s in a 3D scene (12 scans at most), scan guest memory 0x00010000-0x40000000 for the camera in every
+   common form: 3x3 rotation (4 layouts, row strides 3 and 4), forward/backward vectors, quaternions (xyzw/wxyz, of
+   the view and of its inverse, either sign), yaw/pitch in radians and degrees (several conventions), ten
+   field-of-view forms, and the camera position once a 4x4 matrix follows the camera. Separate caps per kind so
+   common single values cannot crowd out the rest.
+2. Every half second, re-check candidates; drop those that stop following the camera.
+3. When the picture has been still for half a second, change a candidate a little and watch the first 3D draw's
+   matrix for up to 8 frames, then restore it. Rotations, vectors and quaternions are tested one by one; single
+   values (field of view, angles) are changed in groups of up to 512 and a reaction is narrowed down by halves to
+   the one value that matters (about 10 tests instead of thousands). "Moved the picture" marks values that drive
+   rendering; "rewrote" means the game recomputes them every frame, so their source is the next target.
+4. Memory capture for offline analysis: a copy of all readable memory while the camera is still (A), then, once the
+   camera has turned more than 3 degrees (or anything changed after two minutes), the pages that changed (any form
+   of a moving camera must be among them) plus pages holding field-of-view values, both versions, in
+   log/orderup_camdump.bin.z (at most 2000 pages). tools/analyze_camdump.py searches it for every camera form
+   matching camera A in copy A and camera B in copy B, and as a fallback lists unit directions that turned by the
+   camera's own angle. So a form nobody predicted can still be found without another play session.

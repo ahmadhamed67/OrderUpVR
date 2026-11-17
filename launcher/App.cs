@@ -1207,7 +1207,7 @@ namespace OrderUpVR
                 string emu = Core.EmuDir(s);
                 string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
-                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"config\orderupvr_state.txt" })
+                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"log\orderup_camdump.bin.z", @"config\orderupvr_state.txt" })
                 {
                     string p = System.IO.Path.Combine(emu, rel);
                     try { if (File.Exists(p)) CopyTail(p, System.IO.Path.Combine(tmp, System.IO.Path.GetFileName(p)), 20L * 1048576); } catch { }
