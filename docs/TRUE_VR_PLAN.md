@@ -27,7 +27,7 @@ Hands and interaction come next:
 | A | Find the camera | **Done** (from the 0.5.0 logs, see below) |
 | B | Stereo + head tracking in the kitchen and restaurant | **Built in 0.6.0**, waiting for a headset test |
 | C | Comfort: recenter, levelled horizon, snap turn, left-stick movement | **Built in 0.6.0** |
-| D | Hands drawn in the scene; grab and use items with the hands | Next |
+| D | Hands drawn in the scene; grab and use items with the hands | **Built in 0.7.0**: body, arms, animated hands; the pointer follows the hand |
 | E | Menus and 2D screens on the virtual screen | **Built in 0.6.0** (automatic switch) |
 
 Each step ships as one release once it works end to end, not as small pieces.
@@ -63,6 +63,18 @@ Each step ships as one release once it works end to end, not as small pieces.
   the game's own camera, which gives the PS Move pointer position. The laser and ring are drawn at that point.
 - The game's own camera still decides the view and which objects exist (it culls what it cannot see), so
   looking far past the game's view can show empty areas.
+
+## 0.7.0 changes after the first headset test
+
+- Double image: the shown buffer could hold an older frame than the one just drawn, so eye images were paired with
+  the wrong eye pose. The renderer now tracks, per render target, which frame's eye view it holds (scene target ->
+  draws that read it -> the shown display buffer) and tags the picture by the shown buffer.
+- HUD: the game draws the 3D scene into its own target and copies it onto the display buffer, then draws the HUD
+  there. Draws that read the scene are copies (left alone); other flat draws on the display buffers become the
+  in-world overlay, in the eye view of the picture already there.
+- Void: clears of the scene and screen targets use a key colour that the headset makes see-through, over a room
+  drawn by the mod.
+- Body and hands: drawn with D3D11 by the mod at headset rate as their own layer (grip pose, IK arms, finger curl).
 
 ## Risks and open questions for the headset test
 

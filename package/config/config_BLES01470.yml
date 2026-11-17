@@ -2,6 +2,7 @@ Video:
   Renderer: Vulkan
   Debug output: false
   Log shader programs: false
+  Resolution Scale: 200
   Record With Overlays: true
 Input/Output:
   Move: "Mouse"

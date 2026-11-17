@@ -1,5 +1,5 @@
 diff --git a/rpcs3/Emu/Cell/Modules/cellGem.cpp b/rpcs3/Emu/Cell/Modules/cellGem.cpp
-index 0dfcf9cb7..f2b91c5ee 100644
+index 0dfcf9cb7..c89550dac 100644
 --- a/rpcs3/Emu/Cell/Modules/cellGem.cpp
 +++ b/rpcs3/Emu/Cell/Modules/cellGem.cpp
 @@ -1,5 +1,6 @@
@@ -166,7 +166,14 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemCalibrate(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2754,6 +2874,7 @@ error_code cellGemCalibrate(u32 gem_num)
+@@ -2748,12 +2868,14 @@ error_code cellGemCalibrate(u32 gem_num)
+ 
+ 	controller.is_calibrating = true;
+ 	controller.calibration_start_us = get_guest_system_time();
++	ouvr::note_calibration(); // Order Up VR
+ 
+ 	return CELL_OK;
+ }
  
  error_code cellGemClearStatusFlags(u32 gem_num, u64 mask)
  {
@@ -174,7 +181,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemClearStatusFlags(gem_num=%d, mask=0x%x)", gem_num, mask);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2779,6 +2900,7 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
+@@ -2779,6 +2901,7 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -182,7 +189,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemConvertVideoFinish()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2805,6 +2927,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
+@@ -2805,6 +2928,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -190,7 +197,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemConvertVideoStart(video_frame=*0x%x)", video_frame);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2841,6 +2964,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
+@@ -2841,6 +2965,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
  
  error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
  {
@@ -198,7 +205,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemEnableCameraPitchAngleCorrection(enable_flag=%d)", enable_flag);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2859,6 +2983,7 @@ error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
+@@ -2859,6 +2984,7 @@ error_code cellGemEnableCameraPitchAngleCorrection(u32 enable_flag)
  
  error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
  {
@@ -206,7 +213,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemEnableMagnetometer(gem_num=%d, enable=0x%x)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2908,6 +3033,7 @@ error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
+@@ -2908,6 +3034,7 @@ error_code cellGemEnableMagnetometer(u32 gem_num, u32 enable)
  
  error_code cellGemEnableMagnetometer2(u32 gem_num, u32 enable)
  {
@@ -214,7 +221,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.trace("cellGemEnableMagnetometer2(gem_num=%d, enable=0x%x)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2958,6 +3084,7 @@ error_code cellGemEnd(ppu_thread& ppu)
+@@ -2958,6 +3085,7 @@ error_code cellGemEnd(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -222,7 +229,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemEnd()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -2989,6 +3116,7 @@ error_code cellGemEnd(ppu_thread& ppu)
+@@ -2989,6 +3117,7 @@ error_code cellGemEnd(ppu_thread& ppu)
  
  error_code cellGemFilterState(u32 gem_num, u32 enable)
  {
@@ -230,7 +237,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemFilterState(gem_num=%d, enable=%d)", gem_num, enable);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3012,6 +3140,7 @@ error_code cellGemFilterState(u32 gem_num, u32 enable)
+@@ -3012,6 +3141,7 @@ error_code cellGemFilterState(u32 gem_num, u32 enable)
  
  error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
  {
@@ -238,7 +245,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemForceRGB(gem_num=%d, r=%f, g=%f, b=%f)", gem_num, r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3047,6 +3176,7 @@ error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
+@@ -3047,6 +3177,7 @@ error_code cellGemForceRGB(u32 gem_num, f32 r, f32 g, f32 b)
  
  error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos)
  {
@@ -246,7 +253,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetAccelerometerPositionInDevice(gem_num=%d, pos=*0x%x)", gem_num, pos);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3072,6 +3202,7 @@ error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos
+@@ -3072,6 +3203,7 @@ error_code cellGemGetAccelerometerPositionInDevice(u32 gem_num, vm::ptr<f32> pos
  
  error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
  {
@@ -254,7 +261,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetAllTrackableHues(hues=*0x%x)", hues);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3099,6 +3230,7 @@ error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
+@@ -3099,6 +3231,7 @@ error_code cellGemGetAllTrackableHues(vm::ptr<u8> hues)
  
  error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
  {
@@ -262,7 +269,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetCameraState(camera_state=0x%x)", camera_state);
  
  	[[maybe_unused]] auto& gem = g_fxo->get<gem_config>();
-@@ -3120,6 +3252,7 @@ error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
+@@ -3120,6 +3253,7 @@ error_code cellGemGetCameraState(vm::ptr<CellGemCameraState> camera_state)
  
  error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -270,7 +277,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetEnvironmentLightingColor(r=*0x%x, g=*0x%x, b=*0x%x)", r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3150,6 +3283,7 @@ error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm
+@@ -3150,6 +3284,7 @@ error_code cellGemGetEnvironmentLightingColor(vm::ptr<f32> r, vm::ptr<f32> g, vm
  
  error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8> pixels)
  {
@@ -278,7 +285,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetHuePixels(camera_frame=*0x%x, hue=%d, pixels=*0x%x)", camera_frame, hue, pixels);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3176,6 +3310,7 @@ error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8>
+@@ -3176,6 +3311,7 @@ error_code cellGemGetHuePixels(vm::cptr<void> camera_frame, u32 hue, vm::ptr<u8>
  
  error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_image_state)
  {
@@ -286,7 +293,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemGetImageState(gem_num=%d, image_state=&0x%x)", gem_num, gem_image_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3233,6 +3368,7 @@ error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_imag
+@@ -3233,6 +3369,7 @@ error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_imag
  
  error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, vm::ptr<CellGemInertialState> inertial_state)
  {
@@ -294,7 +301,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemGetInertialState(gem_num=%d, state_flag=%d, timestamp=0x%x, inertial_state=0x%x)", gem_num, state_flag, timestamp, inertial_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3294,6 +3430,18 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
+@@ -3294,6 +3431,18 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
  		case move_handler::mouse:
  		case move_handler::raw_mouse:
  			mouse_input_to_pad(gem_num, inertial_state->pad.digitalbuttons, inertial_state->pad.analog_T);
@@ -313,7 +320,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  			break;
  #ifdef HAVE_LIBEVDEV
  		case move_handler::gun:
-@@ -3310,6 +3458,7 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
+@@ -3310,6 +3459,7 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
  
  error_code cellGemGetInfo(vm::ptr<CellGemInfo> info)
  {
@@ -321,7 +328,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.trace("cellGemGetInfo(info=*0x%x)", info);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3345,6 +3494,7 @@ u32 GemGetMemorySize(s32 max_connect)
+@@ -3345,6 +3495,7 @@ u32 GemGetMemorySize(s32 max_connect)
  
  error_code cellGemGetMemorySize(s32 max_connect)
  {
@@ -329,7 +336,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemGetMemorySize(max_connect=%d)", max_connect);
  
  	if (max_connect > CELL_GEM_MAX_NUM || max_connect <= 0)
-@@ -3357,6 +3507,7 @@ error_code cellGemGetMemorySize(s32 max_connect)
+@@ -3357,6 +3508,7 @@ error_code cellGemGetMemorySize(s32 max_connect)
  
  error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -337,7 +344,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetRGB(gem_num=%d, r=*0x%x, g=*0x%x, b=*0x%x)", gem_num, r, g, b);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3383,6 +3534,7 @@ error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f3
+@@ -3383,6 +3535,7 @@ error_code cellGemGetRGB(u32 gem_num, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f3
  
  error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
  {
@@ -345,7 +352,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemGetRumble(gem_num=%d, rumble=*0x%x)", gem_num, rumble);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3406,6 +3558,7 @@ error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
+@@ -3406,6 +3559,7 @@ error_code cellGemGetRumble(u32 gem_num, vm::ptr<u8> rumble)
  
  error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<CellGemState> gem_state)
  {
@@ -353,7 +360,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemGetState(gem_num=%d, flag=0x%x, time=0x%llx, gem_state=*0x%x)", gem_num, flag, time_parameter, gem_state);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3525,6 +3678,7 @@ error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<Ce
+@@ -3525,6 +3679,7 @@ error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<Ce
  
  error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
  {
@@ -361,7 +368,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.trace("cellGemGetStatusFlags(gem_num=%d, flags=*0x%x)", gem_num, flags);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3543,11 +3697,21 @@ error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
+@@ -3543,11 +3698,21 @@ error_code cellGemGetStatusFlags(u32 gem_num, vm::ptr<u64> flags)
  
  	*flags = gem.runtime_status_flags | gem.controllers[gem_num].calibration_status_flags;
  
@@ -383,7 +390,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemGetTrackerHue(gem_num=%d, hue=*0x%x)", gem_num, hue);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3578,6 +3742,7 @@ error_code cellGemGetTrackerHue(u32 gem_num, vm::ptr<u32> hue)
+@@ -3578,6 +3743,7 @@ error_code cellGemGetTrackerHue(u32 gem_num, vm::ptr<u32> hue)
  
  error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g, vm::ptr<f32> b)
  {
@@ -391,7 +398,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemHSVtoRGB(h=%f, s=%f, v=%f, r=*0x%x, g=*0x%x, b=*0x%x)", h, s, v, r, g, b);
  
  	if (!r || !g || !b)
-@@ -3642,6 +3807,7 @@ error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g,
+@@ -3642,6 +3808,7 @@ error_code cellGemHSVtoRGB(f32 h, f32 s, f32 v, vm::ptr<f32> r, vm::ptr<f32> g,
  
  error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
  {
@@ -399,7 +406,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemInit(attribute=*0x%x)", attribute);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3695,6 +3861,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
+@@ -3695,6 +3862,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
  
  error_code cellGemInvalidateCalibration(s32 gem_num)
  {
@@ -407,7 +414,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemInvalidateCalibration(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3726,6 +3893,7 @@ error_code cellGemInvalidateCalibration(s32 gem_num)
+@@ -3726,6 +3894,7 @@ error_code cellGemInvalidateCalibration(s32 gem_num)
  
  s32 cellGemIsTrackableHue(u32 hue)
  {
@@ -415,7 +422,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemIsTrackableHue(hue=%d)", hue);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3748,6 +3916,7 @@ s32 cellGemIsTrackableHue(u32 hue)
+@@ -3748,6 +3917,7 @@ s32 cellGemIsTrackableHue(u32 hue)
  
  error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
  {
@@ -423,7 +430,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemPrepareCamera(max_exposure=%d, image_quality=%f)", max_exposure, image_quality);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3800,6 +3969,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
+@@ -3800,6 +3970,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
  
  error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_attribute)
  {
@@ -431,7 +438,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemPrepareVideoConvert(vc_attribute=*0x%x)", vc_attribute);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3849,6 +4019,7 @@ error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_
+@@ -3849,6 +4020,7 @@ error_code cellGemPrepareVideoConvert(vm::cptr<CellGemVideoConvertAttribute> vc_
  
  error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, vm::ptr<u8[CELL_GEM_EXTERNAL_PORT_DEVICE_INFO_SIZE]> ext_info)
  {
@@ -439,7 +446,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemReadExternalPortDeviceInfo(gem_num=%d, ext_id=*0x%x, ext_info=%s)", gem_num, ext_id, ext_info);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3933,6 +4104,7 @@ error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, v
+@@ -3933,6 +4105,7 @@ error_code cellGemReadExternalPortDeviceInfo(u32 gem_num, vm::ptr<u32> ext_id, v
  
  error_code cellGemReset(u32 gem_num)
  {
@@ -447,7 +454,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemReset(gem_num=%d)", gem_num);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -3957,6 +4129,7 @@ error_code cellGemReset(u32 gem_num)
+@@ -3957,6 +4130,7 @@ error_code cellGemReset(u32 gem_num)
  
  error_code cellGemSetRumble(u32 gem_num, u8 rumble)
  {
@@ -455,7 +462,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.trace("cellGemSetRumble(gem_num=%d, rumble=0x%x)", gem_num, rumble);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4005,6 +4178,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
+@@ -4005,6 +4179,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
  	const f32 z_direction_z = z_direction.fr[2];
  	const f32 z_direction_w = z_direction.fr[3];
  
@@ -463,7 +470,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemSetYaw(gem_num=%d, z_direction_x=%f, z_direction_y=%f, z_direction_z=%f, z_direction_w=%f)", gem_num, z_direction_x, z_direction_y, z_direction_z, z_direction_w);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4047,6 +4221,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
+@@ -4047,6 +4222,7 @@ error_code cellGemSetYaw(u32 gem_num, v128 z_direction)
  
  error_code cellGemTrackHues(vm::cptr<u32> req_hues, vm::ptr<u32> res_hues)
  {
@@ -471,7 +478,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.todo("cellGemTrackHues(req_hues=%s, res_hues=*0x%x)", req_hues ? fmt::format("*0x%x [%d, %d, %d, %d]", req_hues, req_hues[0], req_hues[1], req_hues[2], req_hues[3]) : "*0x0", res_hues);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4136,6 +4311,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
+@@ -4136,6 +4312,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
  {
  	ppu.state += cpu_flag::wait;
  
@@ -479,7 +486,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemUpdateFinish()");
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4170,6 +4346,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
+@@ -4170,6 +4347,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
  
  error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
  {
@@ -487,7 +494,7 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	cellGem.warning("cellGemUpdateStart(camera_frame=*0x%x, timestamp=%d)", camera_frame, timestamp);
  
  	auto& gem = g_fxo->get<gem_config>();
-@@ -4215,6 +4392,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
+@@ -4215,6 +4393,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
  
  error_code cellGemWriteExternalPort(u32 gem_num, vm::ptr<u8[CELL_GEM_EXTERNAL_PORT_OUTPUT_SIZE]> data)
  {
@@ -497,10 +504,10 @@ index 0dfcf9cb7..f2b91c5ee 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..ec62cf8db
+index 000000000..c82b81902
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,2347 @@
+@@ -0,0 +1,3354 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -534,6 +541,7 @@ index 000000000..ec62cf8db
 +#include <map>
 +#include <set>
 +#include <mutex>
++#include <condition_variable>
 +#include <string>
 +#include <thread>
 +
@@ -728,7 +736,22 @@ index 000000000..ec62cf8db
 +			bool have_up = false;
 +			f32 depth = 3.5f;
 +
-+			u32 scene_off = ~0u, scene_w = 0, scene_h = 0;
++			// Render targets: the 3D scene's, the one the scene is copied onto (the screen), and which frame's
++			// eye view each one holds. The shown buffer may hold an older frame than the one just drawn.
++			u64 scene_key = ~0ull, composite_key = ~0ull, composite_this = ~0ull, display_key = ~0ull;
++			u64 screens[6]{~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull}; // recent display buffers and scene-copy targets (games alternate buffers)
++			u32 screens_next = 0;
++			bool is_screen(u64 k) const { for (u64 x : screens) if (x == k) return true; return false; }
++			void add_screen(u64 k) { if (k == ~0ull || is_screen(k)) return; screens[screens_next++ % 6] = k; }
++			u32 scene_w = 0, scene_h = 0;
++			std::vector<u64> tainted;   // targets holding scene pixels this frame
++			struct content_entry { u64 key = ~0ull; u64 gen = 0; };
++			content_entry content[16];
++			struct ring_entry { u64 gen = 0; frame_tag tag; mat4 E; bool enabled = false; };
++			ring_entry ring[8];
++			u64 x2_gen = 0;
++			u64 lat_hist[4]{};          // how many frames old the shown picture was (0, 1, 2, other)
++			u64 calib_tick = 0;
 +
 +			int n3 = 0, n2 = 0, n0 = 0;
 +			struct bucket { vec3 sum; int n; };
@@ -742,7 +765,8 @@ index 000000000..ec62cf8db
 +			u64 last_log = 0, tot3 = 0, tot2 = 0, tot0 = 0, frames = 0;
 +		};
 +		rsx_vr_state g_rv;
-+		frame_tag rv_end_frame();
++		frame_tag rv_end_frame(u64 display_key);
++		std::atomic<u64> g_calib_tick{0};  // last PS Move calibration the game started
 +
 +		// Newest captured frame per slot: 0 = left eye (or the one image for both eyes), 1 = right eye, 2 = flat.
 +		struct pending_frame
@@ -753,7 +777,51 @@ index 000000000..ec62cf8db
 +			u64 id = 0;
 +			frame_tag tag;
 +		};
-+		pending_frame g_pending[3];  // guarded by g_state_mutex
++		pending_frame g_pending[3];  // raw frames from the renderer, guarded by g_state_mutex
++		pending_frame g_ready[3];    // converted for the headset (colour order, see-through void), guarded by g_state_mutex
++		std::condition_variable g_frame_cv;
++		std::atomic<bool> g_dst_bgra{false};  // colour order of the headset's swapchains
++		std::thread g_prep_thread;
++
++		// Converts frames on its own thread so the headset thread never waits for the per-pixel work.
++		void prep_main()
++		{
++			while (!g_stop)
++			{
++				pending_frame f;
++				int slot = -1;
++				{
++					std::unique_lock lock(g_state_mutex);
++					g_frame_cv.wait_for(lock, std::chrono::milliseconds(50), [] { return g_stop || !g_pending[0].px.empty() || !g_pending[1].px.empty() || !g_pending[2].px.empty(); });
++					for (int i = 0; i < 3 && slot < 0; i++)
++					{
++						if (!g_pending[i].px.empty()) { f = std::move(g_pending[i]); g_pending[i] = {}; slot = i; }
++					}
++				}
++				if (slot < 0) continue;
++
++				const bool dst_bgra = g_dst_bgra.load();
++				const bool swap = f.bgra != dst_bgra;
++				const bool key = slot < 2;
++				// Byte positions of red and blue in the source
++				const int ri = f.bgra ? 2 : 0, bi = f.bgra ? 0 : 2;
++				u8* p = f.px.data();
++				for (usz i = 0, n = f.px.size() / 4; i < n; i++, p += 4)
++				{
++					if (key && p[ri] <= 3 && p[ri] >= 1 && p[1] >= 2 && p[1] <= 4 && p[bi] >= 4 && p[bi] <= 6)
++					{
++						p[0] = p[1] = p[2] = p[3] = 0; // the empty space around the game: see-through
++						continue;
++					}
++					if (swap) std::swap(p[0], p[2]);
++					p[3] = 255;
++				}
++				f.bgra = dst_bgra;
++
++				std::lock_guard lock(g_state_mutex);
++				g_ready[slot] = std::move(f);
++			}
++		}
 +
 +		// --------------------------------------------------------- OpenXR state
 +		struct xr_state
@@ -764,6 +832,7 @@ index 000000000..ec62cf8db
 +			XrSessionState session_state = XR_SESSION_STATE_UNKNOWN;
 +			XrSpace local_space = XR_NULL_HANDLE;
 +			XrSpace view_space = XR_NULL_HANDLE;
++			XrSpace stage_space = XR_NULL_HANDLE;   // floor level, for the body
 +
 +			ID3D11Device* device = nullptr;
 +			ID3D11DeviceContext* context = nullptr;
@@ -781,6 +850,8 @@ index 000000000..ec62cf8db
 +			XrAction aim = XR_NULL_HANDLE, trigger = XR_NULL_HANDLE, squeeze = XR_NULL_HANDLE, stick_click = XR_NULL_HANDLE, stick = XR_NULL_HANDLE;
 +			XrAction btn_a = XR_NULL_HANDLE, btn_b = XR_NULL_HANDLE, btn_x = XR_NULL_HANDLE, btn_y = XR_NULL_HANDLE, btn_menu = XR_NULL_HANDLE;
 +			XrSpace aim_space[2]{};
++			XrAction grip_pose = XR_NULL_HANDLE;
++			XrSpace grip_space[2]{};
 +
 +			// Virtual screen (LOCAL space)
 +			bool screen_placed = false;
@@ -845,6 +916,25 @@ index 000000000..ec62cf8db
 +			bool views_valid = false;
 +			u64 stick_down_since = 0; // left stick click: short = recentre, hold = switch 3D / screen
 +			bool snap_armed = true;
++			f32 lower = 0.f;          // how far below the game camera the player stands (metres; right stick up/down)
++			bool height_dirty = false;
++
++			// Body and hands (drawn by the mod at headset rate)
++			bool hand_valid[2]{};
++			XrPosef hand_pose[2]{};   // grip pose, LOCAL space
++			f32 hand_grip[2]{}, hand_trig[2]{};
++			f32 body_yaw = 0.f;
++			bool body_init = false;
++			f32 floor_y = -1.6f;      // LOCAL-space floor height
++			bool floor_known = false;
++			bool pointing_laser = false;  // inside the game: point with the laser instead of the hand
++
++			// The game asks to press Square at every start (PS Move calibration)
++			u64 first_live = 0;
++			bool calib_hint_drawn = false;
++			XrSwapchain calib = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> calib_images;
++			bool calib_bgra = false, calib_has = false;
 +		};
 +
 +		vec3 to_player(const xr_state& xr, vec3 local) { return rotate(qconj(yaw_q(xr.player_yaw)), local - xr.player_pos); }
@@ -1018,6 +1108,8 @@ index 000000000..ec62cf8db
 +			if (!xr_ok(xr, xrCreateReferenceSpace(xr.session, &space, &xr.local_space), "xrCreateReferenceSpace(LOCAL)")) return false;
 +			space.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
 +			if (!xr_ok(xr, xrCreateReferenceSpace(xr.session, &space, &xr.view_space), "xrCreateReferenceSpace(VIEW)")) return false;
++			space.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
++			if (XR_FAILED(xrCreateReferenceSpace(xr.session, &space, &xr.stage_space))) xr.stage_space = XR_NULL_HANDLE;
 +			return true;
 +		}
 +
@@ -1032,6 +1124,7 @@ index 000000000..ec62cf8db
 +			xr.hand_path[1] = to_path(xr, "/user/hand/right");
 +
 +			xr.aim = make_action(xr, "aim", XR_ACTION_TYPE_POSE_INPUT, true);
++			xr.grip_pose = make_action(xr, "grip_pose", XR_ACTION_TYPE_POSE_INPUT, true);
 +			xr.trigger = make_action(xr, "trigger", XR_ACTION_TYPE_FLOAT_INPUT, true);
 +			xr.squeeze = make_action(xr, "squeeze", XR_ACTION_TYPE_FLOAT_INPUT, true);
 +			xr.stick_click = make_action(xr, "stick_click", XR_ACTION_TYPE_BOOLEAN_INPUT, true);
@@ -1048,6 +1141,8 @@ index 000000000..ec62cf8db
 +				{
 +					{xr.aim, to_path(xr, "/user/hand/left/input/aim/pose")},
 +					{xr.aim, to_path(xr, "/user/hand/right/input/aim/pose")},
++					{xr.grip_pose, to_path(xr, "/user/hand/left/input/grip/pose")},
++					{xr.grip_pose, to_path(xr, "/user/hand/right/input/grip/pose")},
 +					{xr.trigger, to_path(xr, "/user/hand/left/input/trigger/value")},
 +					{xr.trigger, to_path(xr, "/user/hand/right/input/trigger/value")},
 +					{xr.squeeze, to_path(xr, "/user/hand/left/input/squeeze/value")},
@@ -1075,6 +1170,8 @@ index 000000000..ec62cf8db
 +				{
 +					{xr.aim, to_path(xr, "/user/hand/left/input/aim/pose")},
 +					{xr.aim, to_path(xr, "/user/hand/right/input/aim/pose")},
++					{xr.grip_pose, to_path(xr, "/user/hand/left/input/grip/pose")},
++					{xr.grip_pose, to_path(xr, "/user/hand/right/input/grip/pose")},
 +					{xr.trigger, to_path(xr, "/user/hand/left/input/select/click")},
 +					{xr.trigger, to_path(xr, "/user/hand/right/input/select/click")},
 +					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},
@@ -1094,6 +1191,8 @@ index 000000000..ec62cf8db
 +				info.subactionPath = xr.hand_path[hand];
 +				info.poseInActionSpace.orientation.w = 1.0f;
 +				if (!xr_ok(xr, xrCreateActionSpace(xr.session, &info, &xr.aim_space[hand]), "xrCreateActionSpace")) return false;
++				info.action = xr.grip_pose;
++				if (!xr_ok(xr, xrCreateActionSpace(xr.session, &info, &xr.grip_space[hand]), "xrCreateActionSpace(grip)")) return false;
 +			}
 +
 +			XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -1424,10 +1523,10 @@ index 000000000..ec62cf8db
 +			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, L"CONTROLS",
 +				"GRIP  -  grab and hold (the game's T button)\n"
 +				"TRIGGER  -  select and confirm (the Move button)\n"
-+				"A / B / X / Y  -  Cross / Circle / Square / Triangle\n"
++				"A / B / X / Y  -  Cross / Circle / Square / Triangle (shown on your hands)\n"
 +				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
 +				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
-+				"In the kitchen  -  look around and lean in. Left stick: walk,\n      right stick: turn\n"
++				"In the kitchen  -  reach for things: the pointer is where your hand\n      covers them. Left stick: walk, right stick: turn and height\n"
 +				"Big screen (menus)  -  right stick: nearer / farther,  left stick: size\n"
 +				"Left stick click: recentre.  Hold it 1 s: switch 3D / big screen\n"
 +				"Hold Left MENU for 2 seconds to show this card again.");
@@ -1611,7 +1710,7 @@ index 000000000..ec62cf8db
 +				pending_frame f;
 +				{
 +					std::lock_guard lock(g_state_mutex);
-+					auto& p = g_pending[slot];
++					auto& p = g_ready[slot];
 +					if (p.px.empty()) continue;
 +					f.px.swap(p.px);
 +					f.w = p.w; f.h = p.h; f.bgra = p.bgra; f.id = p.id; f.tag = p.tag;
@@ -1691,6 +1790,7 @@ index 000000000..ec62cf8db
 +
 +			// True VR: the game camera sits at the player's eyes, facing where they face
 +			xr.player_pos = xr.last_head;
++			xr.player_pos.y += xr.lower;
 +			xr.player_yaw = xr.screen_yaw;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
 +				xr.screen_center.x, xr.screen_center.y, xr.screen_center.z, xr.screen_yaw * 57.29578f, xr.screen_width, xr.screen_distance);
@@ -1801,6 +1901,659 @@ index 000000000..ec62cf8db
 +			out.motion = true;
 +		}
 +
++		// ------------------------------------------------- body, hands and the room (drawn by the mod, D3D11)
++		struct gvert { f32 p[3]; f32 n[3]; };
++		struct gmesh { ID3D11Buffer* vb = nullptr; ID3D11Buffer* ib = nullptr; u32 count = 0; };
++		struct gfx_t
++		{
++			bool tried = false, ok = false;
++			ID3D11VertexShader* vs = nullptr;
++			ID3D11PixelShader* ps = nullptr;
++			ID3D11InputLayout* il = nullptr;
++			ID3D11Buffer* cb = nullptr;
++			ID3D11RasterizerState* rs = nullptr;
++			ID3D11DepthStencilState* ds_on = nullptr;
++			ID3D11DepthStencilState* ds_off = nullptr;
++			gmesh sphere, cyl, box;
++			XrSwapchain body_sc[2]{}, env_sc[2]{};
++			std::vector<XrSwapchainImageD3D11KHR> body_img[2], env_img[2];
++			u32 bw = 0, bh = 0;
++			static constexpr u32 ew = 512, eh = 512;
++			ID3D11Texture2D* depth[2]{};
++			ID3D11DepthStencilView* dsv[2]{};
++			std::map<ID3D11Texture2D*, ID3D11RenderTargetView*> rtv;
++			DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
++			mat4 vp;               // current eye's view-projection
++		};
++		gfx_t g_gfx; // headset thread only
++
++		struct cb_data { f32 mvp[16]; f32 model[16]; f32 color[4]; f32 params[4]; };
++
++		constexpr const char* gfx_shader = R"(
++cbuffer C : register(b0) { float4x4 mvp; float4x4 model; float4 color; float4 params; };
++struct VI { float3 p : POSITION; float3 n : NORMAL; };
++struct VO { float4 pos : SV_Position; float3 n : NORMAL; float3 lp : TEXCOORD0; };
++VO vs_main(VI i)
++{
++	VO o;
++	o.pos = mul(float4(i.p, 1), mvp);
++	o.n = mul(i.n, (float3x3)model);
++	o.lp = i.p;
++	return o;
++}
++float4 ps_main(VO i) : SV_Target
++{
++	if (params.x > 0.5)
++	{
++		// The room around the game: a calm, warm, dark studio
++		float3 d = normalize(i.lp);
++		float3 horizon = float3(0.075, 0.060, 0.050);
++		float3 c = d.y < 0 ? lerp(horizon, float3(0.030, 0.025, 0.022), saturate(-d.y * 2.0))
++		                   : lerp(horizon, float3(0.018, 0.020, 0.035), saturate(d.y * 1.6));
++		return float4(c, 1);
++	}
++	float3 n = normalize(i.n);
++	float key = saturate(dot(n, normalize(float3(0.35, 0.9, 0.25))));
++	float fill = saturate(dot(n, normalize(float3(-0.5, 0.2, -0.6)))) * 0.25;
++	return float4(color.rgb * (0.38 + 0.62 * key + fill), 1);
++}
++)";
++
++		mat4 m_cols(vec3 X, vec3 Y, vec3 Z, vec3 T)
++		{
++			mat4 m;
++			m.m[0] = X.x; m.m[4] = X.y; m.m[8] = X.z;
++			m.m[1] = Y.x; m.m[5] = Y.y; m.m[9] = Y.z;
++			m.m[2] = Z.x; m.m[6] = Z.y; m.m[10] = Z.z;
++			m.m[3] = T.x; m.m[7] = T.y; m.m[11] = T.z;
++			m.m[15] = 1.f;
++			return m;
++		}
++
++		bool make_mesh(ID3D11Device* dev, const std::vector<gvert>& v, const std::vector<u16>& idx, gmesh& out)
++		{
++			D3D11_BUFFER_DESC bd{};
++			bd.Usage = D3D11_USAGE_IMMUTABLE;
++			bd.ByteWidth = static_cast<UINT>(v.size() * sizeof(gvert));
++			bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++			D3D11_SUBRESOURCE_DATA sd{v.data()};
++			if (FAILED(dev->CreateBuffer(&bd, &sd, &out.vb))) return false;
++			bd.ByteWidth = static_cast<UINT>(idx.size() * sizeof(u16));
++			bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
++			sd.pSysMem = idx.data();
++			if (FAILED(dev->CreateBuffer(&bd, &sd, &out.ib))) return false;
++			out.count = static_cast<u32>(idx.size());
++			return true;
++		}
++
++		bool gfx_init(xr_state& xr)
++		{
++			auto& g = g_gfx;
++			g.tried = true;
++
++			HMODULE comp = LoadLibraryW(L"d3dcompiler_47.dll");
++			using compile_fn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
++			const auto compile = comp ? reinterpret_cast<compile_fn>(GetProcAddress(comp, "D3DCompile")) : nullptr;
++			if (!compile)
++			{
++				vr_log("Body and hands: the Windows shader compiler (d3dcompiler_47.dll) is not available");
++				return false;
++			}
++			ID3DBlob* vsb = nullptr;
++			ID3DBlob* psb = nullptr;
++			ID3DBlob* err = nullptr;
++			const usz len = std::strlen(gfx_shader);
++			if (FAILED(compile(gfx_shader, len, "orderupvr", nullptr, nullptr, "vs_main", "vs_4_0", 0, 0, &vsb, &err)) ||
++				FAILED(compile(gfx_shader, len, "orderupvr", nullptr, nullptr, "ps_main", "ps_4_0", 0, 0, &psb, &err)))
++			{
++				vr_log("Body and hands: shader compile failed: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
++				if (err) err->Release();
++				if (vsb) vsb->Release();
++				return false;
++			}
++			auto* dev = xr.device;
++			bool ok = SUCCEEDED(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &g.vs)) &&
++				SUCCEEDED(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &g.ps));
++			const D3D11_INPUT_ELEMENT_DESC layout[] =
++			{
++				{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
++				{"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
++			};
++			ok = ok && SUCCEEDED(dev->CreateInputLayout(layout, 2, vsb->GetBufferPointer(), vsb->GetBufferSize(), &g.il));
++			vsb->Release();
++			psb->Release();
++
++			D3D11_BUFFER_DESC cbd{};
++			cbd.ByteWidth = sizeof(cb_data);
++			cbd.Usage = D3D11_USAGE_DEFAULT;
++			cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++			ok = ok && SUCCEEDED(dev->CreateBuffer(&cbd, nullptr, &g.cb));
++
++			D3D11_RASTERIZER_DESC rd{};
++			rd.FillMode = D3D11_FILL_SOLID;
++			rd.CullMode = D3D11_CULL_NONE;
++			rd.DepthClipEnable = TRUE;
++			ok = ok && SUCCEEDED(dev->CreateRasterizerState(&rd, &g.rs));
++			D3D11_DEPTH_STENCIL_DESC dd{};
++			dd.DepthEnable = TRUE;
++			dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
++			dd.DepthFunc = D3D11_COMPARISON_LESS;
++			ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&dd, &g.ds_on));
++			dd.DepthEnable = FALSE;
++			dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
++			ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&dd, &g.ds_off));
++
++			// Unit sphere
++			{
++				std::vector<gvert> v;
++				std::vector<u16> idx;
++				constexpr int st = 10, sl = 16;
++				for (int i = 0; i <= st; i++)
++					for (int j = 0; j <= sl; j++)
++					{
++						const f32 th = 3.14159265f * i / st, ph = 6.2831853f * j / sl;
++						const f32 x = std::sin(th) * std::cos(ph), y = std::cos(th), z = std::sin(th) * std::sin(ph);
++						v.push_back({{x, y, z}, {x, y, z}});
++					}
++				for (int i = 0; i < st; i++)
++					for (int j = 0; j < sl; j++)
++					{
++						const u16 a = static_cast<u16>(i * (sl + 1) + j), b = static_cast<u16>(a + sl + 1);
++						idx.insert(idx.end(), {a, b, static_cast<u16>(a + 1), static_cast<u16>(a + 1), b, static_cast<u16>(b + 1)});
++					}
++				ok = ok && make_mesh(dev, v, idx, g.sphere);
++			}
++			// Unit cylinder along +Y (0..1), radius 1
++			{
++				std::vector<gvert> v;
++				std::vector<u16> idx;
++				constexpr int sl = 14;
++				for (int j = 0; j <= sl; j++)
++				{
++					const f32 ph = 6.2831853f * j / sl, x = std::cos(ph), z = std::sin(ph);
++					v.push_back({{x, 0.f, z}, {x, 0.f, z}});
++					v.push_back({{x, 1.f, z}, {x, 0.f, z}});
++				}
++				for (int j = 0; j < sl; j++)
++				{
++					const u16 a = static_cast<u16>(j * 2);
++					idx.insert(idx.end(), {a, static_cast<u16>(a + 1), static_cast<u16>(a + 2), static_cast<u16>(a + 2), static_cast<u16>(a + 1), static_cast<u16>(a + 3)});
++				}
++				ok = ok && make_mesh(dev, v, idx, g.cyl);
++			}
++			// Unit box (-0.5..0.5)
++			{
++				std::vector<gvert> v;
++				std::vector<u16> idx;
++				const vec3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
++				for (int a = 0; a < 3; a++)
++					for (int sgn = -1; sgn <= 1; sgn += 2)
++					{
++						const vec3 n = axes[a] * static_cast<f32>(sgn), u = axes[(a + 1) % 3], w = axes[(a + 2) % 3];
++						const u16 base = static_cast<u16>(v.size());
++						for (int k = 0; k < 4; k++)
++						{
++							const vec3 p = n * 0.5f + u * ((k & 1) ? 0.5f : -0.5f) + w * ((k & 2) ? 0.5f : -0.5f);
++							v.push_back({{p.x, p.y, p.z}, {n.x, n.y, n.z}});
++						}
++						idx.insert(idx.end(), {base, static_cast<u16>(base + 1), static_cast<u16>(base + 2), static_cast<u16>(base + 2), static_cast<u16>(base + 1), static_cast<u16>(base + 3)});
++					}
++				ok = ok && make_mesh(dev, v, idx, g.box);
++			}
++
++			bool bgra = false;
++			g.fmt = static_cast<DXGI_FORMAT>(pick_format(xr, bgra));
++			ok = ok && g.fmt != DXGI_FORMAT_UNKNOWN;
++
++			// Per-eye image size: what the runtime recommends, a bit smaller (the body does not need every pixel)
++			u32 n = 0;
++			xrEnumerateViewConfigurationViews(xr.instance, xr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &n, nullptr);
++			std::vector<XrViewConfigurationView> views(n, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
++			if (n && XR_SUCCEEDED(xrEnumerateViewConfigurationViews(xr.instance, xr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, n, &n, views.data())))
++			{
++				g.bw = std::max<u32>(views[0].recommendedImageRectWidth * 4 / 5, 512);
++				g.bh = std::max<u32>(views[0].recommendedImageRectHeight * 4 / 5, 512);
++			}
++			else
++			{
++				g.bw = 1600;
++				g.bh = 1600;
++			}
++
++			const auto make_sc = [&](XrSwapchain& sc, std::vector<XrSwapchainImageD3D11KHR>& imgs, u32 w, u32 h)
++			{
++				XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
++				info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
++				info.format = g.fmt; info.sampleCount = 1; info.width = w; info.height = h; info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
++				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &sc), "xrCreateSwapchain(body)")) return false;
++				u32 count = 0;
++				xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
++				imgs.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
++				return xr_ok(xr, xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data())), "xrEnumerateSwapchainImages(body)");
++			};
++			for (int e = 0; e < 2 && ok; e++)
++			{
++				ok = make_sc(g.body_sc[e], g.body_img[e], g.bw, g.bh) && make_sc(g.env_sc[e], g.env_img[e], g.ew, g.eh);
++				D3D11_TEXTURE2D_DESC td{};
++				td.Width = g.bw; td.Height = g.bh; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
++				td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
++				ok = ok && SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g.depth[e])) && SUCCEEDED(dev->CreateDepthStencilView(g.depth[e], nullptr, &g.dsv[e]));
++			}
++			g.ok = ok;
++			vr_log("Body and hands: %s (%ux%u per eye)", ok ? "ready" : "could not be set up", g.bw, g.bh);
++			return ok;
++		}
++
++		void gfx_destroy()
++		{
++			auto& g = g_gfx;
++			const auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
++			for (auto& [tex, view] : g.rtv) view->Release();
++			g.rtv.clear();
++			for (int e = 0; e < 2; e++)
++			{
++				if (g.body_sc[e] != XR_NULL_HANDLE) xrDestroySwapchain(g.body_sc[e]);
++				if (g.env_sc[e] != XR_NULL_HANDLE) xrDestroySwapchain(g.env_sc[e]);
++				rel(g.dsv[e]);
++				rel(g.depth[e]);
++			}
++			for (gmesh* m : {&g.sphere, &g.cyl, &g.box}) { rel(m->vb); rel(m->ib); }
++			rel(g.vs); rel(g.ps); rel(g.il); rel(g.cb); rel(g.rs); rel(g.ds_on); rel(g.ds_off);
++			g = {};
++		}
++
++		ID3D11RenderTargetView* gfx_rtv(xr_state& xr, ID3D11Texture2D* tex)
++		{
++			auto& g = g_gfx;
++			if (const auto it = g.rtv.find(tex); it != g.rtv.end()) return it->second;
++			D3D11_RENDER_TARGET_VIEW_DESC rd{};
++			rd.Format = g.fmt;
++			rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
++			ID3D11RenderTargetView* v = nullptr;
++			if (FAILED(xr.device->CreateRenderTargetView(tex, &rd, &v))) return nullptr;
++			g.rtv[tex] = v;
++			return v;
++		}
++
++		void gfx_draw(xr_state& xr, const gmesh& m, const mat4& model, vec3 color, f32 env = 0.f)
++		{
++			auto& g = g_gfx;
++			cb_data cb{};
++			const mat4 mvp = mmul(g.vp, model);
++			std::memcpy(cb.mvp, mvp.m, sizeof(cb.mvp));
++			std::memcpy(cb.model, model.m, sizeof(cb.model));
++			cb.color[0] = color.x; cb.color[1] = color.y; cb.color[2] = color.z; cb.color[3] = 1.f;
++			cb.params[0] = env;
++			xr.context->UpdateSubresource(g.cb, 0, nullptr, &cb, 0, 0);
++			const UINT stride = sizeof(gvert), offset = 0;
++			xr.context->IASetVertexBuffers(0, 1, &m.vb, &stride, &offset);
++			xr.context->IASetIndexBuffer(m.ib, DXGI_FORMAT_R16_UINT, 0);
++			xr.context->DrawIndexed(m.count, 0, 0);
++		}
++
++		vec3 any_perp(vec3 d)
++		{
++			const vec3 a = std::fabs(d.y) < 0.9f ? vec3{0.f, 1.f, 0.f} : vec3{1.f, 0.f, 0.f};
++			return normalize(cross(d, a));
++		}
++
++		void draw_ball(xr_state& xr, vec3 c, f32 r, vec3 col)
++		{
++			gfx_draw(xr, g_gfx.sphere, m_cols({r, 0, 0}, {0, r, 0}, {0, 0, r}, c), col);
++		}
++
++		void draw_limb(xr_state& xr, vec3 a, vec3 b, f32 ra, f32 rb, vec3 col)
++		{
++			const vec3 d = b - a;
++			const f32 len = std::sqrt(dot(d, d));
++			if (len < 1e-4f) { draw_ball(xr, a, ra, col); return; }
++			const vec3 y = d * (1.f / len), x = any_perp(y), z = cross(x, y);
++			const f32 r = (ra + rb) * 0.5f;
++			gfx_draw(xr, g_gfx.cyl, m_cols(x * r, d, z * r, a), col);
++			draw_ball(xr, a, ra, col);
++			draw_ball(xr, b, rb, col);
++		}
++
++		void draw_ellipsoid(xr_state& xr, vec3 c, vec3 ax, vec3 ay, vec3 az, vec3 size, vec3 col)
++		{
++			gfx_draw(xr, g_gfx.sphere, m_cols(ax * size.x, ay * size.y, az * size.z, c), col);
++		}
++
++		void draw_boxo(xr_state& xr, vec3 c, vec3 ax, vec3 ay, vec3 az, vec3 size, vec3 col)
++		{
++			gfx_draw(xr, g_gfx.box, m_cols(ax * size.x, ay * size.y, az * size.z, c), col);
++		}
++
++		// The hand around the controller's grip pose. Fingers curl with GRIP (middle, ring, little) and TRIGGER (index).
++		struct hand_geo
++		{
++			vec3 palm, L, n, t, wrist, grab;
++			vec3 joints[5][4];
++			f32 rad[5];
++			XrQuaternionf q;
++			vec3 pos;
++			f32 side;
++		};
++
++		hand_geo make_hand(const XrPosef& g, int hand, f32 grip, f32 trig)
++		{
++			hand_geo h{};
++			const f32 s = hand ? 1.f : -1.f; // right = +1
++			h.side = s;
++			h.q = g.orientation;
++			h.pos = to_vec(g.position);
++			const auto W = [&](vec3 v) { return h.pos + rotate(h.q, v); };   // grip space -> LOCAL (points)
++			const auto R = [&](vec3 v) { return rotate(h.q, v); };           // directions
++
++			const vec3 n_g{-s, 0.f, 0.f};                      // palm faces the handle
++			const vec3 L_g = normalize({0.f, -0.55f, -0.83f});  // wrist -> fingertips, forward and down
++			vec3 t_g = normalize(cross(n_g, L_g));
++			if (t_g.y < 0.f) t_g = t_g * -1.f;                  // towards the thumb
++			const vec3 palm_g{s * 0.028f, -0.005f, 0.025f};
++
++			h.L = R(L_g); h.n = R(n_g); h.t = R(t_g);
++			h.palm = W(palm_g);
++			h.wrist = h.palm - h.L * 0.075f;
++			h.grab = h.palm + h.L * 0.065f;
++
++			const f32 curl_idx = std::clamp(trig, 0.08f, 1.f), curl = std::clamp(grip, 0.12f, 1.f);
++			const f32 spread[4] = {0.025f, 0.008f, -0.009f, -0.025f};
++			const f32 seg[4][3] = {{0.042f, 0.026f, 0.020f}, {0.046f, 0.029f, 0.021f}, {0.043f, 0.027f, 0.020f}, {0.035f, 0.021f, 0.018f}};
++			const f32 radius[4] = {0.0095f, 0.0098f, 0.0093f, 0.0085f};
++			const vec3 k = normalize(cross(h.L, h.n));
++			for (int f = 0; f < 4; f++)
++			{
++				const f32 c = f == 0 ? curl_idx : curl;
++				vec3 p = h.palm + h.L * 0.042f + h.t * spread[f];
++				h.joints[f][0] = p;
++				f32 ang = 0.f;
++				const f32 bend[3] = {1.35f, 1.6f, 1.1f};
++				for (int j = 0; j < 3; j++)
++				{
++					ang += c * bend[j];
++					const vec3 dir = h.L * std::cos(ang) + h.n * std::sin(ang); // rotate L towards the palm about k
++					(void)k;
++					p = p + dir * seg[f][j];
++					h.joints[f][j + 1] = p;
++				}
++				h.rad[f] = radius[f];
++			}
++			// Thumb: rests on the controller face, presses down a little with GRIP
++			{
++				const f32 c = 0.25f + 0.55f * curl;
++				vec3 p = h.palm + h.t * 0.03f - h.L * 0.015f + h.n * 0.012f;
++				const vec3 d0 = normalize(h.L * 0.55f + h.t * 0.55f + h.n * 0.35f);
++				h.joints[4][0] = p;
++				const f32 seg_t[3] = {0.034f, 0.03f, 0.024f};
++				f32 ang = 0.f;
++				for (int j = 0; j < 3; j++)
++				{
++					ang += c * 0.5f;
++					const vec3 dir = normalize(d0 * std::cos(ang) + h.n * std::sin(ang));
++					p = p + dir * seg_t[j];
++					h.joints[4][j + 1] = p;
++				}
++				h.rad[4] = 0.011f;
++			}
++			return h;
++		}
++
++		const vec3 c_skin{0.86f, 0.66f, 0.52f}, c_jacket{0.93f, 0.93f, 0.91f}, c_apron{0.22f, 0.33f, 0.55f},
++			c_pants{0.13f, 0.13f, 0.15f}, c_shoe{0.07f, 0.06f, 0.06f};
++
++		void draw_hand(xr_state& xr, const hand_geo& h)
++		{
++			draw_ellipsoid(xr, h.palm, h.L, h.t, h.n, {0.048f, 0.043f, 0.017f}, c_skin);
++			draw_limb(xr, h.wrist, h.palm - h.L * 0.02f, 0.024f, 0.026f, c_skin);
++			for (int f = 0; f < 5; f++)
++			{
++				for (int j = 0; j < 3; j++)
++				{
++					const f32 r0 = h.rad[f] * (1.f - 0.12f * j), r1 = h.rad[f] * (1.f - 0.12f * (j + 1));
++					draw_limb(xr, h.joints[f][j], h.joints[f][j + 1], r0, r1, c_skin);
++				}
++			}
++		}
++
++		// PlayStation button shapes floating over the Quest buttons: X = pink square, Y = green triangle,
++		// A = blue cross, B = red circle.
++		void draw_button_labels(xr_state& xr, const hand_geo& h, int hand)
++		{
++			const auto W = [&](vec3 v) { return h.pos + rotate(h.q, v); };
++			const vec3 ax = rotate(h.q, {1.f, 0.f, 0.f}), ay = rotate(h.q, {0.f, 1.f, 0.f}), az = rotate(h.q, {0.f, 0.f, 1.f});
++			const f32 s = h.side;
++			const f32 sz = 0.0065f, bar = 0.0016f;
++			// Two labels: the lower button (A / X) and the upper one (B / Y)
++			const vec3 centres[2] = {W({-s * 0.006f, 0.052f, -0.018f}), W({s * 0.004f, 0.052f, -0.044f})};
++			for (int b = 0; b < 2; b++)
++			{
++				const vec3 c = centres[b];
++				const int shape = hand ? (b == 0 ? 0 : 1) : (b == 0 ? 2 : 3); // 0 cross, 1 circle, 2 square, 3 triangle
++				const auto seg = [&](f32 x0, f32 z0, f32 x1, f32 z1, vec3 col)
++				{
++					const vec3 a = c + ax * x0 + az * z0, e = c + ax * x1 + az * z1;
++					const vec3 d = e - a;
++					const f32 len = std::sqrt(dot(d, d));
++					const vec3 dx = d * (1.f / std::max(len, 1e-5f)), dz = normalize(cross(ay, dx));
++					draw_boxo(xr, (a + e) * 0.5f, dx, ay, dz, {len + bar, bar, bar}, col);
++				};
++				if (shape == 0)
++				{
++					const vec3 col{0.45f, 0.62f, 0.98f};
++					seg(-sz, -sz, sz, sz, col); seg(-sz, sz, sz, -sz, col);
++				}
++				else if (shape == 1)
++				{
++					const vec3 col{0.98f, 0.36f, 0.36f};
++					for (int i = 0; i < 12; i++)
++					{
++						const f32 a0 = 6.2831853f * i / 12, a1 = 6.2831853f * (i + 1) / 12;
++						seg(std::cos(a0) * sz, std::sin(a0) * sz, std::cos(a1) * sz, std::sin(a1) * sz, col);
++					}
++				}
++				else if (shape == 2)
++				{
++					const vec3 col{0.96f, 0.45f, 0.78f};
++					seg(-sz, -sz, sz, -sz, col); seg(sz, -sz, sz, sz, col); seg(sz, sz, -sz, sz, col); seg(-sz, sz, -sz, -sz, col);
++				}
++				else
++				{
++					const vec3 col{0.25f, 0.88f, 0.66f};
++					const f32 tx = sz * 0.95f;
++					seg(0.f, -sz, tx, sz * 0.7f, col); seg(tx, sz * 0.7f, -tx, sz * 0.7f, col); seg(-tx, sz * 0.7f, 0.f, -sz, col);
++				}
++			}
++		}
++
++		// Two-bone arm from the shoulder to the wrist, elbow pointing down and out.
++		void draw_arm(xr_state& xr, vec3 shoulder, vec3 wrist, vec3 body_right, vec3 body_fwd, f32 side, f32 scale)
++		{
++			const f32 a = 0.29f * scale, b = 0.27f * scale;
++			vec3 d = wrist - shoulder;
++			f32 dist = std::sqrt(dot(d, d));
++			if (dist < 1e-4f) return;
++			const vec3 e = d * (1.f / dist);
++			dist = std::min(dist, (a + b) * 0.999f);
++			const f32 x = (a * a - b * b + dist * dist) / (2.f * dist);
++			const f32 hh = std::sqrt(std::max(a * a - x * x, 0.f));
++			vec3 pole = vec3{0.f, -1.f, 0.f} + body_right * (side * 0.45f) - body_fwd * 0.2f;
++			pole = pole - e * dot(pole, e);
++			const vec3 bend = dot(pole, pole) > 1e-6f ? normalize(pole) : any_perp(e);
++			const vec3 elbow = shoulder + e * x + bend * hh;
++			const vec3 wrist_end = shoulder + e * dist;
++			draw_limb(xr, shoulder, elbow, 0.047f, 0.042f, c_jacket);
++			const vec3 cuff = elbow + (wrist_end - elbow) * 0.82f;
++			draw_limb(xr, elbow, cuff, 0.042f, 0.037f, c_jacket);
++			draw_limb(xr, cuff, wrist_end, 0.03f, 0.026f, c_skin);
++		}
++
++		void draw_body(xr_state& xr)
++		{
++			const vec3 head = xr.last_head;
++			const vec3 fb{-std::sin(xr.body_yaw), 0.f, -std::cos(xr.body_yaw)};
++			const vec3 rb{-fb.z, 0.f, fb.x};
++			const vec3 up{0.f, 1.f, 0.f};
++			const f32 eye_h = head.y - xr.floor_y;
++			const bool seated = eye_h < 1.35f;
++			const f32 scale = std::clamp((seated ? eye_h + 0.45f : eye_h) / 1.65f, 0.85f, 1.15f);
++			const vec3 back = fb * (-0.10f);
++
++			const vec3 chest = head + up * (-0.40f * scale) + back;
++			const vec3 belly = head + up * (-0.66f * scale) + back;
++			draw_ellipsoid(xr, chest, rb, up, fb, {0.19f * scale, 0.20f * scale, 0.115f * scale}, c_jacket);
++			draw_ellipsoid(xr, belly, rb, up, fb, {0.17f * scale, 0.16f * scale, 0.11f * scale}, c_jacket);
++			draw_boxo(xr, belly + fb * (0.105f * scale) + up * (-0.08f * scale), rb, up, fb, {0.30f * scale, 0.42f * scale, 0.012f}, c_apron);
++
++			// Arms
++			for (int hnd = 0; hnd < 2; hnd++)
++			{
++				const f32 side = hnd ? 1.f : -1.f;
++				const vec3 shoulder = head + up * (-0.24f * scale) + back + rb * (side * 0.18f * scale);
++				draw_ball(xr, shoulder, 0.055f * scale, c_jacket);
++				if (!xr.hand_valid[hnd]) continue;
++				const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
++				draw_arm(xr, shoulder, h.wrist, rb, fb, side, scale);
++			}
++
++			// Legs
++			for (int leg = 0; leg < 2; leg++)
++			{
++				const f32 side = leg ? 1.f : -1.f;
++				const vec3 hip = head + up * (-0.84f * scale) + back + rb * (side * 0.09f * scale);
++				vec3 knee, foot;
++				if (seated)
++				{
++					knee = hip + fb * (0.42f * scale) + up * 0.02f;
++					foot = vec3{knee.x, xr.floor_y + 0.06f, knee.z} + fb * 0.05f;
++				}
++				else
++				{
++					foot = vec3{hip.x, xr.floor_y + 0.06f, hip.z} + fb * 0.03f;
++					knee = (hip + foot) * 0.5f + fb * 0.03f;
++				}
++				draw_limb(xr, hip, knee, 0.075f * scale, 0.058f * scale, c_pants);
++				draw_limb(xr, knee, foot, 0.058f * scale, 0.045f * scale, c_pants);
++				draw_ellipsoid(xr, foot + fb * 0.05f + up * (-0.02f), rb, up, fb, {0.05f, 0.04f, 0.12f}, c_shoe);
++			}
++		}
++
++		mat4 view_proj(const XrView& v, f32 near_z, f32 far_z, bool rotation_only)
++		{
++			const XrFovf& f = v.fov;
++			const f32 l = std::tan(f.angleLeft), r = std::tan(f.angleRight), u = std::tan(f.angleUp), d = std::tan(f.angleDown);
++			mat4 P;
++			P.m[0] = 2.f / (r - l); P.m[2] = (r + l) / (r - l);
++			P.m[5] = 2.f / (u - d); P.m[6] = (u + d) / (u - d);
++			P.m[10] = far_z / (near_z - far_z); P.m[11] = near_z * far_z / (near_z - far_z);
++			P.m[14] = -1.f;
++			const XrQuaternionf q = v.pose.orientation;
++			const vec3 t = rotation_only ? vec3{0.f, 0.f, 0.f} : to_vec(v.pose.position);
++			const vec3 ax = rotate(q, {1.f, 0.f, 0.f}), ay = rotate(q, {0.f, 1.f, 0.f}), az = rotate(q, {0.f, 0.f, 1.f});
++			mat4 V;
++			V.m[0] = ax.x; V.m[1] = ax.y; V.m[2] = ax.z; V.m[3] = -dot(ax, t);
++			V.m[4] = ay.x; V.m[5] = ay.y; V.m[6] = ay.z; V.m[7] = -dot(ay, t);
++			V.m[8] = az.x; V.m[9] = az.y; V.m[10] = az.z; V.m[11] = -dot(az, t);
++			V.m[15] = 1.f;
++			return mmul(P, V);
++		}
++
++		bool acquire(XrSwapchain sc, u32& index)
++		{
++			XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
++			if (XR_FAILED(xrAcquireSwapchainImage(sc, &ai, &index))) return false;
++			XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
++			wi.timeout = XR_INFINITE_DURATION;
++			if (XR_FAILED(xrWaitSwapchainImage(sc, &wi)))
++			{
++				XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
++				xrReleaseSwapchainImage(sc, &ri);
++				return false;
++			}
++			return true;
++		}
++
++		void release(XrSwapchain sc)
++		{
++			XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
++			xrReleaseSwapchainImage(sc, &ri);
++		}
++
++		// Draws the room (env) and the body with hands for both eyes. Returns false if nothing could be drawn.
++		bool gfx_render(xr_state& xr, bool want_env, bool want_body)
++		{
++			auto& g = g_gfx;
++			if (!g.tried) gfx_init(xr);
++			if (!g.ok || !xr.views_valid) return false;
++			auto* ctx = xr.context;
++
++			ctx->IASetInputLayout(g.il);
++			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++			ctx->VSSetShader(g.vs, nullptr, 0);
++			ctx->PSSetShader(g.ps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.cb);
++			ctx->PSSetConstantBuffers(0, 1, &g.cb);
++			ctx->RSSetState(g.rs);
++			ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
++
++			for (int e = 0; e < 2; e++)
++			{
++				if (want_env)
++				{
++					u32 idx = 0;
++					if (acquire(g.env_sc[e], idx))
++					{
++						if (auto* rtv = gfx_rtv(xr, g.env_img[e][idx].texture))
++						{
++							const D3D11_VIEWPORT vp{0.f, 0.f, static_cast<f32>(g.ew), static_cast<f32>(g.eh), 0.f, 1.f};
++							ctx->RSSetViewports(1, &vp);
++							ctx->OMSetRenderTargets(1, &rtv, nullptr);
++							ctx->OMSetDepthStencilState(g.ds_off, 0);
++							g.vp = view_proj(xr.views[e], 0.1f, 200.f, true);
++							gfx_draw(xr, g.sphere, m_cols({50, 0, 0}, {0, 50, 0}, {0, 0, 50}, {0, 0, 0}), {0, 0, 0}, 1.f);
++						}
++						release(g.env_sc[e]);
++					}
++				}
++				if (want_body)
++				{
++					u32 idx = 0;
++					if (acquire(g.body_sc[e], idx))
++					{
++						if (auto* rtv = gfx_rtv(xr, g.body_img[e][idx].texture))
++						{
++							const D3D11_VIEWPORT vp{0.f, 0.f, static_cast<f32>(g.bw), static_cast<f32>(g.bh), 0.f, 1.f};
++							ctx->RSSetViewports(1, &vp);
++							ctx->OMSetRenderTargets(1, &rtv, g.dsv[e]);
++							const f32 clear[4] = {0.f, 0.f, 0.f, 0.f};
++							ctx->ClearRenderTargetView(rtv, clear);
++							ctx->ClearDepthStencilView(g.dsv[e], D3D11_CLEAR_DEPTH, 1.f, 0);
++							ctx->OMSetDepthStencilState(g.ds_on, 0);
++							g.vp = view_proj(xr.views[e], 0.03f, 100.f, false);
++							draw_body(xr);
++							for (int hnd = 0; hnd < 2; hnd++)
++							{
++								if (!xr.hand_valid[hnd]) continue;
++								const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
++								draw_hand(xr, h);
++								draw_button_labels(xr, h, hnd);
++							}
++						}
++						release(g.body_sc[e]);
++					}
++				}
++			}
++			ctx->OMSetRenderTargets(0, nullptr, nullptr);
++			return true;
++		}
++
++		void draw_calib_hint(xr_state& xr)
++		{
++			draw_card(xr, xr.calib, xr.calib_images, xr.calib_bgra, xr.calib_has, 1024, 300, L"PRESS THE PINK SQUARE",
++				"The game asks for the PlayStation SQUARE button: on your Quest that is X on the left controller "
++				"(look at your left hand: the pink square floats over it).\n"
++				"Point at the middle of the screen and press X. Pulling the TRIGGER works too.");
++		}
++
 +		void update_input(xr_state& xr, XrTime time, f32 dt)
 +		{
 +			pointer_state out;
@@ -1835,6 +2588,41 @@ index 000000000..ec62cf8db
 +					vr_log("Pointer hand: %s", other ? "right" : "left");
 +				}
 +				const int hand = xr.active_hand;
++
++				// Hands for the body: grip poses, finger curl
++				for (int h = 0; h < 2; h++)
++				{
++					XrSpaceLocation gl{XR_TYPE_SPACE_LOCATION};
++					xr.hand_valid[h] = xr.grip_space[h] != XR_NULL_HANDLE && XR_SUCCEEDED(xrLocateSpace(xr.grip_space[h], xr.local_space, time, &gl)) &&
++						(gl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (gl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
++					if (xr.hand_valid[h]) xr.hand_pose[h] = gl.pose;
++					xr.hand_grip[h] = grip[h];
++					xr.hand_trig[h] = trig[h];
++				}
++				// Floor height (for the legs) and the body turning after the head
++				if (xr.stage_space != XR_NULL_HANDLE)
++				{
++					XrSpaceLocation sl{XR_TYPE_SPACE_LOCATION};
++					if (XR_SUCCEEDED(xrLocateSpace(xr.stage_space, xr.local_space, time, &sl)) && (sl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
++					{
++						xr.floor_y = sl.pose.position.y;
++						xr.floor_known = true;
++					}
++				}
++				if (!xr.floor_known) xr.floor_y = xr.last_head.y - 1.6f;
++				{
++					vec3 f = xr.last_forward;
++					f.y = 0.f;
++					if (dot(f, f) > 1e-4f)
++					{
++						const f32 head_yaw = std::atan2(-f.x, -f.z);
++						if (!xr.body_init) { xr.body_yaw = head_yaw; xr.body_init = true; }
++						f32 diff = std::remainder(head_yaw - xr.body_yaw, 6.2831853f);
++						// Follow slowly, faster when the head turns far
++						const f32 rate = std::fabs(diff) > 0.6f ? 4.f : 1.2f;
++						xr.body_yaw += diff * std::min(1.f, rate * dt);
++					}
++				}
 +
 +				// Left stick click: short = recentre (screen and game camera), hold 1 s = switch inside-the-game 3D / big screen.
 +				const u64 now_ms = GetTickCount64();
@@ -1886,6 +2674,20 @@ index 000000000..ec62cf8db
 +						xr.snap_armed = false;
 +					}
 +					if (std::fabs(rs.x) < 0.3f) xr.snap_armed = true;
++
++					// Right stick up/down: stand higher or lower in the game
++					if (!grabbing && std::fabs(rs.y) > 0.6f && std::fabs(rs.x) < 0.5f)
++					{
++						const f32 dy = -rs.y * 0.6f * dt;
++						xr.lower = std::clamp(xr.lower + dy, -1.5f, 3.f);
++						xr.player_pos.y += dy;
++						xr.height_dirty = true;
++					}
++					else if (xr.height_dirty)
++					{
++						xr.height_dirty = false;
++						persist_set("lower", std::to_string(xr.lower));
++					}
 +				}
 +				else
 +				{
@@ -1934,12 +2736,32 @@ index 000000000..ec62cf8db
 +						return from_player(xr, level(cam.up, q) * xr.unit);
 +					};
 +
-+					out.active = true;
-+					if (d.z < -0.001f && (-D - o.z) / d.z > 0.f)
++					// Hands: the game's pointer is wherever your hand covers the game's picture, as seen from the game
++					// camera (= your eyes). Reach for a burger and it is under the pointer. Laser: where the ray meets it.
++					bool have = false;
++					f32 nx = 0.f, ny = 0.f;
++					if (!xr.pointing_laser && xr.hand_valid[hand])
 +					{
-+						const f32 t = (-D - o.z) / d.z;
-+						const vec3 q = o + d * t;
-+						const f32 nx = (cam.sx * q.x - cam.cx * D) / D, ny = (cam.sy * q.y - cam.cy * D) / D;
++						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
++						const vec3 gp = level(cam.up, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f);
++						if (gp.z < -0.05f)
++						{
++							nx = (cam.sx * gp.x + cam.cx * gp.z) / -gp.z;
++							ny = (cam.sy * gp.y + cam.cy * gp.z) / -gp.z;
++							have = true;
++						}
++					}
++					else if (d.z < -0.001f && (-D - o.z) / d.z > 0.f)
++					{
++						const vec3 q = o + d * ((-D - o.z) / d.z);
++						nx = (cam.sx * q.x - cam.cx * D) / D;
++						ny = (cam.sy * q.y - cam.cy * D) / D;
++						have = true;
++					}
++
++					out.active = true;
++					if (have)
++					{
 +						out.x = (nx + 1.f) * 0.5f;
 +						out.y = (1.f - ny) * 0.5f;
 +						out.on_screen = out.x > 0.0f && out.x < 1.0f && out.y > 0.0f && out.y < 1.0f;
@@ -2041,6 +2863,8 @@ index 000000000..ec62cf8db
 +				out.cross = get_bool(xr, xr.btn_a);
 +				out.circle = get_bool(xr, xr.btn_b);
 +				out.square = get_bool(xr, xr.btn_x);
++				// The start-up "press Square" screen: the trigger works too, until the game has calibrated once
++				if (g_calib_tick.load() == 0 && xr.first_live && now_ms - xr.first_live < 180000 && trig[hand] > 0.5f) out.square = true;
 +				out.triangle = get_bool(xr, xr.btn_y);
 +				out.start = get_bool(xr, xr.btn_menu);
 +				out.select = get_bool(xr, xr.stick_click, xr.hand_path[1]);
@@ -2140,8 +2964,32 @@ index 000000000..ec62cf8db
 +			XrCompositionLayerQuad dot_layer{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
 +			XrCompositionLayerProjectionView pviews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-+			const XrCompositionLayerBaseHeader* layers[6]{};
++			XrCompositionLayerProjection env_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION}, body_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
++			XrCompositionLayerProjectionView env_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
++			XrCompositionLayerProjectionView body_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
++			XrCompositionLayerQuad calib{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			const XrCompositionLayerBaseHeader* layers[12]{};
 +			u32 layer_count = 0;
++
++			// The room around the game, and your body and hands: drawn by the mod at full headset rate
++			const bool drew = frame_state.shouldRender && gfx_render(xr, true, true);
++			if (drew)
++			{
++				for (int i = 0; i < 2; i++)
++				{
++					env_views[i].pose = xr.views[i].pose;
++					env_views[i].fov = xr.views[i].fov;
++					env_views[i].subImage.swapchain = g_gfx.env_sc[i];
++					env_views[i].subImage.imageRect.extent = {static_cast<s32>(g_gfx.ew), static_cast<s32>(g_gfx.eh)};
++					body_views[i] = env_views[i];
++					body_views[i].subImage.swapchain = g_gfx.body_sc[i];
++					body_views[i].subImage.imageRect.extent = {static_cast<s32>(g_gfx.bw), static_cast<s32>(g_gfx.bh)};
++				}
++				env_layer.space = xr.local_space;
++				env_layer.viewCount = 2;
++				env_layer.views = env_views;
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&env_layer);
++			}
 +
 +			const std::string message = panel_message();
 +			if (!message.empty() && message != xr.panel_text)
@@ -2172,6 +3020,7 @@ index 000000000..ec62cf8db
 +					pviews[i].subImage.imageRect.extent = {static_cast<s32>(xr.eye_w[src]), static_cast<s32>(xr.eye_h[src])};
 +				}
 +				proj.space = xr.local_space;
++				proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // the empty space shows the room
 +				proj.viewCount = 2;
 +				proj.views = pviews;
 +				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
@@ -2189,14 +3038,24 @@ index 000000000..ec62cf8db
 +				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
 +			}
 +
++			if (drew)
++			{
++				body_layer.space = xr.local_space;
++				body_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++				body_layer.viewCount = 2;
++				body_layer.views = body_views;
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&body_layer);
++			}
++
 +			if (!xr.pointer_images_tried) { xr.pointer_images_tried = true; make_pointer_images(xr); }
++			if (xr.have_image && message.empty() && !xr.first_live) xr.first_live = now_tick;
 +
 +			// Laser from the hand to the screen, and a cursor where it lands (no emulator delay)
 +			if (frame_state.shouldRender && xr.show_pointer && (xr.have_image || xr.live3d) && message.empty())
 +			{
 +				const vec3 along = xr.aim_hit - xr.aim_origin;
 +				const f32 len = std::sqrt(dot(along, along));
-+				if (xr.laser_ok && len > 0.05f)
++				if (xr.laser_ok && len > 0.05f && (!xr.live3d || xr.pointing_laser))
 +				{
 +					const vec3 bx = along * (1.f / len);
 +					vec3 bz = (xr.last_head - (xr.aim_origin + along * 0.5f));
@@ -2215,7 +3074,8 @@ index 000000000..ec62cf8db
 +				}
 +				if (xr.cursor_ok)
 +				{
-+					const f32 size = xr.live3d ? 0.03f : std::clamp(xr.screen_width * 0.018f, 0.03f, 0.12f);
++					const vec3 to_cursor = xr.aim_hit - xr.last_head;
++					const f32 size = xr.live3d ? std::clamp(std::sqrt(dot(to_cursor, to_cursor)) * 0.02f, 0.012f, 0.08f) : std::clamp(xr.screen_width * 0.018f, 0.03f, 0.12f);
 +					dot_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					dot_layer.space = xr.local_space;
 +					dot_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -2263,6 +3123,28 @@ index 000000000..ec62cf8db
 +				}
 +			}
 +
++			// Start-up "press Square" helper, until the game has calibrated the controller once this session
++			if (g_calib_tick.load() == 0 && xr.first_live && now_tick - xr.first_live < 180000 && message.empty() && xr.screen_placed)
++			{
++				if (!xr.calib_hint_drawn) { draw_calib_hint(xr); xr.calib_hint_drawn = true; }
++				if (xr.calib_has && frame_state.shouldRender)
++				{
++					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++					const f32 sh = xr.sc_w ? xr.screen_width * xr.sc_h / xr.sc_w : xr.screen_width * 9.f / 16.f;
++					const vec3 pos = xr.live3d ? from_player(xr, {0.f, -0.45f, -1.0f})
++						: xr.screen_center + normal * 0.4f - vec3{0.f, sh * 0.5f + 0.12f, 0.f};
++					const f32 yaw = xr.live3d ? xr.player_yaw : xr.screen_yaw;
++					calib.space = xr.local_space;
++					calib.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					calib.subImage.swapchain = xr.calib;
++					calib.subImage.imageRect.extent = {1024, 300};
++					calib.pose.position = {pos.x, pos.y, pos.z};
++					calib.pose.orientation = yaw_q(yaw);
++					calib.size = {1.0f, 1.0f * 300.f / 1024.f};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);
++				}
++			}
++
 +			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed)
 +			{
 +				// Floats just in front of the game screen, facing the player.
@@ -2301,11 +3183,14 @@ index 000000000..ec62cf8db
 +			if (xr.cursor != XR_NULL_HANDLE) xrDestroySwapchain(xr.cursor);
 +			if (xr.laser != XR_NULL_HANDLE) xrDestroySwapchain(xr.laser);
 +			for (auto sc : xr.eye_sc) if (sc != XR_NULL_HANDLE) xrDestroySwapchain(sc);
++			if (xr.calib != XR_NULL_HANDLE) xrDestroySwapchain(xr.calib);
++			gfx_destroy();
 +			{
 +				std::lock_guard lock(g_state_mutex);
 +				g_views = {};
 +				g_cam = {};
 +				for (auto& p : g_pending) p = {};
++				for (auto& p : g_ready) p = {};
 +			}
 +			if (xr.session != XR_NULL_HANDLE) xrDestroySession(xr.session);
 +			if (xr.instance != XR_NULL_HANDLE) xrDestroyInstance(xr.instance);
@@ -2321,6 +3206,8 @@ index 000000000..ec62cf8db
 +			xr_state xr;
 +			xr.mode3d = persist_get("mode") != "screen";
 +			xr.stereo = persist_get("stereo") != "0";
++			xr.pointing_laser = persist_get("pointing") == "laser";
++			if (const std::string lw = persist_get("lower"); !lw.empty()) xr.lower = std::clamp(static_cast<f32>(std::atof(lw.c_str())), -1.5f, 3.f);
 +			if (const std::string ws = persist_get("worldscale"); !ws.empty())
 +			{
 +				xr.unit = std::clamp(static_cast<f32>(std::atof(ws.c_str())), 0.02f, 5.0f);
@@ -2329,6 +3216,8 @@ index 000000000..ec62cf8db
 +				xr.stereo ? "stereo" : "mono", xr.unit);
 +			if (create_instance(xr) && wait_for_system(xr) && create_device(xr) && create_session(xr) && create_actions(xr))
 +			{
++				if (bool b = false; pick_format(xr, b)) g_dst_bgra = b;
++				g_prep_thread = std::thread(prep_main);
 +				vr_log("VR session created. Waiting for the headset to become ready.");
 +				while (!g_stop)
 +				{
@@ -2350,6 +3239,14 @@ index 000000000..ec62cf8db
 +				}
 +			}
 +
++			g_frame_cv.notify_all();
++			if (g_prep_thread.joinable())
++			{
++				const bool was_stop = g_stop.exchange(true);
++				g_frame_cv.notify_all();
++				g_prep_thread.join();
++				g_stop = was_stop;
++			}
 +			destroy(xr);
 +			vr_log("Order Up VR stopped");
 +		}
@@ -2373,6 +3270,7 @@ index 000000000..ec62cf8db
 +		g_start_tick = GetTickCount64();
 +		g_last_frame_tick = 0;
 +		g_window_unavailable_tick = 0;
++		g_calib_tick = 0;
 +		g_rv.begun = false;
 +		g_rv.enabled = false;
 +		g_rv.want3d = false;
@@ -2380,7 +3278,10 @@ index 000000000..ec62cf8db
 +		g_rv.cam = {};
 +		g_rv.have_up = false;
 +		g_rv.depth = 3.5f;
-+		g_rv.scene_off = ~0u;
++		g_rv.scene_key = g_rv.composite_key = g_rv.display_key = ~0ull;
++		for (auto& k : g_rv.screens) k = ~0ull;
++		for (auto& c : g_rv.content) c = {};
++		for (auto& r : g_rv.ring) r = {};
 +		g_thread = std::thread(thread_main);
 +	}
 +
@@ -2396,10 +3297,11 @@ index 000000000..ec62cf8db
 +		return g_session_running.load(std::memory_order_relaxed);
 +	}
 +
-+	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra)
++	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra, u64 display_key)
 +	{
-+		const frame_tag tag = rv_end_frame(); // how this frame was rendered (which eye, from where)
++		const frame_tag tag = rv_end_frame(display_key); // which eye view, from where, the shown picture holds
 +		std::lock_guard lock(g_state_mutex);
++		g_frame_cv.notify_one();
 +		auto& slot = g_pending[tag.eye == 1 ? 1 : tag.eye < 0 ? 2 : 0];
 +		slot.px = std::move(pixels);
 +		slot.w = width;
@@ -2553,6 +3455,9 @@ index 000000000..ec62cf8db
 +			s.votes.clear();
 +			s.depths.clear();
 +			s.tag = {};
++			s.tainted.clear();
++			if (s.scene_key != ~0ull) s.tainted.push_back(s.scene_key);
++			s.composite_this = ~0ull;
 +
 +			view_snapshot v;
 +			{
@@ -2606,21 +3511,55 @@ index 000000000..ec62cf8db
 +			E.m[8] = az.x; E.m[9] = az.y; E.m[10] = az.z; E.m[11] = -dot(az, t);
 +			E.m[15] = 1.f;
 +			s.E = E;
++
++			auto& r = s.ring[s.gen.load() % std::size(s.ring)];
++			r.gen = s.gen.load();
++			r.tag = s.tag;
++			r.E = E;
++			r.enabled = true;
 +		}
 +
-+		void rv_build(bool scene)
++		const rsx_vr_state::ring_entry* rv_ring(u64 gen)
++		{
++			const auto& r = g_rv.ring[gen % std::size(g_rv.ring)];
++			return (r.gen == gen && r.enabled) ? &r : nullptr;
++		}
++
++		u64 rv_content_get(u64 key)
++		{
++			for (const auto& c : g_rv.content) if (c.key == key) return c.gen;
++			return 0;
++		}
++
++		void rv_content_set(u64 key, u64 gen)
++		{
++			auto& s = g_rv;
++			for (auto& c : s.content) if (c.key == key) { c.gen = gen; return; }
++			// Replace the oldest
++			auto* oldest = &s.content[0];
++			for (auto& c : s.content) if (c.gen < oldest->gen) oldest = &c;
++			*oldest = {key, gen};
++		}
++
++		// The 3D scene transform (frame's own eye) or the 2D overlay transform (the eye of the frame whose scene
++		// picture is in the target, so the HUD lines up with it).
++		bool rv_build(bool scene, u64 gen)
 +		{
 +			auto& s = g_rv;
 +			const auto& c = s.cam;
-+			if (scene ? s.x3_ready : s.x2_ready) return;
-+			const mat4 base = mmul(mmul(eye_projection(s.tag.fov, c.A, c.B), s.E), level_mat(s.have_up ? s.up : vec3{0.f, 1.f, 0.f}));
++			const auto* r = rv_ring(gen);
++			if (!r) return false;
++			if (scene ? s.x3_ready : (s.x2_ready && s.x2_gen == gen)) return true;
++			const mat4 base = mmul(mmul(eye_projection(r->tag.fov, c.A, c.B), r->E), level_mat(s.have_up ? s.up : vec3{0.f, 1.f, 0.f}));
 +			if (scene)
 +			{
 +				// Undo the game's projection, then view from the eye with the eye's projection
 +				mat4 P;
 +				P.m[0] = c.sx; P.m[2] = c.cx; P.m[5] = c.sy; P.m[6] = c.cy; P.m[10] = c.A; P.m[11] = c.B; P.m[14] = -1.f;
 +				mat4 Pi;
-+				if (minv(P, Pi)) { s.X3 = mmul(base, Pi); s.x3_ready = true; }
++				if (!minv(P, Pi)) return false;
++				s.X3 = mmul(base, Pi);
++				s.x3_ready = true;
 +			}
 +			else
 +			{
@@ -2633,13 +3572,29 @@ index 000000000..ec62cf8db
 +				S2.m[15] = 1.f;
 +				s.X2 = mmul(base, S2);
 +				s.x2_ready = true;
++				s.x2_gen = gen;
 +			}
++			return true;
 +		}
 +
-+		frame_tag rv_end_frame()
++		frame_tag rv_end_frame(u64 display_key)
 +		{
 +			auto& s = g_rv;
-+			frame_tag out = (s.begun && s.enabled) ? s.tag : frame_tag{};
++			const u64 gen = s.gen.load();
++
++			// Which frame's eye view is in the buffer being shown?
++			frame_tag out{};
++			if (display_key != ~0ull)
++			{
++				u64 g = rv_content_get(display_key);
++				if (!g && (display_key == s.scene_key || s.enabled)) g = gen; // not tracked: assume this frame (as 0.6.0 did)
++				if (const auto* r = g ? rv_ring(g) : nullptr)
++				{
++					out = r->tag;
++					const u64 age = gen - g;
++					s.lat_hist[std::min<u64>(age, 3)]++;
++				}
++			}
 +
 +			// World up: the direction most scenery agrees on
 +			if (!s.votes.empty())
@@ -2661,8 +3616,12 @@ index 000000000..ec62cf8db
 +				const f32 med = *mid;
 +				if (std::fabs(med - s.depth) > 0.5f * s.depth) s.depth = med;
 +				else s.depth += (med - s.depth) * 0.1f;
-+				s.x2_ready = false;
 +			}
++			if (s.composite_this != ~0ull) s.composite_key = s.composite_this;
++			if (display_key != ~0ull) s.display_key = display_key;
++			s.add_screen(s.composite_this);
++			s.add_screen(display_key);
++			if (s.n3) s.add_screen(s.scene_key);
 +
 +			// Is the game showing a 3D scene? (menus and loading screens are flat)
 +			if (s.n3 >= 10) { s.frames_with++; s.frames_without = 0; }
@@ -2686,13 +3645,17 @@ index 000000000..ec62cf8db
 +			const u64 now = GetTickCount64();
 +			if (now - s.last_log > 15000)
 +			{
-+				vr_log("True VR: %s, eye=%d, per frame 3D=%llu 2D=%llu other=%llu; camera %s sx=%.3f sy=%.3f A=%.4f B=%.4f; up (%.2f %.2f %.2f); depth %.2f",
-+					s.enabled ? "rendering for the headset" : "flat", out.eye,
-+					static_cast<unsigned long long>(s.tot3 / std::max<u64>(s.frames, 1)), static_cast<unsigned long long>(s.tot2 / std::max<u64>(s.frames, 1)),
-+					static_cast<unsigned long long>(s.tot0 / std::max<u64>(s.frames, 1)), s.cam.valid ? "found" : "not found",
-+					s.cam.sx, s.cam.sy, s.cam.A, s.cam.B, s.up.x, s.up.y, s.up.z, s.depth);
++				const auto pf = [&](u64 v) { return static_cast<unsigned long long>(v / std::max<u64>(s.frames, 1)); };
++				vr_log("True VR: %s, shown eye=%d, per frame 3D=%llu 2D=%llu other=%llu; camera %s sx=%.3f sy=%.3f A=%.4f B=%.4f; up (%.2f %.2f %.2f); depth %.2f; "
++					"scene 0x%llx composite 0x%llx shown 0x%llx; picture age 0:%llu 1:%llu 2:%llu more:%llu",
++					s.enabled ? "rendering for the headset" : "flat", out.eye, pf(s.tot3), pf(s.tot2), pf(s.tot0), s.cam.valid ? "found" : "not found",
++					s.cam.sx, s.cam.sy, s.cam.A, s.cam.B, s.up.x, s.up.y, s.up.z, s.depth,
++					static_cast<unsigned long long>(s.scene_key), static_cast<unsigned long long>(s.composite_key), static_cast<unsigned long long>(display_key),
++					static_cast<unsigned long long>(s.lat_hist[0]), static_cast<unsigned long long>(s.lat_hist[1]),
++					static_cast<unsigned long long>(s.lat_hist[2]), static_cast<unsigned long long>(s.lat_hist[3]));
 +				s.last_log = now;
 +				s.tot3 = s.tot2 = s.tot0 = s.frames = 0;
++				for (auto& h : s.lat_hist) h = 0;
 +			}
 +
 +			s.begun = false;
@@ -2701,11 +3664,23 @@ index 000000000..ec62cf8db
 +		}
 +	}
 +
-+	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u32 color_offset, f32 x[16])
++	bool stereo_clear_color(u64 color_key, f32 rgba[4])
++	{
++		if (!g_session_running.load(std::memory_order_relaxed)) return false;
++		auto& s = g_rv;
++		if (!s.begun) rv_begin_frame();
++		if (!s.enabled || (color_key != s.scene_key && !s.is_screen(color_key))) return false;
++		// The key colour: the headset makes it see-through and shows a calm room behind the game
++		rgba[0] = 2.f / 255.f; rgba[1] = 3.f / 255.f; rgba[2] = 5.f / 255.f; rgba[3] = 1.f;
++		return true;
++	}
++
++	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u64 color_key, const u64* tex_keys, u32 tex_count, f32 x[16])
 +	{
 +		if (!g_session_running.load(std::memory_order_relaxed)) return 0;
 +		auto& s = g_rv;
 +		if (!s.begun) rv_begin_frame();
++		const u64 gen = s.gen.load();
 +
 +		int kind = 0;
 +		bool perspective = false;
@@ -2738,7 +3713,11 @@ index 000000000..ec62cf8db
 +					}
 +					s.cam = {true, sx, sy, cx, cy, A, B};
 +					s.cam_this_frame = true;
-+					s.scene_off = color_offset;
++					if (s.scene_key != color_key)
++					{
++						s.scene_key = color_key;
++						if (std::find(s.tainted.begin(), s.tainted.end(), color_key) == s.tainted.end()) s.tainted.push_back(color_key);
++					}
 +					s.scene_w = surface_w;
 +					s.scene_h = surface_h;
 +					is_cam = true;
@@ -2766,9 +3745,37 @@ index 000000000..ec62cf8db
 +			}
 +		}
 +
-+		if (!kind && !perspective && s.cam.valid && color_offset == s.scene_off && surface_w == s.scene_w && surface_h == s.scene_h)
++		u64 content_gen = gen;
++		if (kind == 1)
 +		{
-+			kind = 2;
++			if (s.enabled) rv_content_set(color_key, gen);
++		}
++		else
++		{
++			// A draw that reads the scene's picture copies it (onto the screen, or into effects): leave it alone, and
++			// remember which frame's eye view its target now holds.
++			bool reads_scene = false;
++			u64 src_gen = 0;
++			for (u32 i = 0; i < tex_count; i++)
++			{
++				if (std::find(s.tainted.begin(), s.tainted.end(), tex_keys[i]) != s.tainted.end())
++				{
++					reads_scene = true;
++					src_gen = std::max(src_gen, rv_content_get(tex_keys[i]));
++				}
++			}
++			if (reads_scene)
++			{
++				if (std::find(s.tainted.begin(), s.tainted.end(), color_key) == s.tainted.end()) s.tainted.push_back(color_key);
++				if (src_gen) rv_content_set(color_key, src_gen);
++				if (color_key != s.scene_key && surface_w * 4 >= s.scene_w * 3 && surface_h * 4 >= s.scene_h * 3) s.composite_this = color_key;
++			}
++			else if (!perspective && s.cam.valid && (color_key == s.scene_key || color_key == s.composite_this || s.is_screen(color_key)))
++			{
++				// HUD, order tickets, menus: on a plane in the world, in the eye view of the picture already in that target
++				kind = 2;
++				if (const u64 g = rv_content_get(color_key); g && rv_ring(g)) content_gen = g;
++			}
 +		}
 +
 +		if (kind == 1) s.n3++;
@@ -2776,10 +3783,15 @@ index 000000000..ec62cf8db
 +		else s.n0++;
 +
 +		if (!s.enabled || !kind || !s.cam.valid) return 0;
-+		rv_build(kind == 1);
-+		if (kind == 1 && !s.x3_ready) return 0;
++		if (!rv_build(kind == 1, kind == 1 ? gen : content_gen)) return 0;
 +		std::memcpy(x, (kind == 1 ? s.X3 : s.X2).m, sizeof(f32) * 16);
 +		return kind;
++	}
++
++	void note_calibration()
++	{
++		g_calib_tick = GetTickCount64();
++		vr_log("PS Move calibration started by the game");
 +	}
 +
 +	u64 stereo_generation()
@@ -2836,13 +3848,15 @@ index 000000000..ec62cf8db
 +	void start() {}
 +	void stop() {}
 +	bool wants_frames() { return false; }
-+	void submit_frame(std::vector<u8>&&, u32, u32, bool) {}
++	void submit_frame(std::vector<u8>&&, u32, u32, bool, u64) {}
 +	void report_window_unavailable() {}
 +	pointer_state get_pointer() { return {}; }
 +	void trace(const char*) {}
 +	void research_constants(u32, const f32*, const u16*, usz) {}
 +	void note(const char*, ...) {}
-+	int stereo_draw_transform(const f32*, bool, u32, u32, u32, f32*) { return 0; }
++	int stereo_draw_transform(const f32*, bool, u32, u32, u64, const u64*, u32, f32*) { return 0; }
++	bool stereo_clear_color(u64, f32*) { return false; }
++	void note_calibration() {}
 +	u64 stereo_generation() { return 0; }
 +	void stereo_apply(void*, const f32*) {}
 +}
@@ -2850,10 +3864,10 @@ index 000000000..ec62cf8db
 +#endif
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..971131bbd
+index 000000000..ea1c4829d
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,94 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -2907,7 +3921,8 @@ index 000000000..971131bbd
 +	bool wants_frames();
 +
 +	// Latest presented game frame, 4 bytes per pixel.
-+	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra);
++	// display_key: (location << 32) | offset of the display buffer shown.
++	void submit_frame(std::vector<u8>&& pixels, u32 width, u32 height, bool is_bgra, u64 display_key = ~0ull);
 +
 +	// The renderer could not present because the desktop game window is minimized or has no size.
 +	void report_window_unavailable();
@@ -2929,7 +3944,17 @@ index 000000000..971131bbd
 +	// uses_mvp = the vertex program reads c1..c4.
 +	// Returns 0 = leave the draw alone, 1 = 3D scene draw, 2 = 2D overlay draw (HUD, menus: placed on a plane in
 +	// the 3D world). For 1 and 2, x receives a row-major 4x4 matrix to apply to the program's clip-space output.
-+	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u32 color_offset, f32 x[16]);
++	// color_key / tex_keys: (location << 32) | offset of the colour target and of the textures the draw reads
++	// (location 0 = local video memory, 1 = main memory). They tell the scene, the copy of it onto the screen
++	// and the HUD apart.
++	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u64 color_key, const u64* tex_keys, u32 tex_count, f32 x[16]);
++
++	// Clear of a colour target: returns true and the colour to use when the mod replaces it (the empty space around
++	// the game's view becomes see-through in the headset).
++	bool stereo_clear_color(u64 color_key, f32 rgba[4]);
++
++	// The game started a PS Move calibration (it asked the player to press Square and they did).
++	void note_calibration();
 +
 +	// Changes once per presented frame (the eye being rendered changes); the renderer re-applies the transform then.
 +	u64 stereo_generation();
@@ -2938,7 +3963,7 @@ index 000000000..971131bbd
 +	void stereo_apply(void* rows, const f32 x[16]);
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
-index 51fc9092b..61ae86f00 100644
+index 51fc9092b..34987d81a 100644
 --- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 @@ -7,6 +7,7 @@
@@ -2967,7 +3992,23 @@ index 51fc9092b..61ae86f00 100644
  	if (m_device == VK_NULL_HANDLE)
  	{
  		//Initialization failed
-@@ -2042,7 +2047,29 @@ void VKGSRender::load_program_env()
+@@ -1538,6 +1543,15 @@ void VKGSRender::clear()
+ 		color_clear_values.color.float32[2] = static_cast<float>(info.color_b) / 255;
+ 		color_clear_values.color.float32[3] = static_cast<float>(info.color_a) / 255;
+ 
++		// Order Up VR: the empty space around the game's view becomes see-through in the headset
++		{
++			const u64 vr_key = (static_cast<u64>(REGS(m_ctx)->surface_dma(0) == CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER ? 1 : 0) << 32) | REGS(m_ctx)->surface_offset(0);
++			if (f32 vr_c[4]; ouvr::stereo_clear_color(vr_key, vr_c))
++			{
++				for (int i = 0; i < 4; i++) color_clear_values.color.float32[i] = vr_c[i];
++			}
++		}
++
+ 		if (use_fast_clear)
+ 		{
+ 			for (u32 index = 0; index < m_draw_buffers.size(); ++index)
+@@ -2042,7 +2056,37 @@ void VKGSRender::load_program_env()
  
  	const bool update_transform_constants = m_stale_constants.test(rsx::draw_state_t::group::transform_constants);
  	const bool update_fragment_constants = m_stale_constants.test(rsx::draw_state_t::group::fragment_constants);
@@ -2984,8 +4025,16 @@ index 51fc9092b..61ae86f00 100644
 +			for (const u16 id : m_vertex_prog->constant_ids) if (id >= 1 && id <= 4) found++;
 +			uses_mvp = found == 4;
 +		}
++		u64 tex_keys[16];
++		u32 tex_count = 0;
++		for (u32 i = 0; i < 16; i++)
++		{
++			const auto& tex = REGS(m_ctx)->fragment_textures[i];
++			if (tex.enabled()) tex_keys[tex_count++] = (static_cast<u64>(tex.location()) << 32) | tex.offset();
++		}
++		const u64 color_key = (static_cast<u64>(REGS(m_ctx)->surface_dma(0) == CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER ? 1 : 0) << 32) | REGS(m_ctx)->surface_offset(0);
 +		vr_kind = ouvr::stereo_draw_transform(reinterpret_cast<const f32*>(REGS(m_ctx)->transform_constants.data()), uses_mvp,
-+			REGS(m_ctx)->surface_clip_width(), REGS(m_ctx)->surface_clip_height(), REGS(m_ctx)->surface_offset(0), vr_xform);
++			REGS(m_ctx)->surface_clip_width(), REGS(m_ctx)->surface_clip_height(), color_key, tex_keys, tex_count, vr_xform);
 +		static thread_local int s_vr_kind = 0;
 +		static thread_local u64 s_vr_gen = 0;
 +		const u64 vr_gen = ouvr::stereo_generation();
@@ -2998,7 +4047,7 @@ index 51fc9092b..61ae86f00 100644
  	const bool update_fragment_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env);
  	const bool update_fragment_texture_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_texture_env);
  	const bool update_instruction_buffers = (m_interpreter_state.test(rsx::draw_state_t::group::programs) && is_interpreter);
-@@ -2057,6 +2084,7 @@ void VKGSRender::load_program_env()
+@@ -2057,6 +2101,7 @@ void VKGSRender::load_program_env()
  		auto buf = m_vertex_env_ring_info.map<char>(mem, 96);
  
  		RSX(m_ctx)->draw_processor()->fill_vertex_env(buf, RSX(m_ctx)->resolution_scaling_config.scale_factor());
@@ -3006,7 +4055,7 @@ index 51fc9092b..61ae86f00 100644
  
  		m_vertex_env_ring_info.unmap();
  		m_vertex_env_dynamic_offset = mem;
-@@ -2283,6 +2311,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
+@@ -2283,6 +2328,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
  			? std::span<const u16>{}
  			: std::span<const u16>(m_vertex_prog->constant_ids);
  		RSX(m_ctx)->draw_processor()->fill_vertex_program_constants_data(buf, constant_ids);
@@ -3021,7 +4070,7 @@ index 51fc9092b..61ae86f00 100644
  }
  
 diff --git a/rpcs3/Emu/RSX/VK/VKPresent.cpp b/rpcs3/Emu/RSX/VK/VKPresent.cpp
-index 4afff8452..f896ee2df 100644
+index 4afff8452..a78c05ef1 100644
 --- a/rpcs3/Emu/RSX/VK/VKPresent.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKPresent.cpp
 @@ -1,5 +1,6 @@
@@ -3058,7 +4107,7 @@ index 4afff8452..f896ee2df 100644
 +		{
 +			// Order Up VR: the headset gets its own copy of every frame
 +			const bool others_need_it = user_asked_for_screenshot || user_is_recording;
-+			ouvr::submit_frame(others_need_it ? std::vector<u8>(sshot_frame) : std::move(sshot_frame), buffer_width, buffer_height, is_bgra);
++			ouvr::submit_frame(others_need_it ? std::vector<u8>(sshot_frame) : std::move(sshot_frame), buffer_width, buffer_height, is_bgra, display_buffer.offset);
 +		}
 +
  		if (user_asked_for_screenshot)

@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.7.0",
+    "date": "2026-11-17",
+    "notes": [
+      "Fixed the double image: each eye now always shows the picture that was drawn for that eye, from where your head was at that moment. In 0.6.0 the game showed a picture one step older than the mod expected, so the eyes and head positions were mixed up, which made the view double and wobbly.",
+      "Your own body: a chef with white jacket, apron, arms and legs. Look down and you see yourself; the arms follow your hands naturally (elbows bend on their own).",
+      "Real hands instead of the laser inside the game: they follow the controllers and close their fingers when you squeeze GRIP (middle, ring and little finger) and the TRIGGER (index finger). The game's pointer is wherever your hand covers something, so you reach for the burger instead of aiming at it.",
+      "The pink square and the other PlayStation shapes now float over the matching Quest buttons on your hands (X = pink square, Y = green triangle, A = blue cross, B = red circle).",
+      "Start-up 'press square' screen: a hint card explains it is the X button on the left controller, and pulling the TRIGGER works too, until the game has done it once.",
+      "The order tickets, timers, pop-ups and the pause menu are no longer stuck to the edges of your view: they sit in the world in front of you, where the game shows them.",
+      "The empty space the game never draws (it was sky blue) is now a calm dark room instead.",
+      "Right stick up/down inside the game moves you lower or higher (the restaurant camera stood too high). It is remembered.",
+      "Smoother headset motion: picture conversion moved off the headset's own thread, and the game renders at 2x instead of 3x resolution to keep frames coming steadily.",
+      "Still to come: the game itself only draws what its own camera sees, so behind and far to the sides there is no restaurant to show."
+    ]
+  },
+  {
     "version": "0.6.0",
     "date": "2026-11-17",
     "notes": [

@@ -500,24 +500,24 @@ namespace OrderUpVR
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
         }
 
-        const int HowToRevision = 2; // raise when the controls change, so players see the guide again
+        const int HowToRevision = 3; // raise when the controls change, so players see the guide again
 
         void ShowHowTo()
         {
             s.SeenHowTo = true; s.HowToSeen = HowToRevision; s.Save();
             ShowDialog("How to play in VR",
                 "1.  Connect your headset (Quest Link, Air Link, Virtual Desktop or SteamVR), then press PLAY.\n" +
-                "2.  Menus appear on a big screen in front of you. In the kitchen and the restaurant you are inside the game in 3D: look around and lean in.\n" +
-                "3.  Aim a controller at what you want to use. A laser and a ring show where you point.\n\n" +
+                "2.  Menus appear on a big screen in front of you. In the kitchen and the restaurant you are inside the game in 3D with your own body and hands: look around and lean in.\n" +
+                "3.  Reach for things: inside the game the pointer is wherever your hand covers them. On the big screen, aim the laser.\n\n" +
                 "GRIP: grab and hold (the game's T button)\n" +
                 "TRIGGER: select and confirm (the Move button)\n" +
-                "A / B / X / Y: Cross / Circle / Square / Triangle\n" +
+                "A / B / X / Y: Cross / Circle / Square / Triangle (the shapes float over your hands; the pink square is X)\n" +
                 "Left MENU: Start (pause).  Right stick click: Select\n" +
                 "Flipping and other motions: hold GRIP and flick the controller, or flick that hand's thumbstick up\n" +
-                "Inside the game: left stick walks, right stick turns\n" +
+                "Inside the game: left stick walks, right stick turns (left/right) and moves you higher or lower (up/down)\n" +
                 "Big screen: right stick moves it nearer or farther, left stick resizes it\n" +
                 "Left stick click: recentre.  Hold it for 1 second: switch between 3D and the big screen\n\n" +
-                "Calibration screen: point at the middle of the screen, press X, then pull the trigger.\n" +
+                "Start-up screen asking for the pink SQUARE: point at the middle of the screen and press X (or pull the trigger).\n" +
                 "In the headset, hold Left MENU for 2 seconds to see the controls again.",
                 null, false, Btn("Got it", null));
         }
