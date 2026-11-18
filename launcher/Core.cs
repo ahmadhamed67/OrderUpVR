@@ -41,6 +41,7 @@ namespace OrderUpVR
         public string sha256 { get; set; }
         public long size { get; set; }
         public LauncherInfo launcher { get; set; }
+        public string channel { get; set; }      // "stable" or "beta" (missing in releases before 0.12.1)
         public List<ChangelogEntry> changelog { get; set; }
         public string vcredistMin { get; set; }   // minimum Microsoft Visual C++ runtime the RPCS3 build needs
         public string vcredistUrl { get; set; }
@@ -59,7 +60,9 @@ namespace OrderUpVR
         public string PreparedVersion { get; set; }  // mod version that already finished its first-start preparation
         public bool SeenHowTo { get; set; }          // the controls guide was shown once
         public int HowToSeen { get; set; }
-        public bool ShowGameArt { get; set; }      // the hero shows the game's own artwork from the player's game folder
+        public bool ShowGameArt { get; set; }
+        public string Channel { get; set; }          // release channel the player picked: "stable" (default) or "beta"
+        public string InstalledChannel { get; set; } // channel of the installed mod (null: installed before channels existed = beta)      // the hero shows the game's own artwork from the player's game folder
         public Dictionary<string, string> Vr { get; set; }   // VR comfort and body choices (written to the mod as orderupvr_comfort.txt)           // revision of the controls guide last shown (shown again when controls change)
 
         public static string Folder { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OrderUpVR"); } }
@@ -91,6 +94,15 @@ namespace OrderUpVR
         public const string TitleId = "BLES01470";
         // Both placeholders are filled in by launcher/Build.ps1. A local path also works as a manifest, for testing.
         public const string DefaultManifestUrl = "@MANIFEST_URL@";
+
+        // Stable: the newest full release. Beta: a release tagged "beta" whose manifest is replaced with every beta build.
+        public static string ChannelManifestUrl(string channel)
+        {
+            if (channel != "beta") return DefaultManifestUrl;
+            const string tail = "/latest/download/manifest.json";
+            return DefaultManifestUrl.EndsWith(tail) ? DefaultManifestUrl.Substring(0, DefaultManifestUrl.Length - tail.Length) + "/download/beta/manifest.json" : DefaultManifestUrl;
+        }
+        public static string ChannelOf(Settings s) { return s.Channel == "beta" ? "beta" : "stable"; }
 
         public static string EmuDir(Settings s) { return Path.Combine(s.InstallDir, "emu"); }
         public static string LauncherPath(Settings s) { return Path.Combine(s.InstallDir, "OrderUpVR.exe"); }
@@ -247,6 +259,14 @@ namespace OrderUpVR
                 string input = Path.Combine(emu, @"config\input_configs\" + TitleId);
                 Directory.CreateDirectory(input);
                 File.Copy(Path.Combine(tmp, @"config\input_" + TitleId + ".yml"), Path.Combine(input, "Default.yml"), true);
+                // Which channel this build is (the mod offers true VR only where it is ready)
+                string chan = Path.Combine(tmp, @"config\orderupvr_channel.txt");
+                s.InstalledChannel = "beta";
+                if (File.Exists(chan))
+                {
+                    File.Copy(chan, Path.Combine(emu, @"config\orderupvr_channel.txt"), true);
+                    foreach (string line in File.ReadAllLines(chan)) if (line.StartsWith("channel=")) s.InstalledChannel = line.Substring(8).Trim();
+                }
 
                 s.InstalledVersion = version;
                 s.Uninstalled = false;

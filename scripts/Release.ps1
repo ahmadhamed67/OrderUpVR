@@ -5,7 +5,9 @@
 # Usage: .\Release.ps1 -Version 0.1.0 [-Repo ahmadhamed67/OrderUpVR]
 # The launcher has its own version (launcher\VERSION): it only changes when the launcher itself changes, so a mod
 # update does not make installed launchers update themselves too.
-param([Parameter(Mandatory = $true)][string]$Version, [string]$LauncherVersion = '', [string]$Repo = 'ahmadhamed67/OrderUpVR')
+# Channels: stable (full release, what launchers get by default; true VR shown as "Coming soon") and beta (prerelease
+# tagged v<version>-beta; its manifest also goes to the rolling release tagged "beta", which beta launchers read).
+param([Parameter(Mandatory = $true)][string]$Version, [ValidateSet('stable', 'beta')][string]$Channel = 'beta', [string]$LauncherVersion = '', [string]$Repo = 'ahmadhamed67/OrderUpVR')
 $ErrorActionPreference = 'Stop'
 if (-not $LauncherVersion) { $LauncherVersion = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) 'launcher\VERSION') -Raw).Trim() }
 # Launcher code changed since the last release but its version did not: refuse (installed launchers would not update)
@@ -21,13 +23,16 @@ try {
 } finally { Pop-Location }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path $PSScriptRoot -Parent
-$out = Join-Path $root 'dist\release'
+$out = Join-Path $root "dist\release\$Channel"
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 $stage = Join-Path $out 'stage'
 New-Item -ItemType Directory -Force (Join-Path $stage 'rpcs3'), (Join-Path $stage 'config') | Out-Null
 
 $changelog = Get-Content (Join-Path $root 'release\changelog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($changelog[0].version -ne $Version) { throw "release\changelog.json must start with an entry for version $Version" }
+# This channel's entries (entries without a channel belong to both), newest first
+$changelog = @($changelog | Where-Object { -not $_.channel -or $_.channel -eq $Channel })
+if ($changelog[0].version -ne $Version) { throw "release\changelog.json must have the $Channel entry for version $Version first" }
+$tag = if ($Channel -eq 'stable') { "v$Version" } else { "v$Version-beta" }
 
 # Emulator binaries only: no debug symbols, no test data, nothing from a run (config, logs, caches).
 $bin = Join-Path $root 'rpcs3-src\bin'
@@ -67,7 +72,8 @@ Write-Host 'Dependency check passed: everything the mod needs is shipped or part
 Copy-Item (Join-Path $root 'package\config\*.yml') (Join-Path $stage 'config')
 Copy-Item (Join-Path $root 'package\LICENSE-NOTES.txt') $stage
 
-$zipName = "OrderUpVR-mod-$Version.zip"
+Set-Content (Join-Path $stage 'config\orderupvr_channel.txt') ("channel=$Channel`ntruevr=" + $(if ($Channel -eq 'beta') { '1' } else { '0' })) -Encoding ASCII -NoNewline
+$zipName = if ($Channel -eq 'stable') { "OrderUpVR-mod-$Version.zip" } else { "OrderUpVR-mod-$Version-beta.zip" }
 $zip = Join-Path $out $zipName
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 Remove-Item $stage -Recurse -Force
@@ -77,12 +83,13 @@ $base = "https://github.com/$Repo/releases"
 
 $manifest = [ordered]@{
     version   = $Version
-    url       = "$base/download/v$Version/$zipName"
+    channel   = $Channel
+    url       = "$base/download/$tag/$zipName"
     sha256    = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     size      = (Get-Item $zip).Length
     launcher  = [ordered]@{
         version = $LauncherVersion
-        url     = "$base/download/v$Version/OrderUpVR-Setup.exe"
+        url     = "$base/download/$tag/OrderUpVR-Setup.exe"
         sha256  = (Get-FileHash (Join-Path $out 'OrderUpVR-Setup.exe') -Algorithm SHA256).Hash.ToLower()
     }
     vcredistMin = $vcMin
@@ -91,7 +98,7 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'manifest.json') -Encoding UTF8
 
-$notes = "## Order Up VR $Version`n`n" + (($changelog[0].notes | ForEach-Object { "- $_" }) -join "`n") +
+$notes = "## Order Up VR $Version" + $(if ($Channel -eq 'beta') { " (beta: updated often, may break; to just play use Stable)" } else { " (stable)" }) + "`n`n" + (($changelog[0].notes | ForEach-Object { "- $_" }) -join "`n") +
     "`n`n**Install:** download `OrderUpVR-Setup.exe` below and run it. It updates itself and the mod from then on."
 Set-Content (Join-Path $out 'release-notes.md') $notes -Encoding UTF8
 Get-ChildItem $out | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } } | Format-Table -AutoSize

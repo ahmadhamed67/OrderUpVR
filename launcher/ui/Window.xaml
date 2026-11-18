@@ -229,7 +229,8 @@
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">
             <StackPanel>
-              <TextBlock Style="{StaticResource H2}" Text="Preferences" Margin="0,0,0,14"/>
+              <TextBlock Style="{StaticResource H2}" Text="Updates and preferences" Margin="0,0,0,10"/>
+              <StackPanel x:Name="ChannelRows" Margin="0,0,0,18"/>
               <CheckBox x:Name="AutoUpdateToggle" Style="{StaticResource Toggle}" Content="Check for updates automatically"/>
               <CheckBox x:Name="MinimizeToggle" Style="{StaticResource Toggle}" Content="Minimize the launcher while playing" Margin="0,14,0,0"/>
             </StackPanel>

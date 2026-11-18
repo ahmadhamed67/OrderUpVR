@@ -121,7 +121,7 @@ namespace OrderUpVR
             steps.Add(delegate { shot("3_whatsnew"); win.CloseDialog(); win.ShowHowTo(); });
             steps.Add(delegate { shot("4_help1"); win.ShowHelpSlide(1); });
             steps.Add(delegate { shot("5_help2"); win.ShowHelpSlide(3); });
-            steps.Add(delegate { shot("6_help4"); win.CloseHelp(); win.OpenSettings(); });
+            steps.Add(delegate { shot("6_help4"); win.CloseHelp(); win.s.Channel = "beta"; win.OpenSettings(); });
             steps.Add(delegate { shot("7_settings"); var sv = FindChild<ScrollViewer>(win.Get<Grid>("SettingsPage")); if (sv != null) sv.ScrollToVerticalOffset(520); });
             steps.Add(delegate { shot("8_settings_vr"); win.Close(); });
             int k = 0;
@@ -519,9 +519,11 @@ namespace OrderUpVR
         }
 
         // ================================================================== MAIN
-        string ManifestUrl { get { return string.IsNullOrEmpty(s.ManifestUrl) ? Core.DefaultManifestUrl : s.ManifestUrl; } }
+        string ManifestUrl { get { return string.IsNullOrEmpty(s.ManifestUrl) ? Core.ChannelManifestUrl(Core.ChannelOf(s)) : s.ManifestUrl; } }
+        // The installed mod is from the other channel than the one picked: installing the picked one counts as an update
+        bool ChannelSwitch { get { return manifest != null && manifest.channel != null && ModInstalled && manifest.channel != (s.InstalledChannel ?? "beta"); } }
         bool ModInstalled { get { return !string.IsNullOrEmpty(s.InstalledVersion) && File.Exists(System.IO.Path.Combine(Core.EmuDir(s), "rpcs3.exe")); } }
-        bool UpdateAvailable { get { return manifest != null && (!ModInstalled || Core.IsNewer(manifest.version, s.InstalledVersion)); } }
+        bool UpdateAvailable { get { return manifest != null && (!ModInstalled || Core.IsNewer(manifest.version, s.InstalledVersion) || ChannelSwitch); } }
 
         void BuildMain()
         {
@@ -675,7 +677,7 @@ namespace OrderUpVR
         {
             new HelpSlide { Glyph = "", Step = "BEFORE YOU START", Title = "Headset first, then PLAY",
                 Lead = "Start your VR app, put the headset on, and press PLAY here. The game opens inside the headset.",
-                Rows = new[] { new[] { "1", "Start Quest Link, Air Link, Virtual Desktop or SteamVR" }, new[] { "2", "Press PLAY in this window" }, new[] { "3", "The game asks for the pink SQUARE: press X on your left controller" } } },
+                Rows = new[] { new[] { "1", "Start Quest Link, Air Link, Virtual Desktop or SteamVR" }, new[] { "2", "Press PLAY in this window" }, new[] { "3", "In the headset, pick Flat screen or True VR" }, new[] { "4", "The game asks for the pink SQUARE: press X on your left controller" } } },
             new HelpSlide { Controller = true, Step = "YOUR HANDS", Title = "Your controllers are the Move",
                 Lead = "Your hands are the chef's hands. They grab, hold and point just like you do.",
                 Rows = new[] { new[] { "TRIGGER", "Choose and confirm. Curls the chef's fingers" }, new[] { "GRIP", "Grab and hold food. Folds the chef's thumb" }, new[] { "A B X Y", "Cross, Circle, Square, Triangle" }, new[] { "MENU", "Pause the game (left controller)" } } },
@@ -687,7 +689,7 @@ namespace OrderUpVR
                 Rows = new[] { new[] { "LOOK", "Turn your head toward the next station and the game goes there" }, new[] { "A / B", "Change station by hand" }, new[] { "REACH", "Your hand is the pointer: touch the food" } } },
             new HelpSlide { Glyph = "", Step = "MOVING", Title = "Walk and turn",
                 Lead = "Walk around for real, or use the sticks. Walls keep you inside the restaurant.",
-                Rows = new[] { new[] { "LEFT STICK", "Walk where you look" }, new[] { "RIGHT STICK", "Turn (snap or smooth, in Settings)" }, new[] { "STICK CLICK", "Recentre. Hold for 1 second: big screen" } } },
+                Rows = new[] { new[] { "LEFT STICK", "Walk where you look" }, new[] { "RIGHT STICK", "Turn (snap or smooth, in Settings)" }, new[] { "STICK CLICK", "Bring everything back in front of you" } } },
             new HelpSlide { Glyph = "", Step = "COOKING", Title = "Cook with your hands",
                 Lead = "Do the moves for real: the game feels your hands like a PlayStation Move.",
                 Rows = new[] { new[] { "FLIP", "Hold GRIP and flick your wrist up" }, new[] { "EASY FLIP", "Or flick that hand's thumbstick up" }, new[] { "CUTSCENES", "Play on the diner's big screen, then you're back" } } },
@@ -950,9 +952,11 @@ namespace OrderUpVR
             chips.Children.Clear();
             var glass = new SolidColorBrush(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
             chips.Children.Add(Chip(ModInstalled ? "Version " + s.InstalledVersion : "Not installed yet", Brushes.White, glass));
+            if (Core.ChannelOf(s) == "beta") chips.Children.Add(Chip("BETA", Brushes.White, new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E))));
             if (manifest != null)
             {
-                if (UpdateAvailable) chips.Children.Add(Chip("Update " + manifest.version + " ready", Brushes.Black, AccentBrush));
+                if (ChannelSwitch) chips.Children.Add(Chip((manifest.channel == "beta" ? "Beta " : "Stable ") + manifest.version + " ready", Brushes.Black, AccentBrush));
+                else if (UpdateAvailable) chips.Children.Add(Chip("Update " + manifest.version + " ready", Brushes.Black, AccentBrush));
                 else chips.Children.Add(Chip("✓ Up to date", GoodBrush, new SolidColorBrush(Color.FromArgb(0x26, 0x3D, 0xDC, 0x97))));
             }
         }
@@ -1147,8 +1151,11 @@ namespace OrderUpVR
         // Asks before updating, with the changes in plain words behind "What's new"
         void ShowUpdatePrompt(Manifest m, bool launcherNewer)
         {
-            ShowDialog("Update available",
-                "Order Up VR " + m.version + " is ready (you have " + (string.IsNullOrEmpty(s.InstalledVersion) ? "an older version" : s.InstalledVersion) + "). Updating takes about a minute.",
+            bool sw = ChannelSwitch;
+            ShowDialog(sw ? (m.channel == "beta" ? "Switch to Beta" : "Switch to Stable") : "Update available",
+                sw ? (m.channel == "beta" ? "Beta " + m.version + " has the newest features and changes often. Things may break. Installing takes about a minute."
+                                          : "Stable " + m.version + " is the dependable version. Installing takes about a minute.")
+                   : "Order Up VR " + m.version + " is ready (you have " + (string.IsNullOrEmpty(s.InstalledVersion) ? "an older version" : s.InstalledVersion) + "). Updating takes about a minute.",
                 null, false,
                 Btn("Update now", delegate { if (launcherNewer) UpdateLauncher(m.launcher); else DownloadMod(m); }),
                 Btn("Later", null));
@@ -1609,8 +1616,58 @@ namespace OrderUpVR
         }
 
         // ------------------------------------------------------------------ settings page
+        // Release channel: Stable (dependable) or Beta (newest, changes often), with a clear warning on Beta
+        void BuildChannelRows()
+        {
+            var rows = Get<StackPanel>("ChannelRows");
+            rows.Children.Clear();
+            string cur = Core.ChannelOf(s);
+            var g = new Grid();
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var texts = new StackPanel(); texts.VerticalAlignment = VerticalAlignment.Center;
+            var label = new TextBlock(); label.Text = "Version to play"; label.Foreground = Brushes.White; label.FontSize = 14; label.FontWeight = FontWeights.SemiBold;
+            var hint = new TextBlock(); hint.Text = "Stable: the dependable version. Beta: the newest features, updated often."; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 16, 0);
+            texts.Children.Add(label); texts.Children.Add(hint);
+            var seg = new Border(); seg.CornerRadius = new CornerRadius(12); seg.Padding = new Thickness(3); seg.VerticalAlignment = VerticalAlignment.Center;
+            seg.Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x22, 0x2B)); seg.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x33, 0x3E)); seg.BorderThickness = new Thickness(1);
+            Grid.SetColumn(seg, 1);
+            var pills = new StackPanel(); pills.Orientation = Orientation.Horizontal; seg.Child = pills;
+            foreach (var opt in new[] { new[] { "stable", "Stable" }, new[] { "beta", "Beta" } })
+            {
+                string val = opt[0];
+                bool on = val == cur;
+                var pill = new Border(); pill.CornerRadius = new CornerRadius(9); pill.Padding = new Thickness(16, 7, 16, 7); pill.Cursor = Cursors.Hand;
+                pill.Background = on ? (val == "beta" ? new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E)) : AccentBrush) : Brushes.Transparent;
+                var pt = new TextBlock(); pt.Text = opt[1]; pt.FontSize = 12.5; pt.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; pt.Foreground = on ? (val == "beta" ? Brushes.White : Brushes.Black) : TextBrush;
+                pill.Child = pt;
+                pill.MouseLeftButtonUp += delegate
+                {
+                    if (val == Core.ChannelOf(s)) return;
+                    s.Channel = val; s.Save();
+                    BuildChannelRows();
+                    manifest = null;
+                    updatePromptShown = false;
+                    CheckUpdates(true);
+                };
+                pills.Children.Add(pill);
+            }
+            g.Children.Add(texts); g.Children.Add(seg);
+            rows.Children.Add(g);
+            if (cur == "beta")
+            {
+                var warn = new Border(); warn.Margin = new Thickness(0, 12, 0, 0); warn.CornerRadius = new CornerRadius(12); warn.Padding = new Thickness(14, 10, 14, 10);
+                warn.Background = new SolidColorBrush(Color.FromArgb(0x1C, 0xFF, 0x3D, 0x6E)); warn.BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0x3D, 0x6E)); warn.BorderThickness = new Thickness(1);
+                var wt = new TextBlock(); wt.TextWrapping = TextWrapping.Wrap; wt.Foreground = TextBrush; wt.FontSize = 12.5;
+                wt.Text = "⚠  Beta is for testing. It's updated constantly and things can break. To just play, use Stable.";
+                warn.Child = wt;
+                rows.Children.Add(warn);
+            }
+        }
+
         void OpenSettings()
         {
+            BuildChannelRows();
             RenderFolderRows();
             Get<TextBlock>("AboutText").Text = "Launcher " + Core.LauncherVersion + "   ·   Mod " + (ModInstalled ? s.InstalledVersion : "not installed") +
                 "\nInstalled in " + s.InstallDir;

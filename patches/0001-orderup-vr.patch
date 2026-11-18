@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..777a7865b
+index 000000000..59cded2ea
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,5819 @@
+@@ -0,0 +1,5931 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1075,6 +1075,18 @@ index 000000000..777a7865b
 +			u64 first_live = 0;
 +			bool calib_hint_drawn = false;
 +			XrSwapchain calib = XR_NULL_HANDLE;
++			// Release channel (config/orderupvr_channel.txt, written by the release script) and the start-up choice
++			std::string channel = "beta";
++			bool truevr_ok = true;          // stable builds: true VR is not ready yet ("Coming soon")
++			bool chooser_active = true;     // the "how do you want to play" card after PLAY
++			int chooser_hover = -1;
++			std::wstring chooser_sig;
++			bool chooser_trig_prev = true;
++			XrSwapchain chooser = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> chooser_images;
++			bool chooser_bgra = false, chooser_has = false;
++			vec3 chooser_pos{};
++			f32 chooser_yaw = 0.f;
 +			std::vector<XrSwapchainImageD3D11KHR> calib_images;
 +			bool calib_bgra = false, calib_has = false;
 +		};
@@ -1085,6 +1097,8 @@ index 000000000..777a7865b
 +		constexpr u32 panel_w = 1200, panel_h = 660;
 +		constexpr u32 help_w = 1200, help_h = 660;
 +		constexpr u32 sign_w = 1280, sign_h = 300;
++		constexpr u32 chooser_w = 1200, chooser_h = 660;
++		constexpr f32 chooser_width_m = 1.5f;
 +		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
 +
@@ -1623,6 +1637,23 @@ index 000000000..777a7865b
 +			c.kicker = L"ONE MORE THING";
 +			c.title = L"Press X";
 +			c.subtitle = L"The game asks for the pink square. On your controller that's X, on the left hand.";
++			return c;
++		}
++
++		ui::card chooser_card(int hover, bool truevr_ok, const std::string& channel)
++		{
++			ui::card c;
++			c.style = ui::card::CHOOSER;
++			c.kicker = channel == "stable" ? L"ORDER UP!! VR" : L"ORDER UP!! VR  ·  BETA";
++			c.title = L"How do you want to play?";
++			c.rows = {
++				{L"Flat screen", L"The game on a big screen in the diner. Your controller is the Move: point and play."},
++				{L"True VR", truevr_ok ? L"Step inside the kitchen in 3D, with the chef's body as your own."
++					: L"Inside the kitchen in 3D. Being finished in the beta, coming here soon."},
++			};
++			c.hover = hover;
++			c.disabled = truevr_ok ? -1 : 1;
++			c.tip = L"Point and pull the TRIGGER";
 +			return c;
 +		}
 +
@@ -3456,22 +3487,15 @@ index 000000000..777a7865b
 +					xr.walk_phase += speed * dt * 5.5f;
 +				}
 +
-+				// Left stick click: short = recentre (screen and game camera), hold 1 s = switch inside-the-game 3D / big screen.
++				// Left stick click: recentre (screen and game camera). The view mode is chosen once, on the card after PLAY.
 +				const u64 now_ms = GetTickCount64();
 +				if (get_bool(xr, xr.stick_click, xr.hand_path[0]))
 +				{
 +					if (!xr.stick_down_since) xr.stick_down_since = now_ms;
-+					else if (xr.stick_down_since != ~0ull && now_ms - xr.stick_down_since > 1000)
-+					{
-+						xr.mode3d = !xr.mode3d;
-+						persist_set("mode", xr.mode3d ? "3d" : "screen");
-+						vr_log("View mode: %s", xr.mode3d ? "inside the game (3D)" : "big screen");
-+						xr.stick_down_since = ~0ull;
-+					}
 +				}
 +				else
 +				{
-+					if (xr.stick_down_since && xr.stick_down_since != ~0ull) place_screen(xr);
++					if (xr.stick_down_since) place_screen(xr);
 +					xr.stick_down_since = 0;
 +				}
 +
@@ -3794,6 +3818,49 @@ index 000000000..777a7865b
 +				}
 +				xr.show_pointer = out.on_screen;
 +
++				// The start-up choice: point at a tile and pull the TRIGGER. Nothing reaches the game meanwhile.
++				if (xr.chooser_active && xr.chooser_has)
++				{
++					XrSpaceLocation ca{XR_TYPE_SPACE_LOCATION};
++					xr.chooser_hover = -1;
++					if (XR_SUCCEEDED(xrLocateSpace(xr.aim_space[hand], xr.local_space, time, &ca)) && (ca.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
++					{
++						const vec3 o = to_vec(ca.pose.position), d = rotate(ca.pose.orientation, {0.f, 0.f, -1.f});
++						const vec3 n{std::sin(xr.chooser_yaw), 0.f, std::cos(xr.chooser_yaw)}, rt{std::cos(xr.chooser_yaw), 0.f, -std::sin(xr.chooser_yaw)};
++						const f32 den = dot(d, n);
++						if (den < -1e-4f)
++						{
++							const f32 t = dot(xr.chooser_pos - o, n) / den;
++							const vec3 h = o + d * t - xr.chooser_pos;
++							const f32 wm = chooser_width_m, hm = chooser_width_m * chooser_h / chooser_w;
++							const f32 px = (dot(h, rt) / wm + 0.5f) * chooser_w, py = (0.5f - h.y / hm) * chooser_h;
++							if (t > 0.f && px >= 0.f && px < chooser_w && py >= 0.f && py < chooser_h)
++							{
++								xr.aim_origin = o;
++								xr.aim_hit = o + d * t + n * 0.01f;
++								xr.show_pointer = true;
++								for (int i = 0; i < 2; i++)
++								{
++									const D2D1_RECT_F tr = ui::chooser_tile(chooser_w, chooser_h, i);
++									if (px >= tr.left && px <= tr.right && py >= tr.top && py <= tr.bottom) xr.chooser_hover = i;
++								}
++							}
++						}
++					}
++					const bool pull = trig[hand] > 0.6f;
++					if (pull && !xr.chooser_trig_prev && xr.chooser_hover >= 0 && (xr.chooser_hover == 0 || xr.truevr_ok))
++					{
++						xr.mode3d = xr.chooser_hover == 1;
++						xr.chooser_active = false;
++						persist_set("mode", xr.mode3d ? "3d" : "screen");
++						vr_log("Start-up choice: %s", xr.mode3d ? "true VR (inside the game)" : "flat screen (the game on the big screen)");
++					}
++					xr.chooser_trig_prev = pull;
++					out.move = out.t = false;
++					out.trigger = 0.f;
++					out.cross = out.circle = out.square = out.triangle = out.start = out.select = false;
++				}
++
 +				// Hold Left MENU for 2 seconds: show the controls card
 +				if (get_bool(xr, xr.btn_menu))
 +				{
@@ -4021,11 +4088,11 @@ index 000000000..777a7865b
 +			if (xr.have_image && message.empty() && !xr.first_live) xr.first_live = now_tick;
 +
 +			// Laser from the hand to the screen, and a cursor where it lands (no emulator delay)
-+			if (frame_state.shouldRender && xr.show_pointer && (xr.have_image || xr.live3d) && message.empty())
++			if (frame_state.shouldRender && xr.show_pointer && (((xr.have_image || xr.live3d) && message.empty()) || xr.chooser_active))
 +			{
 +				const vec3 along = xr.aim_hit - xr.aim_origin;
 +				const f32 len = std::sqrt(dot(along, along));
-+				if (xr.laser_ok && len > 0.05f && (!xr.live3d || xr.pointing_laser))
++				if (xr.laser_ok && len > 0.05f && (!xr.live3d || xr.pointing_laser || xr.chooser_active))
 +				{
 +					const vec3 bx = along * (1.f / len);
 +					vec3 bz = (xr.last_head - (xr.aim_origin + along * 0.5f));
@@ -4140,11 +4207,35 @@ index 000000000..777a7865b
 +				}
 +			}
 +
++			// The start-up choice card: in front of you until you pick
++			XrCompositionLayerQuad choose{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			if (xr.chooser_active && xr.screen_placed)
++			{
++				const ui::card cc = chooser_card(xr.chooser_hover, xr.truevr_ok, xr.channel);
++				const std::wstring sig = cc.signature();
++				if (sig != xr.chooser_sig) { draw_card(xr, xr.chooser, xr.chooser_images, xr.chooser_bgra, xr.chooser_has, chooser_w, chooser_h, cc); xr.chooser_sig = sig; }
++				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++				xr.chooser_pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.5f, 0.2f) + vec3{0.f, 0.15f, 0.f};
++				xr.chooser_yaw = xr.screen_yaw;
++				if (xr.chooser_has && frame_state.shouldRender)
++				{
++					choose.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++					choose.space = xr.local_space;
++					choose.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					choose.subImage.swapchain = xr.chooser;
++					choose.subImage.imageRect.extent = {static_cast<s32>(chooser_w), static_cast<s32>(chooser_h)};
++					choose.pose.position = {xr.chooser_pos.x, xr.chooser_pos.y, xr.chooser_pos.z};
++					choose.pose.orientation = yaw_q(xr.chooser_yaw);
++					choose.size = {chooser_width_m, chooser_width_m * chooser_h / chooser_w};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&choose);
++				}
++			}
++
 +			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed)
 +			{
-+				// Floats just in front of the game screen, facing the player.
++				// Floats just in front of the game screen, facing the player (below the start-up card while it shows).
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
-+				const vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f);
++				const vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f) - vec3{0.f, xr.chooser_active ? 1.0f : 0.f, 0.f};
 +				panel.space = xr.local_space;
 +				panel.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +				panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -4397,7 +4488,26 @@ index 000000000..777a7865b
 +			vr_log("Order Up VR starting (title %s)", Emu.GetTitleID().c_str());
 +
 +			xr_state xr;
-+			xr.mode3d = persist_get("mode") != "screen";
++			{
++				std::map<std::string, std::string> kv;
++				if (std::FILE* f = std::fopen((fs::get_config_dir() + "orderupvr_channel.txt").c_str(), "r"))
++				{
++					char line[128];
++					while (std::fgets(line, sizeof(line), f))
++					{
++						std::string l(line);
++						while (!l.empty() && (l.back() == 10 || l.back() == 13 || l.back() == 32)) l.pop_back();
++						if (const usz eq = l.find('='); eq != std::string::npos) kv[l.substr(0, eq)] = l.substr(eq + 1);
++					}
++					std::fclose(f);
++				}
++				if (kv.count("channel")) xr.channel = kv["channel"];
++				xr.truevr_ok = kv.count("truevr") ? kv["truevr"] == "1" : xr.channel != "stable";
++				vr_log("Channel: %s, true VR %s", xr.channel.c_str(), xr.truevr_ok ? "available" : "not available yet");
++			}
++			// Flat until the player picks on the start-up card (the card offers the last choice first)
++			xr.mode3d = false;
++			xr.chooser_hover = -1;
 +			xr.stereo = persist_get("stereo") != "0";
 +			xr.pointing_laser = persist_get("pointing") == "laser";
 +			if (const std::string lw = persist_get("lower"); !lw.empty()) xr.lower = std::clamp(static_cast<f32>(std::atof(lw.c_str())), -1.5f, 3.f);
@@ -6274,6 +6384,8 @@ index 000000000..777a7865b
 +			out("help.png", help_card(), help_w, help_h);
 +			out("sign.png", sign_card(true), sign_w, sign_h);
 +			out("calib.png", calib_card(), 1024, 300);
++			out("chooser_stable.png", chooser_card(0, false, "stable"), chooser_w, chooser_h);
++			out("chooser_beta.png", chooser_card(1, true, "beta"), chooser_w, chooser_h);
 +			return 0;
 +		}
 +		if (cmd == "--ouvr-chef-test" && argc >= 4)
@@ -7139,10 +7251,10 @@ index 000000000..fa57e5421
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_ui.inl b/rpcs3/Emu/Io/OrderUpVR_ui.inl
 new file mode 100644
-index 000000000..3ee399e1b
+index 000000000..d522371d7
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_ui.inl
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,465 @@
 +// Order Up VR: the cards shown in the headset (loading, controls, the diner sign, hints), drawn with Direct2D and
 +// DirectWrite into premultiplied BGRA pictures. Also writes PNG files for the developer tools.
 +// Included from OrderUpVR.cpp inside namespace ouvr.
@@ -7153,7 +7265,7 @@ index 000000000..3ee399e1b
 +
 +	struct card
 +	{
-+		enum style_t { PANEL, SIGN, HELP, HINT } style = PANEL;
++		enum style_t { PANEL, SIGN, HELP, HINT, CHOOSER } style = PANEL;
 +		std::wstring kicker, title, subtitle;
 +		std::vector<row> rows;
 +		int progress = -1;            // 0..100; -2 = busy (moving bar)
@@ -7161,11 +7273,14 @@ index 000000000..3ee399e1b
 +		std::wstring progress_label;  // under the bar, left
 +		std::wstring tip;             // footer
 +		int columns = 1;              // rows in this many columns (controls card)
++		// CHOOSER: rows are big tiles (key = name, text = what it is); hover lights one, disabled shows "Coming soon"
++		int hover = -1, disabled = -1;
 +
 +		std::wstring signature() const
 +		{
 +			std::wstring s = kicker + L"|" + title + L"|" + subtitle + L"|" + progress_label + L"|" + tip + L"|" + std::to_wstring(progress) + L"|" + std::to_wstring(static_cast<int>(phase * 20));
 +			for (const auto& r : rows) s += L"|" + r.key + L"=" + r.text;
++			s += L"|" + std::to_wstring(hover) + L"|" + std::to_wstring(disabled);
 +			return s;
 +		}
 +	};
@@ -7400,6 +7515,16 @@ index 000000000..3ee399e1b
 +		}
 +	};
 +
++	// Chooser tiles in card pixels (the headset's hit test uses the same rectangles)
++	inline D2D1_RECT_F chooser_tile(u32 w, u32 h, int i)
++	{
++		const f32 m = 22.f, pad = 52.f, x0 = m + pad, x1 = static_cast<f32>(w) - m - pad, gap = 32.f;
++		const f32 tw = (x1 - x0 - gap) * 0.5f;
++		const f32 y0 = 250.f, y1 = static_cast<f32>(h) - m - 120.f;
++		const f32 l = x0 + i * (tw + gap);
++		return {l, y0, l + tw, y1};
++	}
++
 +	// Draws the card into premultiplied BGRA pixels (w x h)
 +	inline bool render(const card& c, u32 w, u32 h, std::vector<u8>& out)
 +	{
@@ -7440,7 +7565,54 @@ index 000000000..3ee399e1b
 +			const f32 pad = 52.f;
 +			f32 x = r.left + pad, y = r.top + 44.f;
 +			const f32 cw = r.right - r.left - pad * 2.f;
-+			if (c.style == card::HINT)
++			if (c.style == card::CHOOSER)
++			{
++				p.badge(x, y, 60.f);
++				p.text(c.kicker, x + 80.f, y + 16.f, cw - 80.f, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);
++				p.text(c.title, x, y + 84.f, cw, 80.f, 50.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true, false);
++				for (int i = 0; i < static_cast<int>(c.rows.size()) && i < 2; i++)
++				{
++					const D2D1_RECT_F t = chooser_tile(w, h, i);
++					const bool off = i == c.disabled, on = i == c.hover && !off;
++					if (on)
++					{
++						for (int k = 3; k >= 1; k--) p.stroke_round(t, 26.f, rgba(0xFF8A00, 0.10f), 4.f + k * 6.f);
++						ID2D1LinearGradientBrush* g = p.linear({t.left, t.top}, {t.right, t.bottom}, {{0.f, rgba(0xFF8A00, 0.30f)}, {1.f, rgba(0xFF3D6E, 0.22f)}});
++						if (g) rt->FillRoundedRectangle({t, 26.f, 26.f}, g);
++						ui::rel(g);
++						p.stroke_round(t, 26.f, rgba(0xFFB25C), 3.f);
++					}
++					else
++					{
++						p.fill_round(t, 26.f, rgba(0xFFFFFF, off ? 0.03f : 0.06f));
++						p.stroke_round(t, 26.f, rgba(0xFFFFFF, off ? 0.08f : 0.16f), 2.f);
++					}
++					const f32 tx = t.left + 34.f, tw2 = t.right - t.left - 68.f;
++					// a small picture: a screen for flat, a headset for true VR
++					const f32 iy = t.top + 36.f;
++					const u32 ic = off ? 0x6B7280 : 0xFFFFFF;
++					if (i == 0)
++					{
++						p.stroke_round({tx, iy, tx + 96.f, iy + 58.f}, 8.f, rgba(ic), 5.f);
++						p.fill_round({tx + 38.f, iy + 62.f, tx + 58.f, iy + 74.f}, 3.f, rgba(ic));
++					}
++					else
++					{
++						p.stroke_round({tx, iy + 8.f, tx + 104.f, iy + 62.f}, 24.f, rgba(ic), 5.f);
++						p.fill_round({tx + 16.f, iy + 22.f, tx + 46.f, iy + 46.f}, 10.f, rgba(ic, 0.8f));
++						p.fill_round({tx + 58.f, iy + 22.f, tx + 88.f, iy + 46.f}, 10.f, rgba(ic, 0.8f));
++					}
++					p.text(c.rows[i].key, tx, iy + 100.f, tw2, 60.f, 40.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(off ? 0x8A909C : 0xFFFFFF), true, false);
++					p.text(c.rows[i].text, tx, iy + 152.f, tw2, 120.f, 23.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(off ? 0x6B7280 : 0xC9CED8));
++					if (off)
++					{
++						const f32 cwid = p.text_width(L"COMING SOON", 17.f, DWRITE_FONT_WEIGHT_BOLD) + 17.f * 1.3f;
++						p.chip(L"COMING SOON", t.right - 30.f - cwid, t.top + 30.f, 17.f);
++					}
++				}
++				p.text(c.tip, x, r.bottom - 74.f, cw, 40.f, 22.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++			}
++			else if (c.style == card::HINT)
 +			{
 +				// The PlayStation square, pink, as big as the card allows
 +				const f32 s = H - m * 2.f - 88.f;
