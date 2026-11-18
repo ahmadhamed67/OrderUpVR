@@ -1,10 +1,24 @@
-# Builds everything a GitHub release needs into dist\release:
+﻿# Builds everything a GitHub release needs into dist\release:
 #   OrderUpVR-mod-<version>.zip   the mod package (custom RPCS3 build + per-game config)
 #   OrderUpVR-Setup.exe           the launcher/setup exe
 #   manifest.json                 what installed launchers read to find updates
-# Usage: .\Release.ps1 -Version 0.1.0 [-LauncherVersion 1.0.0] [-Repo ahmadhamed67/OrderUpVR]
-param([Parameter(Mandatory = $true)][string]$Version, [string]$LauncherVersion = '1.0.0', [string]$Repo = 'ahmadhamed67/OrderUpVR')
+# Usage: .\Release.ps1 -Version 0.1.0 [-Repo ahmadhamed67/OrderUpVR]
+# The launcher has its own version (launcher\VERSION): it only changes when the launcher itself changes, so a mod
+# update does not make installed launchers update themselves too.
+param([Parameter(Mandatory = $true)][string]$Version, [string]$LauncherVersion = '', [string]$Repo = 'ahmadhamed67/OrderUpVR')
 $ErrorActionPreference = 'Stop'
+if (-not $LauncherVersion) { $LauncherVersion = (Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) 'launcher\VERSION') -Raw).Trim() }
+# Launcher code changed since the last release but its version did not: refuse (installed launchers would not update)
+Push-Location (Split-Path $PSScriptRoot -Parent)
+try {
+    $lastTag = (git tag --list "v*" --sort=-v:refname | Select-Object -First 1)
+    if ($lastTag) {
+        git diff --quiet $lastTag -- launcher ':!launcher/VERSION'; $codeChanged = $LASTEXITCODE -ne 0
+        $oldVersion = (cmd /c "git show ${lastTag}:launcher/VERSION 2>nul") -join ''
+        $versionChanged = $oldVersion.Trim() -ne $LauncherVersion
+        if ($codeChanged -and -not $versionChanged) { throw "The launcher changed since ${lastTag}: raise launcher\VERSION" }
+    }
+} finally { Pop-Location }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root 'dist\release'

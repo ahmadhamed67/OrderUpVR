@@ -196,3 +196,10 @@ Decoded from the game files (OrderUpVR_chef.inl; offline check: `rpcs3.exe --ouv
   0.33). Pose: chef eyes at your eyes (scale = eye height / 1.45), two-bone arms (stretching when you reach further than
   the chef can), hands matched to the controller grip frame (fingers forward, palms inward), fingers curl with GRIP.
 - Mirror: stencil mirror in the lobby room (glass marks the stencil, depth reset to far, room and chef reflected).
+
+## 0.11.0: cutscenes, walls, scale, automatic chef, hands
+
+- Cutscene detection (rv_room_update): a camera cut, or a camera move over 1.5 m / 45 degrees while no button was pressed for 3 s, sets `cinema`; the renderer then leaves the game's draws alone (mono, big screen in the diner). After 75 still frames the kitchen is anchored afresh in 3D.
+- Station-local measurements, kept until the next anchor: `hud_depth` (20th percentile depth of on-screen objects, times 0.92), the restaurant extent (4th-96th percentile of object origins in the levelled anchor frame) used as stick walls, and the world scale (5th percentile object height = floor; 1.62 m / camera height).
+- Chef choice: 48-byte slices of each chef's DXT1 body texture are searched in RSX local memory (0xC0000000, 256 MB) every 5 s; when only one chef's pieces are present, that chef is used.
+- Hands: both chefs' hands have a hand bone, a two-bone thumb (forward of and below the palm) and two two-bone fingers. Joints scale with each chef's arm length; the hand is shrunk to about 24 cm; the OpenXR grip frame maps to the hand with wrist-to-knuckles = grip (0, -0.866, -0.5).

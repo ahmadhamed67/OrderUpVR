@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
@@ -90,6 +91,56 @@ namespace OrderUpVR
             };
 
             if (mode == Mode.Setup) BuildSetup(); else BuildMain();
+        }
+
+        // ------------------------------------------------------------------ development: pictures of every screen
+        // --render-ui <out dir> <game dir> <manifest.json>: test settings that are never saved, no network
+        public static int DevShots(string outDir, string gameDir, string manifestPath)
+        {
+            Settings.NoSave = true;
+            string fake = System.IO.Path.Combine(outDir, "install");
+            Directory.CreateDirectory(System.IO.Path.Combine(fake, "emu"));
+            File.WriteAllText(System.IO.Path.Combine(fake, "emu", "rpcs3.exe"), "");
+            var st = new Settings { Rpcs3Dir = @"C:\Emulator\RPCS3", GameDir = gameDir, InstallDir = fake, InstalledVersion = "0.11.0", NoAutoUpdate = true, ShowGameArt = false };
+            var app = new Application();
+            app.Resources.MergedDictionaries.Add((ResourceDictionary)LoadXaml("Theme.xaml"));
+            var win = new LauncherWindow(st, Mode.Main, false);
+            var steps = new List<Action>();
+            Action<string> shot = delegate(string name)
+            {
+                var r = (FrameworkElement)win.Content;
+                var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap((int)r.ActualWidth, (int)r.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                bmp.Render(r);
+                var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+                using (var f = File.Create(System.IO.Path.Combine(outDir, name + ".png"))) enc.Save(f);
+            };
+            steps.Add(delegate { win.manifest = Core.FetchManifest(manifestPath); win.manifest.version = "0.11.0"; win.manifest.changelog[0].version = "0.11.0"; win.RenderChangelog(); win.RefreshAll(); });
+            steps.Add(delegate { shot("1_home"); win.s.ShowGameArt = true; win.ApplyGameArt(false); });
+            steps.Add(delegate { shot("2_home_art"); win.ShowWhatsNew(); });
+            steps.Add(delegate { shot("3_whatsnew"); win.CloseDialog(); win.ShowHowTo(); });
+            steps.Add(delegate { shot("4_help1"); win.ShowHelpSlide(1); });
+            steps.Add(delegate { shot("5_help2"); win.ShowHelpSlide(3); });
+            steps.Add(delegate { shot("6_help4"); win.CloseHelp(); win.OpenSettings(); });
+            steps.Add(delegate { shot("7_settings"); var sv = FindChild<ScrollViewer>(win.Get<Grid>("SettingsPage")); if (sv != null) sv.ScrollToVerticalOffset(520); });
+            steps.Add(delegate { shot("8_settings_vr"); win.Close(); });
+            int k = 0;
+            var t = new DispatcherTimer(); t.Interval = TimeSpan.FromMilliseconds(1300);
+            t.Tick += delegate { if (k < steps.Count) steps[k++](); else t.Stop(); };
+            win.Loaded += delegate { t.Start(); };
+            return app.Run(win);
+        }
+
+        static T FindChild<T>(DependencyObject d) where T : DependencyObject
+        {
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+            {
+                var c = VisualTreeHelper.GetChild(d, i);
+                if (c is T) return (T)c;
+                var r = FindChild<T>(c);
+                if (r != null) return r;
+            }
+            return null;
         }
 
         // ------------------------------------------------------------------ helpers
@@ -479,7 +530,8 @@ namespace OrderUpVR
             Get<Button>("SettingsBtn").Click += delegate { OpenSettings(); };
             Get<Button>("LogsBtn").Click += delegate { CollectLogs(); };
             Get<Button>("HelpBtn").Click += delegate { ShowHowTo(); };
-            Get<Button>("ReleasesBtn").Click += delegate { OpenUrl(Core.RepoUrl + "/releases"); };
+            Get<Button>("WhatsNewBtn").Click += delegate { ShowWhatsNew(); };
+            Get<Button>("ArtBtn").Click += delegate { ToggleGameArt(); };
             Get<Button>("BackBtn").Click += delegate { ShowPage("MainPage", false); RefreshAll(); };
             Get<Button>("GithubBtn").Click += delegate { OpenUrl(Core.RepoUrl); };
             Get<Button>("UninstallBtn").Click += delegate { AskUninstall(); };
@@ -501,24 +553,27 @@ namespace OrderUpVR
             ShowPage("MainPage", true);
             RenderChangelog();
             RefreshAll();
+            ApplyGameArt(false);
+            WriteVrFile();
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
         }
 
-        // VR comfort and body choices: key, label, hint, then value/display pairs (the first is the default)
+        // VR choices, grouped. Each: group, key, label, hint, default, then value/display pairs in the order shown.
+        // Your chef is not a choice: the mod uses the chef of the career the game loads (the male chef in the menus).
         static readonly string[][] VrOptions =
         {
-            new[] { "chef", "Your chef", "The game's own chef is your body (rebuilt from your copy of the game). Quick Play uses the male chef", "male", "Male chef", "female", "Female chef", "off", "Hands only" },
-            new[] { "playmode", "Play position", "Standing: legs stand and step when you walk", "standing", "Standing", "seated", "Seated" },
-            new[] { "turn", "Turning", "Right stick left/right inside the game", "snap", "Snap turn", "smooth", "Smooth turn" },
-            new[] { "snapangle", "Snap turn angle", "How far one snap turns you", "45", "45 degrees", "30", "30 degrees", "60", "60 degrees", "90", "90 degrees", "15", "15 degrees" },
-            new[] { "turnspeed", "Smooth turn speed", "How fast smooth turning rotates you", "120", "Medium (120 degrees/s)", "180", "Fast (180 degrees/s)", "240", "Very fast (240 degrees/s)", "60", "Slow (60 degrees/s)", "90", "Gentle (90 degrees/s)" },
-            new[] { "movespeed", "Walking speed", "Left stick walking", "1.4", "Normal", "1.0", "Slow", "2.0", "Fast" },
-            new[] { "vignette", "Comfort vignette", "Darkens the edges of your view while the stick moves or turns you", "on", "On", "off", "Off" },
-            new[] { "huddist", "Menus and HUD distance", "Where the order tickets, timers and menus float", "1.5", "1.5 m", "1.0", "1.0 m", "2.0", "2.0 m", "3.0", "3.0 m" },
-            new[] { "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "On", "off", "Off" },
-            new[] { "pointing", "Pointing in the kitchen", "Hands: the pointer is where your hand covers things", "hand", "Hands", "laser", "Laser" },
-            new[] { "kitchen", "Kitchen world", "Room: the kitchen stays still around you and every station is where it really is", "room", "Room (true VR)", "follow", "Follows the game camera" },
-            new[] { "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there (A and B still work)", "on", "On", "off", "Off" },
+            new[] { "Comfort", "turn", "Turning", "Right stick left and right", "snap", "snap", "Snap", "smooth", "Smooth" },
+            new[] { "Comfort", "snapangle", "Snap angle", "How far one snap turns you", "45", "15", "15°", "30", "30°", "45", "45°", "60", "60°", "90", "90°" },
+            new[] { "Comfort", "turnspeed", "Turn speed", "How fast smooth turning goes", "120", "60", "Slow", "90", "Gentle", "120", "Medium", "180", "Fast", "240", "Very fast" },
+            new[] { "Comfort", "movespeed", "Walking speed", "Left stick walking", "1.4", "1.0", "Slow", "1.4", "Normal", "2.0", "Fast" },
+            new[] { "Comfort", "vignette", "Comfort vignette", "Darkens the edges of your view while the stick moves you", "on", "on", "On", "off", "Off" },
+            new[] { "You and the view", "playmode", "Play position", "Seated keeps your chef standing while you sit", "standing", "standing", "Standing", "seated", "Seated" },
+            new[] { "You and the view", "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "on", "On", "off", "Off" },
+            new[] { "You and the view", "huddist", "Order tickets distance", "How far the game's tickets and timers float (never inside the counter)", "1.5", "1.0", "Near", "1.5", "Normal", "2.0", "Far" },
+            new[] { "You and the view", "cutscenes", "Cutscenes", "Big screen: cutscenes and camera fly-throughs play on the diner screen", "screen", "screen", "Big screen", "3d", "Inside the game" },
+            new[] { "In the kitchen", "kitchen", "Kitchen", "Room: the kitchen stays still around you, every station where it really is", "room", "room", "Room (true VR)", "follow", "Follows the camera" },
+            new[] { "In the kitchen", "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there", "on", "on", "On", "off", "Off" },
+            new[] { "In the kitchen", "pointing", "Pointing", "Hands: reach for things. Laser: point from a distance", "hand", "hand", "Hands", "laser", "Laser" },
         };
 
         string VrGet(string key, string def) { string v; return s.Vr != null && s.Vr.TryGetValue(key, out v) ? v : def; }
@@ -527,41 +582,68 @@ namespace OrderUpVR
         {
             var rows = Get<StackPanel>("VrRows");
             rows.Children.Clear();
+            string group = null;
             foreach (var opt in VrOptions)
             {
                 var o = opt;
-                var g = new Grid(); g.Margin = new Thickness(0, 6, 0, 6);
+                // Rows that only matter for one turning style
+                if (o[1] == "snapangle" && VrGet("turn", "snap") != "snap") continue;
+                if (o[1] == "turnspeed" && VrGet("turn", "snap") != "smooth") continue;
+                if (o[0] != group)
+                {
+                    group = o[0];
+                    var gh = new TextBlock(); gh.Text = group.ToUpperInvariant(); gh.Style = (Style)FindResource("Overline");
+                    gh.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC5, 0x8A)); gh.Margin = new Thickness(0, rows.Children.Count == 0 ? 10 : 24, 0, 4);
+                    rows.Children.Add(gh);
+                }
+                var g = new Grid(); g.Margin = new Thickness(0, 8, 0, 8);
                 g.ColumnDefinitions.Add(new ColumnDefinition());
                 g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                var texts = new StackPanel();
-                var label = new TextBlock(); label.Text = o[1]; label.Foreground = Brushes.White; label.FontSize = 14; label.FontWeight = FontWeights.SemiBold;
-                var hint = new TextBlock(); hint.Text = o[2]; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 12, 0);
+                var texts = new StackPanel(); texts.VerticalAlignment = VerticalAlignment.Center;
+                var label = new TextBlock(); label.Text = o[2]; label.Foreground = Brushes.White; label.FontSize = 14; label.FontWeight = FontWeights.SemiBold;
+                var hint = new TextBlock(); hint.Text = o[3]; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 16, 0);
                 texts.Children.Add(label); texts.Children.Add(hint);
-                var b = new Button(); b.Style = (Style)FindResource("Ghost"); b.MinWidth = 190; b.Padding = new Thickness(14, 8, 14, 8); b.VerticalAlignment = VerticalAlignment.Center;
-                Grid.SetColumn(b, 1);
-                Action show = delegate
+                // Segmented choice: every value visible, the chosen one lit
+                var seg = new Border(); seg.CornerRadius = new CornerRadius(12); seg.Padding = new Thickness(3);
+                seg.Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x22, 0x2B)); seg.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x33, 0x3E)); seg.BorderThickness = new Thickness(1);
+                seg.VerticalAlignment = VerticalAlignment.Center;
+                Grid.SetColumn(seg, 1);
+                var pills = new StackPanel(); pills.Orientation = Orientation.Horizontal;
+                seg.Child = pills;
+                string cur = VrGet(o[1], o[4]);
+                for (int i = 5; i + 1 < o.Length; i += 2)
                 {
-                    string cur = VrGet(o[0], o[3]);
-                    string disp = o[4];
-                    for (int i = 3; i + 1 < o.Length; i += 2) if (o[i] == cur) disp = o[i + 1];
-                    b.Content = disp;
-                };
-                b.Click += delegate
-                {
-                    string cur = VrGet(o[0], o[3]);
-                    int at = 3;
-                    for (int i = 3; i + 1 < o.Length; i += 2) if (o[i] == cur) at = i;
-                    int next = at + 2 < o.Length ? at + 2 : 3;
-                    if (s.Vr == null) s.Vr = new Dictionary<string, string>();
-                    s.Vr[o[0]] = o[next];
-                    s.Save();
-                    WriteVrFile();
-                    show();
-                };
-                show();
-                g.Children.Add(texts); g.Children.Add(b);
+                    string val = o[i];
+                    bool on = val == cur;
+                    var pill = new Border(); pill.CornerRadius = new CornerRadius(9); pill.Padding = new Thickness(13, 7, 13, 7); pill.Cursor = Cursors.Hand;
+                    pill.Background = on ? AccentBrush : Brushes.Transparent;
+                    var pt = new TextBlock(); pt.Text = o[i + 1]; pt.FontSize = 12.5; pt.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                    pt.Foreground = on ? Brushes.Black : TextBrush;
+                    pill.Child = pt;
+                    if (!on)
+                    {
+                        pill.MouseEnter += delegate { pill.Background = new SolidColorBrush(Color.FromRgb(0x2C, 0x31, 0x3C)); };
+                        pill.MouseLeave += delegate { pill.Background = Brushes.Transparent; };
+                    }
+                    pill.MouseLeftButtonUp += delegate
+                    {
+                        if (s.Vr == null) s.Vr = new Dictionary<string, string>();
+                        s.Vr[o[1]] = val;
+                        s.Save();
+                        WriteVrFile();
+                        BuildVrRows();
+                    };
+                    pills.Children.Add(pill);
+                }
+                g.Children.Add(texts); g.Children.Add(seg);
                 rows.Children.Add(g);
             }
+            var note = new Border(); note.Margin = new Thickness(0, 22, 0, 0); note.CornerRadius = new CornerRadius(12); note.Padding = new Thickness(14, 10, 14, 10);
+            note.Background = new SolidColorBrush(Color.FromArgb(0x16, 0xFF, 0x8A, 0x00)); note.BorderBrush = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0x8A, 0x00)); note.BorderThickness = new Thickness(1);
+            var nt = new TextBlock(); nt.TextWrapping = TextWrapping.Wrap; nt.Foreground = TextBrush; nt.FontSize = 12.5;
+            nt.Text = "Your chef is picked by the game: you are the male chef in the menus, and when you start or load a career you become that career's chef.";
+            note.Child = nt;
+            rows.Children.Add(note);
         }
 
         void WriteVrFile()
@@ -571,33 +653,228 @@ namespace OrderUpVR
                 string dir = System.IO.Path.Combine(Core.EmuDir(s), "config");
                 if (!Directory.Exists(dir)) return;
                 var sb = new System.Text.StringBuilder();
-                foreach (var o in VrOptions) sb.Append(o[0]).Append('=').Append(VrGet(o[0], o[3])).AppendLine();
+                sb.Append("chef=auto").AppendLine();
+                foreach (var o in VrOptions) sb.Append(o[1]).Append('=').Append(VrGet(o[1], o[4])).AppendLine();
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
             }
             catch { }
         }
 
-        const int HowToRevision = 5; // raise when the controls change, so players see the guide again
+        // ------------------------------------------------------------------ How to play: one idea per card
+        const int HowToRevision = 6; // raise when the controls change, so players see the guide again
+
+        class HelpSlide
+        {
+            public string Glyph, Step, Title, Lead;
+            public string[][] Rows;   // key, text
+            public bool Controller;   // draw the controller with pointers instead of a picture
+        }
+
+        static readonly HelpSlide[] HelpSlides =
+        {
+            new HelpSlide { Glyph = "", Step = "BEFORE YOU START", Title = "Headset first, then PLAY",
+                Lead = "Start your VR app, put the headset on, and press PLAY here. The game opens inside the headset.",
+                Rows = new[] { new[] { "1", "Start Quest Link, Air Link, Virtual Desktop or SteamVR" }, new[] { "2", "Press PLAY in this window" }, new[] { "3", "The game asks for the pink SQUARE: press X on your left controller" } } },
+            new HelpSlide { Controller = true, Step = "YOUR HANDS", Title = "Your controllers are the Move",
+                Lead = "Your hands are the chef's hands. They grab, hold and point just like you do.",
+                Rows = new[] { new[] { "TRIGGER", "Choose and confirm. Curls the chef's fingers" }, new[] { "GRIP", "Grab and hold food. Folds the chef's thumb" }, new[] { "A B X Y", "Cross, Circle, Square, Triangle" }, new[] { "MENU", "Pause the game (left controller)" } } },
+            new HelpSlide { Glyph = "", Step = "THE DINER", Title = "Menus live in a diner",
+                Lead = "Between shifts you stand in a 50s diner. The game's menus hang on the menu board.",
+                Rows = new[] { new[] { "POINT", "Aim at the board and pull TRIGGER to choose" }, new[] { "STICKS", "Walk and turn around the diner" }, new[] { "MIRROR", "On the left wall: wave at yourself" }, new[] { "BOTH GRIPS", "Hold them, then the sticks move or resize the board" } } },
+            new HelpSlide { Glyph = "", Step = "THE KITCHEN", Title = "You're inside the kitchen",
+                Lead = "The kitchen is all around you in 3D and stays still, like a real room.",
+                Rows = new[] { new[] { "LOOK", "Turn your head toward the next station and the game goes there" }, new[] { "A / B", "Change station by hand" }, new[] { "REACH", "Your hand is the pointer: touch the food" } } },
+            new HelpSlide { Glyph = "", Step = "MOVING", Title = "Walk and turn",
+                Lead = "Walk around for real, or use the sticks. Walls keep you inside the restaurant.",
+                Rows = new[] { new[] { "LEFT STICK", "Walk where you look" }, new[] { "RIGHT STICK", "Turn (snap or smooth, in Settings)" }, new[] { "STICK CLICK", "Recentre. Hold for 1 second: big screen" } } },
+            new HelpSlide { Glyph = "", Step = "COOKING", Title = "Cook with your hands",
+                Lead = "Do the moves for real: the game feels your hands like a PlayStation Move.",
+                Rows = new[] { new[] { "FLIP", "Hold GRIP and flick your wrist up" }, new[] { "EASY FLIP", "Or flick that hand's thumbstick up" }, new[] { "CUTSCENES", "Play on the diner's big screen, then you're back" } } },
+            new HelpSlide { Glyph = "", Step = "NEED A HAND?", Title = "Help is always close",
+                Lead = "You can open this guide any time with the ? button.",
+                Rows = new[] { new[] { "HOLD MENU", "Hold left MENU for 2 seconds in the headset to see the controls" }, new[] { "LOGS", "Something wrong? Press the logs button and send us the zip" } } },
+        };
+
+        int helpIndex;
+        bool helpBuilt;
 
         void ShowHowTo()
         {
             s.SeenHowTo = true; s.HowToSeen = HowToRevision; s.Save();
-            ShowDialog("How to play in VR",
-                "1.  Connect your headset (Quest Link, Air Link, Virtual Desktop or SteamVR), then press PLAY.\n" +
-                "2.  Menus hang as a menu board in a diner around you. In the kitchen and the restaurant you are inside the game in 3D with your own body and hands: look around and lean in.\n" +
-                "    The kitchen stays still around you. Press A or B once to move to the next station; after that, just turn your head toward a station and the game goes there.\n" +
-                "3.  Reach for things: inside the game the pointer is wherever your hand covers them. On the big screen, aim the laser.\n\n" +
-                "GRIP: grab and hold (the game's T button)\n" +
-                "TRIGGER: select and confirm (the Move button)\n" +
-                "A / B / X / Y: Cross / Circle / Square / Triangle (the pink square is X)\n" +
-                "Left MENU: Start (pause).  Right stick click: Select\n" +
-                "Flipping and other motions: hold GRIP and flick the controller, or flick that hand's thumbstick up\n" +
-                "Inside the game: left stick walks, right stick turns (left/right) and moves you higher or lower (up/down)\n" +
-                "Menu board: hold both GRIPs, then the right stick moves it nearer or farther and the left stick resizes it\n" +
-                "Left stick click: recentre.  Hold it for 1 second: switch between 3D and the big screen\n\n" +
-                "Start-up screen asking for the pink SQUARE: point at the middle of the screen and press X (or pull the trigger).\n" +
-                "In the headset, hold Left MENU for 2 seconds to see the controls again.",
-                null, false, Btn("Got it", null));
+            if (!helpBuilt)
+            {
+                helpBuilt = true;
+                Get<Button>("HelpClose").Click += delegate { CloseHelp(); };
+                Get<Button>("HelpBack").Click += delegate { if (helpIndex > 0) ShowHelpSlide(helpIndex - 1); };
+                Get<Button>("HelpNext").Click += delegate { if (helpIndex + 1 < HelpSlides.Length) ShowHelpSlide(helpIndex + 1); else CloseHelp(); };
+                Get<Grid>("HelpLayer").MouseLeftButtonUp += delegate(object o, MouseButtonEventArgs e) { if (e.OriginalSource == o) CloseHelp(); };
+            }
+            var layer = Get<Grid>("HelpLayer");
+            layer.Visibility = Visibility.Visible;
+            layer.Opacity = 0;
+            Animate(layer, UIElement.OpacityProperty, 1, 200, 0);
+            var sc = (ScaleTransform)Get<Border>("HelpCard").RenderTransform;
+            var a = new DoubleAnimation(0.95, 1, TimeSpan.FromMilliseconds(280)); a.EasingFunction = EaseOut();
+            sc.BeginAnimation(ScaleTransform.ScaleXProperty, a);
+            sc.BeginAnimation(ScaleTransform.ScaleYProperty, a);
+            ShowHelpSlide(0);
+        }
+
+        void CloseHelp()
+        {
+            var layer = Get<Grid>("HelpLayer");
+            var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(160));
+            fade.Completed += delegate { layer.Visibility = Visibility.Collapsed; };
+            layer.BeginAnimation(UIElement.OpacityProperty, fade);
+        }
+
+        void ShowHelpSlide(int i)
+        {
+            bool forward = i >= helpIndex;
+            helpIndex = i;
+            HelpSlide h = HelpSlides[i];
+            Get<TextBlock>("HelpStep").Text = h.Step + "   ·   " + (i + 1) + " OF " + HelpSlides.Length;
+            Get<TextBlock>("HelpTitle").Text = h.Title;
+            Get<TextBlock>("HelpLead").Text = h.Lead;
+            var rows = Get<StackPanel>("HelpRows");
+            rows.Children.Clear();
+            Grid.SetIsSharedSizeScope(rows, true);
+            int n = 0;
+            foreach (string[] r in h.Rows)
+            {
+                var g = new Grid(); g.Margin = new Thickness(0, 0, 0, 12);
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, SharedSizeGroup = "HelpKey" });
+                g.ColumnDefinitions.Add(new ColumnDefinition());
+                var key = new Border(); key.CornerRadius = new CornerRadius(8); key.Padding = new Thickness(9, 4, 9, 4); key.HorizontalAlignment = HorizontalAlignment.Left; key.VerticalAlignment = VerticalAlignment.Top;
+                key.Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0x8A, 0x00)); key.BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0x8A, 0x00)); key.BorderThickness = new Thickness(1);
+                var kt = new TextBlock(); kt.Text = r[0]; kt.FontSize = 11; kt.FontWeight = FontWeights.Bold; kt.HorizontalAlignment = HorizontalAlignment.Center; kt.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB2, 0x5C));
+                key.Child = kt;
+                key.MinWidth = 30; key.Margin = new Thickness(0, 0, 16, 0);
+                var tx = new TextBlock(); tx.Text = r[1]; tx.TextWrapping = TextWrapping.Wrap; tx.FontSize = 14; tx.Foreground = TextBrush; tx.Margin = new Thickness(0, 2, 0, 0);
+                Grid.SetColumn(tx, 1);
+                g.Children.Add(key); g.Children.Add(tx);
+                rows.Children.Add(g);
+                Reveal(g, forward ? 18 : -18, 0, 60 + 50 * n++);
+            }
+            Reveal(Get<TextBlock>("HelpTitle"), forward ? 22 : -22, 0, 0);
+            Reveal(Get<TextBlock>("HelpLead"), forward ? 22 : -22, 0, 30);
+
+            var dots = Get<StackPanel>("HelpDots");
+            dots.Children.Clear();
+            for (int k = 0; k < HelpSlides.Length; k++)
+            {
+                int kk = k;
+                var d = new Border(); d.Height = 7; d.CornerRadius = new CornerRadius(4); d.Margin = new Thickness(0, 0, 6, 0); d.Cursor = Cursors.Hand;
+                d.Width = k == i ? 26 : 7;
+                d.Background = k == i ? AccentBrush : new SolidColorBrush(Color.FromRgb(0x3A, 0x40, 0x4C));
+                d.MouseLeftButtonUp += delegate { ShowHelpSlide(kk); };
+                dots.Children.Add(d);
+            }
+            Get<Button>("HelpBack").Visibility = i == 0 ? Visibility.Hidden : Visibility.Visible;
+            Get<Button>("HelpNext").Content = i + 1 < HelpSlides.Length ? "Next" : "Let's cook";
+
+            var art = Get<Canvas>("HelpArt");
+            art.Children.Clear();
+            if (h.Controller) DrawController(art);
+            else DrawGlyphArt(art, h.Glyph);
+        }
+
+        static Ellipse Blob(double size, Color c, double opacity)
+        {
+            var e = new Ellipse(); e.Width = e.Height = size; e.Opacity = opacity; e.IsHitTestVisible = false;
+            var g = new RadialGradientBrush(); g.GradientStops.Add(new GradientStop(c, 0)); g.GradientStops.Add(new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), 1));
+            e.Fill = g;
+            return e;
+        }
+
+        void DrawGlyphArt(Canvas art, string glyph)
+        {
+            var a = Blob(360, Color.FromRgb(0xFF, 0x8A, 0x00), 0.35); Canvas.SetLeft(a, -60); Canvas.SetTop(a, 20); art.Children.Add(a); Drift(a, 30, 20, 7);
+            var b = Blob(300, Color.FromRgb(0xFF, 0x3D, 0x6E), 0.28); Canvas.SetLeft(b, 150); Canvas.SetTop(b, 230); art.Children.Add(b); Drift(b, 25, 30, 9);
+            // Orbit rings
+            for (int k = 0; k < 2; k++)
+            {
+                var ring = new Ellipse(); ring.Width = ring.Height = 230 + k * 80; ring.Stroke = new SolidColorBrush(Color.FromArgb((byte)(k == 0 ? 0x40 : 0x22), 0xFF, 0xFF, 0xFF)); ring.StrokeThickness = 1;
+                ring.StrokeDashArray = new DoubleCollection(new double[] { 2, 6 });
+                Canvas.SetLeft(ring, 185 - ring.Width / 2); Canvas.SetTop(ring, 260 - ring.Height / 2);
+                art.Children.Add(ring);
+            }
+            var circle = new Border(); circle.Width = circle.Height = 150; circle.CornerRadius = new CornerRadius(75);
+            circle.Background = (Brush)FindResource("AccentGrad");
+            circle.Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Color.FromRgb(0xFF, 0x7A, 0x00), BlurRadius = 50, ShadowDepth = 0, Opacity = 0.55 };
+            var t = new TextBlock(); t.Text = glyph; t.Style = (Style)FindResource("Icon"); t.FontSize = 64; t.Foreground = Brushes.White;
+            t.HorizontalAlignment = HorizontalAlignment.Center; t.VerticalAlignment = VerticalAlignment.Center;
+            circle.Child = t;
+            Canvas.SetLeft(circle, 110); Canvas.SetTop(circle, 185);
+            art.Children.Add(circle);
+            Reveal(circle, 0, 16, 0);
+            // Small sparks on the rings
+            double[][] sparks = { new[] { 70.0, 200.0, 10 }, new[] { 290.0, 160.0, 8 }, new[] { 300.0, 350.0, 12 }, new[] { 90.0, 380.0, 7 } };
+            foreach (var sp in sparks)
+            {
+                var dot = new Ellipse(); dot.Width = dot.Height = sp[2]; dot.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xC5, 0x8A));
+                Canvas.SetLeft(dot, sp[0]); Canvas.SetTop(dot, sp[1]);
+                art.Children.Add(dot);
+                Drift(dot, 6, 8, 3 + sp[2] * 0.2);
+            }
+        }
+
+        // A VR controller seen from the side, with pointers to the buttons the card talks about
+        void DrawController(Canvas art)
+        {
+            var glow = Blob(380, Color.FromRgb(0xFF, 0x8A, 0x00), 0.25); Canvas.SetLeft(glow, -10); Canvas.SetTop(glow, 70); art.Children.Add(glow);
+            var body = new Canvas(); body.Width = 370; body.Height = 520;
+            var tilt = new RotateTransform(-14, 185, 270); body.RenderTransform = tilt;
+            var shell = new LinearGradientBrush(Color.FromRgb(0x3A, 0x40, 0x4D), Color.FromRgb(0x1C, 0x1F, 0x27), 90);
+            var edge = new SolidColorBrush(Color.FromRgb(0x55, 0x5C, 0x6B));
+            // Tracking ring
+            var ring = new Ellipse(); ring.Width = 210; ring.Height = 130; ring.Stroke = shell; ring.StrokeThickness = 18; Canvas.SetLeft(ring, 95); Canvas.SetTop(ring, 95); body.Children.Add(ring);
+            var ringEdge = new Ellipse(); ringEdge.Width = 228; ringEdge.Height = 148; ringEdge.Stroke = edge; ringEdge.StrokeThickness = 1; Canvas.SetLeft(ringEdge, 86); Canvas.SetTop(ringEdge, 86); body.Children.Add(ringEdge);
+            // Handle
+            var handle = new Rectangle(); handle.Width = 82; handle.Height = 210; handle.RadiusX = 40; handle.RadiusY = 40; handle.Fill = shell; handle.Stroke = edge; handle.StrokeThickness = 1;
+            Canvas.SetLeft(handle, 140); Canvas.SetTop(handle, 205); body.Children.Add(handle);
+            // Face plate
+            var face = new Ellipse(); face.Width = 150; face.Height = 92; face.Fill = new SolidColorBrush(Color.FromRgb(0x23, 0x28, 0x33)); face.Stroke = edge; face.StrokeThickness = 1;
+            Canvas.SetLeft(face, 106); Canvas.SetTop(face, 170); body.Children.Add(face);
+            // Thumbstick, A, B, menu
+            var stick = new Ellipse(); stick.Width = stick.Height = 40; stick.Fill = new SolidColorBrush(Color.FromRgb(0x10, 0x12, 0x17)); stick.Stroke = edge; Canvas.SetLeft(stick, 128); Canvas.SetTop(stick, 192); body.Children.Add(stick);
+            var stickTop = new Ellipse(); stickTop.Width = stickTop.Height = 26; stickTop.Fill = new SolidColorBrush(Color.FromRgb(0x2A, 0x2F, 0x3A)); Canvas.SetLeft(stickTop, 135); Canvas.SetTop(stickTop, 199); body.Children.Add(stickTop);
+            Action<string, double, double> button = delegate(string l, double x, double y)
+            {
+                var bt = new Border(); bt.Width = bt.Height = 26; bt.CornerRadius = new CornerRadius(13); bt.Background = new SolidColorBrush(Color.FromRgb(0x14, 0x17, 0x1D)); bt.BorderBrush = edge; bt.BorderThickness = new Thickness(1);
+                var tl = new TextBlock(); tl.Text = l; tl.FontSize = 11; tl.FontWeight = FontWeights.Bold; tl.Foreground = new SolidColorBrush(Color.FromRgb(0xD9, 0xDC, 0xE3)); tl.HorizontalAlignment = HorizontalAlignment.Center; tl.VerticalAlignment = VerticalAlignment.Center;
+                bt.Child = tl; Canvas.SetLeft(bt, x); Canvas.SetTop(bt, y); body.Children.Add(bt);
+            };
+            button("A", 192, 214);
+            button("B", 212, 184);
+            // Trigger (front) and grip (side): lit
+            var trig = new Rectangle(); trig.Width = 30; trig.Height = 62; trig.RadiusX = 15; trig.RadiusY = 15; trig.Fill = AccentBrush; Canvas.SetLeft(trig, 222); Canvas.SetTop(trig, 228); body.Children.Add(trig);
+            var grip = new Rectangle(); grip.Width = 24; grip.Height = 78; grip.RadiusX = 12; grip.RadiusY = 12; grip.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E)); Canvas.SetLeft(grip, 132); Canvas.SetTop(grip, 262); body.Children.Add(grip);
+            art.Children.Add(body);
+            Reveal(body, 0, 18, 0);
+            // Pointers: from a spot on the controller (in body coordinates) to a label
+            Action<double, double, double, double, string, Brush, int> pointer = delegate(double bx, double by, double lx, double ly, string text, Brush col, int delay)
+            {
+                Point p = tilt.Transform(new Point(bx, by));
+                var line = new Line(); line.X1 = p.X; line.Y1 = p.Y; line.X2 = lx; line.Y2 = ly; line.Stroke = col; line.StrokeThickness = 1.5; line.StrokeDashArray = new DoubleCollection(new double[] { 3, 3 });
+                art.Children.Add(line);
+                var spot = new Ellipse(); spot.Width = spot.Height = 10; spot.Fill = col; Canvas.SetLeft(spot, p.X - 5); Canvas.SetTop(spot, p.Y - 5); art.Children.Add(spot);
+                var pulse = new DoubleAnimation(1, 0.3, TimeSpan.FromMilliseconds(900)); pulse.AutoReverse = true; pulse.RepeatBehavior = RepeatBehavior.Forever;
+                spot.BeginAnimation(UIElement.OpacityProperty, pulse);
+                var lab = new Border(); lab.CornerRadius = new CornerRadius(8); lab.Padding = new Thickness(9, 4, 9, 4); lab.Background = new SolidColorBrush(Color.FromRgb(0x16, 0x19, 0x20)); lab.BorderBrush = col; lab.BorderThickness = new Thickness(1);
+                var lt = new TextBlock(); lt.Text = text; lt.FontSize = 11.5; lt.FontWeight = FontWeights.Bold; lt.Foreground = col;
+                lab.Child = lt;
+                lab.Measure(new Size(400, 100));
+                Canvas.SetLeft(lab, lx < p.X ? lx - lab.DesiredSize.Width : lx); Canvas.SetTop(lab, ly - lab.DesiredSize.Height / 2);
+                art.Children.Add(lab);
+                Reveal(lab, 0, 8, delay);
+                Reveal(line, 0, 0, delay);
+            };
+            var white = new SolidColorBrush(Color.FromRgb(0xD9, 0xDC, 0xE3));
+            pointer(236, 262, 300, 330, "TRIGGER", AccentBrush, 120);
+            pointer(144, 300, 70, 380, "GRIP", new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E)), 200);
+            pointer(214, 200, 300, 120, "A  B", white, 280);
+            pointer(148, 212, 70, 150, "STICK", white, 360);
         }
 
         static void OpenUrl(string url) { try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { } }
@@ -671,21 +948,25 @@ namespace OrderUpVR
             var chips = Get<StackPanel>("Chips");
             chips.Children.Clear();
             var glass = new SolidColorBrush(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
-            chips.Children.Add(Chip("Mod " + (ModInstalled ? s.InstalledVersion : "not installed"), Brushes.White, glass));
-            chips.Children.Add(Chip("Launcher " + Core.LauncherVersion, Brushes.White, glass));
+            chips.Children.Add(Chip(ModInstalled ? "Version " + s.InstalledVersion : "Not installed yet", Brushes.White, glass));
             if (manifest != null)
             {
-                if (UpdateAvailable) chips.Children.Add(Chip("Update " + manifest.version + " available", Brushes.Black, AccentBrush));
+                if (UpdateAvailable) chips.Children.Add(Chip("Update " + manifest.version + " ready", Brushes.Black, AccentBrush));
                 else chips.Children.Add(Chip("✓ Up to date", GoodBrush, new SolidColorBrush(Color.FromArgb(0x26, 0x3D, 0xDC, 0x97))));
             }
         }
 
+        // One small tile per thing the game needs
         void StatusRow(string label, string value, Brush dot, bool pulse)
         {
-            var g = new Grid(); g.Margin = new Thickness(0, 7, 0, 7);
+            var tile = new Border(); tile.CornerRadius = new CornerRadius(16); tile.Padding = new Thickness(16, 12, 14, 12);
+            tile.Margin = new Thickness(Get<UniformGrid>("StatusPanel").Children.Count == 0 ? 0 : 12, 0, 0, 0);
+            tile.Background = (Brush)FindResource("Surface"); tile.BorderBrush = (Brush)FindResource("Stroke"); tile.BorderThickness = new Thickness(1);
+            tile.ToolTip = value;
+            var g = new Grid();
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             g.ColumnDefinitions.Add(new ColumnDefinition());
-            var e = new Ellipse(); e.Width = 8; e.Height = 8; e.Fill = dot; e.VerticalAlignment = VerticalAlignment.Top; e.Margin = new Thickness(0, 6, 12, 0);
+            var e = new Ellipse(); e.Width = 9; e.Height = 9; e.Fill = dot; e.VerticalAlignment = VerticalAlignment.Top; e.Margin = new Thickness(0, 5, 11, 0);
             if (pulse)
             {
                 var a = new DoubleAnimation(1, 0.25, TimeSpan.FromMilliseconds(800)); a.AutoReverse = true; a.RepeatBehavior = RepeatBehavior.Forever;
@@ -693,15 +974,16 @@ namespace OrderUpVR
             }
             var sp = new StackPanel(); Grid.SetColumn(sp, 1);
             var l = new TextBlock(); l.Text = label; l.FontSize = 11.5; l.Foreground = DimBrush;
-            var v = new TextBlock(); v.Text = value; v.FontSize = 13.5; v.Foreground = TextBrush; v.TextWrapping = TextWrapping.Wrap;
+            var v = new TextBlock(); v.Text = value; v.FontSize = 13.5; v.FontWeight = FontWeights.SemiBold; v.Foreground = TextBrush; v.TextTrimming = TextTrimming.CharacterEllipsis; v.Margin = new Thickness(0, 2, 0, 0);
             sp.Children.Add(l); sp.Children.Add(v);
             g.Children.Add(e); g.Children.Add(sp);
-            Get<StackPanel>("StatusPanel").Children.Add(g);
+            tile.Child = g;
+            Get<UniformGrid>("StatusPanel").Children.Add(tile);
         }
 
         void RenderStatus()
         {
-            Get<StackPanel>("StatusPanel").Children.Clear();
+            Get<UniformGrid>("StatusPanel").Children.Clear();
             string runtime = Core.RuntimeName(Core.ActiveOpenXrRuntime());
             if (game != null)
             {
@@ -710,13 +992,13 @@ namespace OrderUpVR
             }
             else
             {
-                StatusRow("VR software", runtime ?? "None active. Start Quest Link, Air Link, Virtual Desktop or SteamVR.", runtime != null ? GoodBrush : WarnBrush, false);
+                StatusRow("VR app", runtime ?? "Start Quest Link, Air Link, Virtual Desktop or SteamVR", runtime != null ? GoodBrush : WarnBrush, false);
                 bool r = Core.IsRpcs3Dir(s.Rpcs3Dir), g = Core.IsGameDir(s.GameDir);
-                StatusRow("RPCS3 and firmware", r ? "Found" : "Folder not found. Open Settings to fix it.", r ? GoodBrush : BadBrush, false);
-                StatusRow("Game", g ? "Order Up!! (" + Core.TitleId + ")" : "Folder not found. Open Settings to fix it.", g ? GoodBrush : BadBrush, false);
+                StatusRow("RPCS3", r ? "Ready" : "Not found: open Settings", r ? GoodBrush : BadBrush, false);
+                StatusRow("Game", g ? "Order Up!! (" + Core.TitleId + ")" : "Not found: open Settings", g ? GoodBrush : BadBrush, false);
             }
-            string mod = !ModInstalled ? "Not installed yet" : UpdateAvailable ? s.InstalledVersion + ", update " + manifest.version + " ready" : s.InstalledVersion + (manifest != null ? ", up to date" : "");
-            StatusRow("Mod", mod, !ModInstalled ? AccentBrush : UpdateAvailable ? WarnBrush : GoodBrush, false);
+            string mod = !ModInstalled ? "Installing..." : UpdateAvailable ? "Update " + manifest.version + " ready" : manifest != null ? "Up to date" : "Installed";
+            StatusRow("Order Up VR", mod, !ModInstalled ? AccentBrush : UpdateAvailable ? WarnBrush : GoodBrush, false);
         }
 
         void RenderPlay()
@@ -732,55 +1014,87 @@ namespace OrderUpVR
             Get<Button>("UpdateBtn").IsEnabled = !busy;
         }
 
+        // The hero's "What's new" button shows the newest changes in plain words
         void RenderChangelog()
         {
-            var panel = Get<StackPanel>("ChangelogPanel");
-            panel.Children.Clear();
+            var btn = Get<TextBlock>("WhatsNewText");
+            if (btn == null) return;
+            btn.Text = manifest != null && manifest.changelog != null && manifest.changelog.Count > 0 ? "What's new in " + manifest.changelog[0].version : "What's new";
+        }
+
+        void ShowWhatsNew()
+        {
             if (manifest == null || manifest.changelog == null || manifest.changelog.Count == 0)
             {
-                var t = new TextBlock(); t.Style = (Style)FindResource("DimText");
-                t.Text = manifest == null ? "Checking for the latest release notes..." : "No release notes.";
-                panel.Children.Add(t);
+                ShowToast(manifest == null ? "Still checking for the latest notes..." : "No release notes yet.", false);
                 return;
             }
-            int n = 0;
-            foreach (ChangelogEntry e in manifest.changelog)
+            ChangelogEntry e = manifest.changelog[0];
+            ShowDialog("What's new in " + e.version, (e.date ?? "") + (ModInstalled && e.version == s.InstalledVersion ? "   ·   installed" : ""), null, false,
+                Btn("Nice", null), Btn("All releases", delegate { OpenUrl(Core.RepoUrl + "/releases"); }));
+            var more = Get<StackPanel>("DialogMore");
+            more.Children.Clear();
+            List<string> lines = e.simple != null && e.simple.Count > 0 ? e.simple : e.notes;
+            if (lines != null)
+                foreach (string l in lines)
+                {
+                    var row = new Grid(); row.Margin = new Thickness(0, 0, 0, 9);
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition());
+                    var dot = new TextBlock(); dot.Text = "✦"; dot.Foreground = AccentBrush; dot.FontSize = 12; dot.Margin = new Thickness(0, 1, 0, 0);
+                    var t = new TextBlock(); t.Text = l; t.TextWrapping = TextWrapping.Wrap; t.Foreground = TextBrush; t.FontSize = 13.5;
+                    Grid.SetColumn(t, 1);
+                    row.Children.Add(dot); row.Children.Add(t);
+                    more.Children.Add(row);
+                }
+            Get<ScrollViewer>("DialogMoreScroll").Visibility = Visibility.Visible;
+        }
+
+        // ------------------------------------------------------------------ the game's own art, from the player's copy
+        static string GameArtPath(Settings st)
+        {
+            if (st == null || string.IsNullOrEmpty(st.GameDir)) return null;
+            foreach (string n in new[] { "PIC1.PNG", "PIC0.PNG", "ICON0.PNG" })
             {
-                var block = new StackPanel(); block.Margin = new Thickness(0, 0, 0, 22);
-                var head = new StackPanel(); head.Orientation = Orientation.Horizontal; head.Margin = new Thickness(0, 0, 0, 8);
-                var pill = new Border(); pill.CornerRadius = new CornerRadius(8); pill.Padding = new Thickness(9, 3, 9, 3);
-                pill.Background = n == 0 ? AccentBrush : new SolidColorBrush(Color.FromRgb(0x27, 0x2C, 0x37));
-                var pt = new TextBlock(); pt.Text = "v" + e.version; pt.FontWeight = FontWeights.Bold; pt.FontSize = 12.5; pt.Foreground = n == 0 ? Brushes.Black : TextBrush;
-                pill.Child = pt;
-                head.Children.Add(pill);
-                var date = new TextBlock(); date.Text = (n == 0 ? "Latest  ·  " : "") + (e.date ?? ""); date.Foreground = DimBrush; date.FontSize = 12.5;
-                date.Margin = new Thickness(10, 0, 0, 0); date.VerticalAlignment = VerticalAlignment.Center;
-                head.Children.Add(date);
-                if (ModInstalled && e.version == s.InstalledVersion)
-                {
-                    var inst = Chip("Installed", GoodBrush, new SolidColorBrush(Color.FromArgb(0x22, 0x3D, 0xDC, 0x97)));
-                    inst.Margin = new Thickness(10, 0, 0, 0); inst.Padding = new Thickness(8, 2, 8, 2);
-                    head.Children.Add(inst);
-                }
-                block.Children.Add(head);
-                if (e.notes != null)
-                {
-                    foreach (string note in e.notes)
-                    {
-                        var row = new Grid(); row.Margin = new Thickness(2, 3, 0, 3);
-                        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
-                        row.ColumnDefinitions.Add(new ColumnDefinition());
-                        var dot = new Ellipse(); dot.Width = 5; dot.Height = 5; dot.Fill = n == 0 ? AccentBrush : DimBrush; dot.VerticalAlignment = VerticalAlignment.Top; dot.Margin = new Thickness(0, 8, 0, 0);
-                        var txt = new TextBlock(); txt.Style = (Style)FindResource("Body"); txt.Text = note; txt.Foreground = n == 0 ? TextBrush : DimBrush;
-                        Grid.SetColumn(txt, 1);
-                        row.Children.Add(dot); row.Children.Add(txt);
-                        block.Children.Add(row);
-                    }
-                }
-                panel.Children.Add(block);
-                Reveal(block, 0, 10, 60 * n);
-                n++;
+                string p = System.IO.Path.Combine(st.GameDir, "PS3_GAME", n);
+                if (File.Exists(p)) return p;
             }
+            return null;
+        }
+
+        void ApplyGameArt(bool animate)
+        {
+            var img = Get<Image>("HeroArt");
+            string path = s.ShowGameArt ? GameArtPath(s) : null;
+            bool on = false;
+            if (path != null)
+            {
+                try
+                {
+                    var bi = new System.Windows.Media.Imaging.BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;   // the file is not kept open
+                    bi.UriSource = new Uri(path);
+                    bi.EndInit();
+                    bi.Freeze();
+                    img.Source = bi;
+                    on = true;
+                }
+                catch { img.Source = null; }
+            }
+            int ms = animate ? 450 : 0;
+            Animate(img, UIElement.OpacityProperty, on ? 1 : 0, ms, 0);
+            Animate(Get<UIElement>("HeroShade"), UIElement.OpacityProperty, on ? 1 : 0, ms, 0);
+            Animate(Get<UIElement>("HeroGlows"), UIElement.OpacityProperty, on ? 0.25 : 1, ms, 0);
+            Get<TextBlock>("ArtText").Text = on ? "Hide game art" : "Game art";
+        }
+
+        void ToggleGameArt()
+        {
+            if (!s.ShowGameArt && GameArtPath(s) == null) { ShowToast("No artwork found in your game folder. Check the folder in Settings.", false); return; }
+            s.ShowGameArt = !s.ShowGameArt;
+            s.Save();
+            ApplyGameArt(true);
         }
 
         // ------------------------------------------------------------------ updates
@@ -1423,6 +1737,7 @@ namespace OrderUpVR
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length >= 4 && args[0] == "--render-ui") return LauncherWindow.DevShots(args[1], args[2], args[3]);
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; // TLS 1.2
             try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)12288; } catch { } // TLS 1.3 where available
 

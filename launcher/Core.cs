@@ -59,6 +59,7 @@ namespace OrderUpVR
         public string PreparedVersion { get; set; }  // mod version that already finished its first-start preparation
         public bool SeenHowTo { get; set; }          // the controls guide was shown once
         public int HowToSeen { get; set; }
+        public bool ShowGameArt { get; set; }      // the hero shows the game's own artwork from the player's game folder
         public Dictionary<string, string> Vr { get; set; }   // VR comfort and body choices (written to the mod as orderupvr_comfort.txt)           // revision of the controls guide last shown (shown again when controls change)
 
         public static string Folder { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OrderUpVR"); } }
@@ -74,8 +75,11 @@ namespace OrderUpVR
             catch { return null; }
         }
 
+        public static bool NoSave;   // development pictures: never touch the real settings
+
         public void Save()
         {
+            if (NoSave) return;
             Directory.CreateDirectory(Folder);
             File.WriteAllText(FilePath, new JavaScriptSerializer().Serialize(this));
         }

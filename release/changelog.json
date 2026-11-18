@@ -1,5 +1,34 @@
 [
   {
+    "version": "0.11.0",
+    "date": "2026-11-18",
+    "simple": [
+      "A cleaner launcher: a big game card, small status tiles, and What's new behind one button.",
+      "New Game art button: shows the game's own artwork, read from your copy of the game.",
+      "How to play is now a short set of cards with pictures and a controller diagram.",
+      "Settings are grouped and every choice is visible at a glance.",
+      "Your chef is picked by the game: male in the menus, then the chef of the career you load.",
+      "Hands fit your controllers: the handle sits in your palm and the hands are a real size.",
+      "TRIGGER curls the fingers, GRIP folds the thumb, both together make a fist.",
+      "The lobby mirror now shows your reflection, and the diner is shorter.",
+      "Cutscenes and camera fly-throughs play on the diner's big screen, so you are no longer thrown around.",
+      "The order tickets stay put instead of wobbling, close to the counter in front of you.",
+      "You can walk around the whole restaurant, not just one metre.",
+      "The world's size is measured from each restaurant, so things should no longer look too big.",
+      "The launcher now only updates itself when the launcher itself changes."
+    ],
+    "notes": [
+      "Launcher 1.11.0: new home page (hero card with the game's PIC1 artwork on request, status tiles, What's new dialog in plain words), How to play as 7 cards with a controller pointer diagram, grouped segmented settings, the chef choice removed, launcher version shown under Settings > About. The launcher has its own version now (launcher/VERSION) and only updates when its code changes.",
+      "Chef: the mod looks for each chef's body texture in the game's video memory every few seconds and uses the one the game loaded (male until a career's chef shows up).",
+      "Hands: the hand frame follows the OpenXR grip pose properly (the wrist-to-knuckles direction crosses the handle at about 60 degrees), the palm sits beside the handle, and the cartoon hands are scaled to about 24 cm. New thumb bones (both chefs have a two-bone thumb and two two-bone fingers): TRIGGER curls the fingers, GRIP folds the thumb.",
+      "Mirror: the wall behind the glass was reflected in front of it and covered the reflection; it is now left out of the reflection. Diner depth 9 m to 6 m.",
+      "Cutscenes: a camera cut or a camera move over 1.5 m or 45 degrees that you did not start (no button pressed in the last 3 s) switches to the big screen; after the camera has been still for about 2.5 s you are back inside the game with the kitchen anchored fresh. Settings > Cutscenes > Inside the game keeps the old behaviour.",
+      "HUD: its distance comes from the nearest things in the middle of the view (20th percentile, kept while at a station) instead of the median scene depth every frame, so it no longer breathes or wobbles.",
+      "Walls: the restaurant's extent is measured from where its objects are (4th to 96th percentile around you); the stick keeps you 35 cm inside it. Until measured, 1.5 m.",
+      "World scale: the camera's height above the floor (lowest objects) sets metres per game unit so the camera sits at 1.62 m (clamped 0.17 to 0.42 m per unit). A worldscale set by hand still wins. The log reports the measured value."
+    ]
+  },
+  {
     "version": "0.10.1",
     "date": "2026-11-18",
     "simple": [

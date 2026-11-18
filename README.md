@@ -35,13 +35,14 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | Comfort settings (snap/smooth turn, angles, speeds, vignette, seated/standing, HUD distance) | New in 0.8.0, in the launcher's Settings |
 | Kitchen fixed in your room; turn your head to change station | New in 0.9.0, being tested |
 | Menus as a menu board in a diner around you | New in 0.9.0, being tested |
-| The game's own male or female chef as your body, mirror in the lobby | New in 0.10.0, being tested |
+| The game's own male or female chef as your body (picked automatically from the game), working lobby mirror | 0.10.0, automatic chef and hands that fit the controllers in 0.11.0 |
+| Cutscenes on the diner's big screen, restaurant-wide walls, world scale measured per restaurant, steady HUD | New in 0.11.0, being tested |
 
 ## Controls (0.9.0)
 
 - In the kitchen and the restaurant you are inside the game in 3D: look around and lean in. Menus and loading screens use the big screen.
 - Inside the game, reach for what you want: the pointer is where your hand covers it. On the big screen, aim the laser. The hand you press GRIP or TRIGGER with becomes the pointing hand.
-- GRIP = grab and hold (the game's T button). TRIGGER = select (the Move button). A/B/X/Y = Cross/Circle/Square/Triangle (the shapes float over your hands). Left menu = START. Right stick click = SELECT.
+- GRIP = grab and hold (the game's T button) and folds your chef's thumb. TRIGGER = select (the Move button) and curls the fingers. A/B/X/Y = Cross/Circle/Square/Triangle (the shapes float over your hands). Left menu = START. Right stick click = SELECT.
 - Motion actions (flipping, etc.): hold GRIP and make the movement with the controller, as with a PlayStation Move. Backup: hold GRIP and flick that hand's thumbstick up.
 - Inside the game (when not holding GRIP): left stick walks where you look, right stick left/right turns in 30 degree steps, up/down moves you lower or higher.
 - Big screen (when not holding GRIP): right stick up/down moves it nearer or farther, left stick up/down resizes it.

@@ -106,14 +106,14 @@
     <!-- ===================================================== HOME -->
     <Grid x:Name="MainPage" Margin="24,4,24,24" Visibility="Collapsed">
       <Grid.RowDefinitions>
-        <RowDefinition Height="206"/>
-        <RowDefinition Height="18"/>
         <RowDefinition Height="*"/>
-        <RowDefinition Height="18"/>
+        <RowDefinition Height="16"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="16"/>
         <RowDefinition Height="Auto"/>
       </Grid.RowDefinitions>
 
-      <!-- Hero -->
+      <!-- Hero: the game card -->
       <Grid x:Name="Hero" Grid.Row="0">
         <Grid.Background>
           <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -122,7 +122,7 @@
             <GradientStop Color="#141720" Offset="1"/>
           </LinearGradientBrush>
         </Grid.Background>
-        <Canvas IsHitTestVisible="False">
+        <Canvas x:Name="HeroGlows" IsHitTestVisible="False">
           <Ellipse x:Name="HeroGlowA" Width="420" Height="420" Canvas.Left="-120" Canvas.Top="-200" Opacity="0.55">
             <Ellipse.Fill><RadialGradientBrush><GradientStop Color="#FF8A00" Offset="0"/><GradientStop Color="#00FF8A00" Offset="1"/></RadialGradientBrush></Ellipse.Fill>
             <Ellipse.RenderTransform><TranslateTransform/></Ellipse.RenderTransform>
@@ -136,45 +136,37 @@
             <Ellipse.RenderTransform><TranslateTransform/></Ellipse.RenderTransform>
           </Ellipse>
         </Canvas>
+        <!-- The game's own art (read from the player's game folder when they ask for it) -->
+        <Image x:Name="HeroArt" Stretch="UniformToFill" Opacity="0" IsHitTestVisible="False" RenderOptions.BitmapScalingMode="HighQuality"/>
+        <Rectangle x:Name="HeroShade" Opacity="0" IsHitTestVisible="False">
+          <Rectangle.Fill>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+              <GradientStop Color="#F00E1015" Offset="0"/>
+              <GradientStop Color="#B00E1015" Offset="0.42"/>
+              <GradientStop Color="#100E1015" Offset="0.85"/>
+            </LinearGradientBrush>
+          </Rectangle.Fill>
+        </Rectangle>
         <Border BorderBrush="#22FFFFFF" BorderThickness="1" CornerRadius="20"/>
-        <StackPanel VerticalAlignment="Center" Margin="36,0,0,0">
+        <StackPanel VerticalAlignment="Center" Margin="40,0,0,0" HorizontalAlignment="Left" MaxWidth="560">
           <TextBlock Style="{StaticResource Overline}" Text="VR MOD  ·  PLAYSTATION 3  ·  RPCS3" Foreground="#FFC58A"/>
-          <TextBlock Style="{StaticResource H1}" Text="Order Up!! VR" Margin="0,2,0,0"/>
-          <TextBlock Style="{StaticResource Body}" Foreground="#D9DCE3" FontSize="14.5" Margin="0,6,0,0" MaxWidth="520" HorizontalAlignment="Left"
-                     Text="Run the kitchen in virtual reality. Point, grab and flip with your VR controllers."/>
-          <StackPanel x:Name="Chips" Orientation="Horizontal" Margin="0,16,0,0"/>
+          <TextBlock Style="{StaticResource H1}" Text="Order Up!! VR" Margin="0,2,0,0" FontSize="46"/>
+          <TextBlock Style="{StaticResource Body}" Foreground="#D9DCE3" FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap"
+                     Text="Run the kitchen in virtual reality. Grab, chop and flip with your own hands."/>
+          <StackPanel x:Name="Chips" Orientation="Horizontal" Margin="0,18,0,0"/>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,16,16">
+          <Button x:Name="WhatsNewBtn" Style="{StaticResource Ghost}" Padding="14,8" FontSize="12.5" Margin="0,0,8,0" Background="#D0141720">
+            <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE734;" FontSize="13" Margin="0,1,8,0"/><TextBlock x:Name="WhatsNewText" Text="What's new"/></StackPanel>
+          </Button>
+          <Button x:Name="ArtBtn" Style="{StaticResource Ghost}" Padding="14,8" FontSize="12.5" Background="#D0141720" ToolTip="Show the game's own artwork, read from your copy of the game">
+            <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Icon}" Text="&#xE91B;" FontSize="13" Margin="0,1,8,0"/><TextBlock x:Name="ArtText" Text="Game art"/></StackPanel>
+          </Button>
         </StackPanel>
       </Grid>
 
-      <!-- Middle: changelog + status -->
-      <Grid Grid.Row="2">
-        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
-
-        <Border Style="{StaticResource Card}" Padding="24,20,10,20">
-          <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <Grid Margin="0,0,14,12">
-              <TextBlock Style="{StaticResource H2}" Text="What's new"/>
-              <Button x:Name="ReleasesBtn" Style="{StaticResource Ghost}" HorizontalAlignment="Right" Padding="10,5" FontSize="12">
-                <StackPanel Orientation="Horizontal"><TextBlock Text="All releases" /><TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" FontSize="11" Margin="7,1,0,0"/></StackPanel>
-              </Button>
-            </Grid>
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
-              <StackPanel x:Name="ChangelogPanel"/>
-            </ScrollViewer>
-          </Grid>
-        </Border>
-
-        <Border Grid.Column="2" Style="{StaticResource Card}" Padding="22,20">
-          <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <TextBlock Style="{StaticResource H2}" Text="Status" Margin="0,0,0,6"/>
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-              <StackPanel x:Name="StatusPanel"/>
-            </ScrollViewer>
-          </Grid>
-        </Border>
-      </Grid>
+      <!-- Status strip -->
+      <UniformGrid x:Name="StatusPanel" Grid.Row="2" Rows="1"/>
 
       <!-- Bottom bar -->
       <Border Grid.Row="4" Style="{StaticResource Card}" Padding="24,16,16,16">
@@ -203,7 +195,7 @@
             <Button x:Name="HelpBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" Margin="0,0,10,0" ToolTip="How to play">
               <TextBlock Style="{StaticResource Icon}" Text="&#xE897;" FontSize="16"/>
             </Button>
-            <Button x:Name="SettingsBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" ToolTip="Settings and folders">
+            <Button x:Name="SettingsBtn" Style="{StaticResource Ghost}" Width="48" Height="48" Padding="0" ToolTip="Settings">
               <TextBlock Style="{StaticResource Icon}" Text="&#xE713;" FontSize="16"/>
             </Button>
           </StackPanel>
@@ -244,8 +236,8 @@
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">
             <StackPanel>
-              <TextBlock Style="{StaticResource H2}" Text="VR comfort and body"/>
-              <TextBlock Style="{StaticResource DimText}" Text="Click a value to change it. Changes reach the headset within a few seconds, even while playing." Margin="0,4,0,10" TextWrapping="Wrap"/>
+              <TextBlock Style="{StaticResource H2}" Text="In VR"/>
+              <TextBlock Style="{StaticResource DimText}" Text="Pick what feels best. Changes reach the headset within a few seconds, even while you play." Margin="0,4,0,6" TextWrapping="Wrap"/>
               <StackPanel x:Name="VrRows"/>
             </StackPanel>
           </Border>
@@ -298,6 +290,42 @@
         <CheckBox x:Name="DialogCheck" Style="{StaticResource Toggle}" Margin="0,18,0,0" Visibility="Collapsed"/>
         <StackPanel x:Name="DialogButtons" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0"/>
       </StackPanel>
+    </Border>
+  </Grid>
+  <!-- How to play: one idea per card, with pictures and pointers -->
+  <Grid x:Name="HelpLayer" Grid.RowSpan="2" Visibility="Collapsed" Background="#C8080A0E">
+    <Border x:Name="HelpCard" Width="860" Height="520" VerticalAlignment="Center" HorizontalAlignment="Center" CornerRadius="22"
+            Background="{StaticResource Surface}" BorderBrush="#2E333E" BorderThickness="1" RenderTransformOrigin="0.5,0.5" ClipToBounds="True">
+      <Border.RenderTransform><ScaleTransform/></Border.RenderTransform>
+      <Border.Effect><DropShadowEffect BlurRadius="44" ShadowDepth="8" Opacity="0.6"/></Border.Effect>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="370"/><ColumnDefinition/></Grid.ColumnDefinitions>
+        <Border CornerRadius="21,0,0,21" ClipToBounds="True">
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+              <GradientStop Color="#2C1607" Offset="0"/>
+              <GradientStop Color="#1F1020" Offset="0.6"/>
+              <GradientStop Color="#151821" Offset="1"/>
+            </LinearGradientBrush>
+          </Border.Background>
+          <Canvas x:Name="HelpArt" Width="370" Height="520" ClipToBounds="True"/>
+        </Border>
+        <Grid Grid.Column="1" Margin="36,30,28,26">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <TextBlock x:Name="HelpStep" Style="{StaticResource Overline}" Foreground="#FFC58A"/>
+          <Button x:Name="HelpClose" Style="{StaticResource Caption}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-12,-10,0" ToolTip="Close"><TextBlock Style="{StaticResource Icon}" Text="&#xE8BB;" FontSize="11"/></Button>
+          <TextBlock x:Name="HelpTitle" Grid.Row="1" Style="{StaticResource H1}" FontSize="30" Margin="0,6,0,0" TextWrapping="Wrap"/>
+          <TextBlock x:Name="HelpLead" Grid.Row="2" Style="{StaticResource DimText}" FontSize="14.5" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="21"/>
+          <StackPanel x:Name="HelpRows" Grid.Row="3" Margin="0,20,0,0"/>
+          <Grid Grid.Row="4">
+            <StackPanel x:Name="HelpDots" Orientation="Horizontal" VerticalAlignment="Center"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button x:Name="HelpBack" Style="{StaticResource Ghost}" Content="Back" Padding="18,10" Margin="0,0,10,0"/>
+              <Button x:Name="HelpNext" Style="{StaticResource Primary}" Width="140" Height="44" FontSize="14" Content="Next"/>
+            </StackPanel>
+          </Grid>
+        </Grid>
+      </Grid>
     </Border>
   </Grid>
 </Grid>
