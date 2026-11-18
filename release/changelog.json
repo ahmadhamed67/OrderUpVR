@@ -1,5 +1,43 @@
 [
   {
+    "version": "0.13.1",
+    "channel": "beta",
+    "date": "2026-11-18",
+    "simple": [
+      "Pick Stable or Experimental right on the launcher's home screen, above PLAY.",
+      "Fixed: your VR settings from the launcher now really reach the game (they were saved where the game didn't look).",
+      "Your chef has a face again: eyes that blink, eyebrows, nose and mouth, for the male and the female chef.",
+      "Your chef's feet step when you walk.",
+      "The doneness meters over the food stay in the kitchen instead of following your head."
+    ],
+    "notes": [
+      "Launcher 1.14.0: Stable/Experimental switch on the home card (and in Settings), Experimental warning; the launcher writes the installed channel before each start.",
+      "Fix: RPCS3's config folder on Windows is the emulator folder itself, so the mod never read orderupvr_comfort.txt or orderupvr_channel.txt from emu/config; it now reads emu/config first. A missing channel file now means Stable.",
+      "Chef face: the small face parts (eyes, mouth, brows/hair, nose) are decoded and drawn with their own DXT5 pictures from Chef.wad's material list, with alpha cut-out and blinking.",
+      "Walking: the chef's legs swing about the hips with the walking speed (stick or real steps, inside the game and in the diner).",
+      "3D draws with their own lens (the doneness meters) are now placed: the same lens as the scene camera in 3D with their own depth range, otherwise on the HUD panel."
+    ]
+  },
+  {
+    "version": "0.12.2",
+    "channel": "stable",
+    "date": "2026-11-18",
+    "simple": [
+      "Pick Stable or Experimental right on the launcher's home screen, above PLAY.",
+      "Fixed: your VR settings from the launcher now really reach the game (they were saved where the game didn't look).",
+      "Your chef has a face again: eyes that blink, eyebrows, nose and mouth, for the male and the female chef.",
+      "Your chef's feet step when you walk.",
+      "True VR is locked in Stable as intended (shown as coming soon); pick Experimental to try it."
+    ],
+    "notes": [
+      "Launcher 1.14.0: Stable/Experimental switch on the home card (and in Settings), Experimental warning; the launcher writes the installed channel before each start.",
+      "Fix: RPCS3's config folder on Windows is the emulator folder itself, so the mod never read orderupvr_comfort.txt or orderupvr_channel.txt from emu/config; it now reads emu/config first. A missing channel file now means Stable.",
+      "Chef face: the small face parts (eyes, mouth, brows/hair, nose) are decoded and drawn with their own DXT5 pictures from Chef.wad's material list, with alpha cut-out and blinking.",
+      "Walking: the chef's legs swing about the hips with the walking speed (stick or real steps, inside the game and in the diner).",
+      "3D draws with their own lens (the doneness meters) are now placed: the same lens as the scene camera in 3D with their own depth range, otherwise on the HUD panel."
+    ]
+  },
+  {
     "version": "0.13.0",
     "channel": "beta",
     "date": "2026-11-18",

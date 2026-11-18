@@ -556,6 +556,7 @@ namespace OrderUpVR
             RenderChangelog();
             RefreshAll();
             ApplyGameArt(false);
+            RenderHeroChannel();
             WriteVrFile();
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
         }
@@ -952,10 +953,10 @@ namespace OrderUpVR
             chips.Children.Clear();
             var glass = new SolidColorBrush(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
             chips.Children.Add(Chip(ModInstalled ? "Version " + s.InstalledVersion : "Not installed yet", Brushes.White, glass));
-            if (Core.ChannelOf(s) == "beta") chips.Children.Add(Chip("BETA", Brushes.White, new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E))));
+            if (Core.ChannelOf(s) == "beta") chips.Children.Add(Chip("EXPERIMENTAL", Brushes.White, new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E))));
             if (manifest != null)
             {
-                if (ChannelSwitch) chips.Children.Add(Chip((manifest.channel == "beta" ? "Beta " : "Stable ") + manifest.version + " ready", Brushes.Black, AccentBrush));
+                if (ChannelSwitch) chips.Children.Add(Chip((manifest.channel == "beta" ? "Experimental " : "Stable ") + manifest.version + " ready", Brushes.Black, AccentBrush));
                 else if (UpdateAvailable) chips.Children.Add(Chip("Update " + manifest.version + " ready", Brushes.Black, AccentBrush));
                 else chips.Children.Add(Chip("✓ Up to date", GoodBrush, new SolidColorBrush(Color.FromArgb(0x26, 0x3D, 0xDC, 0x97))));
             }
@@ -1152,8 +1153,8 @@ namespace OrderUpVR
         void ShowUpdatePrompt(Manifest m, bool launcherNewer)
         {
             bool sw = ChannelSwitch;
-            ShowDialog(sw ? (m.channel == "beta" ? "Switch to Beta" : "Switch to Stable") : "Update available",
-                sw ? (m.channel == "beta" ? "Beta " + m.version + " has the newest features and changes often. Things may break. Installing takes about a minute."
+            ShowDialog(sw ? (m.channel == "beta" ? "Switch to Experimental" : "Switch to Stable") : "Update available",
+                sw ? (m.channel == "beta" ? "Experimental " + m.version + " has the newest VR features and is updated constantly. Things may break. Installing takes about a minute."
                                           : "Stable " + m.version + " is the dependable version. Installing takes about a minute.")
                    : "Order Up VR " + m.version + " is ready (you have " + (string.IsNullOrEmpty(s.InstalledVersion) ? "an older version" : s.InstalledVersion) + "). Updating takes about a minute.",
                 null, false,
@@ -1373,7 +1374,15 @@ namespace OrderUpVR
             var psi = new ProcessStartInfo(System.IO.Path.Combine(emu, "rpcs3.exe"), "--no-gui \"" + System.IO.Path.Combine(s.GameDir, @"PS3_GAME\USRDIR\EBOOT.BIN") + "\"");
             psi.WorkingDirectory = emu; psi.UseShellExecute = false;
             psi.EnvironmentVariables["ORDERUP_VR_MODVERSION"] = s.InstalledVersion ?? "";
+            psi.EnvironmentVariables["ORDERUP_VR_CHANNEL"] = s.InstalledChannel ?? "stable";
             WriteVrFile();
+            try
+            {
+                // The installed build's channel, for the mod (Stable keeps true VR locked)
+                string ch = s.InstalledChannel ?? "stable";
+                File.WriteAllText(System.IO.Path.Combine(emu, @"config\orderupvr_channel.txt"), "channel=" + ch + "\ntruevr=" + (ch == "beta" ? "1" : "0"));
+            }
+            catch { }
             try
             {
                 try { File.Delete(System.IO.Path.Combine(emu, @"log\orderup_vr.log")); } catch { }
@@ -1616,7 +1625,57 @@ namespace OrderUpVR
         }
 
         // ------------------------------------------------------------------ settings page
-        // Release channel: Stable (dependable) or Beta (newest, changes often), with a clear warning on Beta
+        // Release channel: Stable (dependable) or Experimental (internally "beta": newest, updated constantly)
+        static string ChannelName(string ch) { return ch == "beta" ? "Experimental" : "Stable"; }
+
+        Border MakeChannelSwitch()
+        {
+            string cur = Core.ChannelOf(s);
+            var seg = new Border(); seg.CornerRadius = new CornerRadius(12); seg.Padding = new Thickness(3); seg.VerticalAlignment = VerticalAlignment.Center;
+            seg.Background = new SolidColorBrush(Color.FromArgb(0xD0, 0x14, 0x17, 0x20)); seg.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x33, 0x3E)); seg.BorderThickness = new Thickness(1);
+            var pills = new StackPanel(); pills.Orientation = Orientation.Horizontal; seg.Child = pills;
+            foreach (string val in new[] { "stable", "beta" })
+            {
+                bool on = val == cur;
+                var pill = new Border(); pill.CornerRadius = new CornerRadius(9); pill.Padding = new Thickness(16, 7, 16, 7); pill.Cursor = Cursors.Hand;
+                pill.Background = on ? (val == "beta" ? new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E)) : AccentBrush) : Brushes.Transparent;
+                pill.ToolTip = val == "beta" ? "Experimental: the newest VR features. Updated constantly; things can break." : "Stable: the dependable version.";
+                var pt = new TextBlock(); pt.Text = ChannelName(val); pt.FontSize = 12.5; pt.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; pt.Foreground = on ? (val == "beta" ? Brushes.White : Brushes.Black) : TextBrush;
+                pill.Child = pt;
+                string v = val;
+                pill.MouseLeftButtonUp += delegate { SwitchChannel(v); };
+                pills.Children.Add(pill);
+            }
+            return seg;
+        }
+
+        void SwitchChannel(string val)
+        {
+            if (val == Core.ChannelOf(s) || busy || game != null) { if (game != null) ShowToast("Close the game first to switch versions.", false); return; }
+            s.Channel = val; s.Save();
+            BuildChannelRows();
+            RenderHeroChannel();
+            manifest = null;
+            updatePromptShown = false;
+            RefreshAll();
+            CheckUpdates(true);
+        }
+
+        void RenderHeroChannel()
+        {
+            var host = Get<StackPanel>("HeroChannel");
+            if (host == null) return;
+            host.Children.Clear();
+            var cap = new TextBlock(); cap.Text = "VERSION"; cap.FontSize = 10.5; cap.FontWeight = FontWeights.Bold; cap.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC5, 0x8A)); cap.Margin = new Thickness(4, 0, 0, 6); cap.HorizontalAlignment = HorizontalAlignment.Right;
+            host.Children.Add(cap);
+            host.Children.Add(MakeChannelSwitch());
+            if (Core.ChannelOf(s) == "beta")
+            {
+                var w = new TextBlock(); w.Text = "⚠ Updated constantly, may break"; w.FontSize = 11.5; w.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8F, 0xAB)); w.Margin = new Thickness(0, 6, 4, 0); w.HorizontalAlignment = HorizontalAlignment.Right;
+                host.Children.Add(w);
+            }
+        }
+
         void BuildChannelRows()
         {
             var rows = Get<StackPanel>("ChannelRows");
@@ -1627,31 +1686,9 @@ namespace OrderUpVR
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var texts = new StackPanel(); texts.VerticalAlignment = VerticalAlignment.Center;
             var label = new TextBlock(); label.Text = "Version to play"; label.Foreground = Brushes.White; label.FontSize = 14; label.FontWeight = FontWeights.SemiBold;
-            var hint = new TextBlock(); hint.Text = "Stable: the dependable version. Beta: the newest features, updated often."; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 16, 0);
+            var hint = new TextBlock(); hint.Text = "Stable: the dependable version (flat screen for now). Experimental: the newest VR features, updated constantly."; hint.Foreground = DimBrush; hint.FontSize = 12; hint.TextWrapping = TextWrapping.Wrap; hint.Margin = new Thickness(0, 2, 16, 0);
             texts.Children.Add(label); texts.Children.Add(hint);
-            var seg = new Border(); seg.CornerRadius = new CornerRadius(12); seg.Padding = new Thickness(3); seg.VerticalAlignment = VerticalAlignment.Center;
-            seg.Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x22, 0x2B)); seg.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x33, 0x3E)); seg.BorderThickness = new Thickness(1);
-            Grid.SetColumn(seg, 1);
-            var pills = new StackPanel(); pills.Orientation = Orientation.Horizontal; seg.Child = pills;
-            foreach (var opt in new[] { new[] { "stable", "Stable" }, new[] { "beta", "Beta" } })
-            {
-                string val = opt[0];
-                bool on = val == cur;
-                var pill = new Border(); pill.CornerRadius = new CornerRadius(9); pill.Padding = new Thickness(16, 7, 16, 7); pill.Cursor = Cursors.Hand;
-                pill.Background = on ? (val == "beta" ? new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0x6E)) : AccentBrush) : Brushes.Transparent;
-                var pt = new TextBlock(); pt.Text = opt[1]; pt.FontSize = 12.5; pt.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; pt.Foreground = on ? (val == "beta" ? Brushes.White : Brushes.Black) : TextBrush;
-                pill.Child = pt;
-                pill.MouseLeftButtonUp += delegate
-                {
-                    if (val == Core.ChannelOf(s)) return;
-                    s.Channel = val; s.Save();
-                    BuildChannelRows();
-                    manifest = null;
-                    updatePromptShown = false;
-                    CheckUpdates(true);
-                };
-                pills.Children.Add(pill);
-            }
+            var seg = MakeChannelSwitch(); Grid.SetColumn(seg, 1);
             g.Children.Add(texts); g.Children.Add(seg);
             rows.Children.Add(g);
             if (cur == "beta")
@@ -1659,7 +1696,7 @@ namespace OrderUpVR
                 var warn = new Border(); warn.Margin = new Thickness(0, 12, 0, 0); warn.CornerRadius = new CornerRadius(12); warn.Padding = new Thickness(14, 10, 14, 10);
                 warn.Background = new SolidColorBrush(Color.FromArgb(0x1C, 0xFF, 0x3D, 0x6E)); warn.BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0x3D, 0x6E)); warn.BorderThickness = new Thickness(1);
                 var wt = new TextBlock(); wt.TextWrapping = TextWrapping.Wrap; wt.Foreground = TextBrush; wt.FontSize = 12.5;
-                wt.Text = "⚠  Beta is for testing. It's updated constantly and things can break. To just play, use Stable.";
+                wt.Text = "⚠  Experimental is for testing. It's updated constantly and things can break. To just play, use Stable.";
                 warn.Child = wt;
                 rows.Children.Add(warn);
             }

@@ -31,6 +31,7 @@ switch ($Cmd) {
         $env:ORDERUP_VR_SIM = $dir
         $env:ORDERUP_VR_FAKE_FILE = $ptr
         $env:ORDERUP_VR_MODVERSION = 'sim'
+        $env:ORDERUP_VR_CHANNEL = 'beta'
         foreach ($kv in $A.Split(';') | Where-Object { $_ }) { $k, $v = $kv.Split('='); Set-Item "env:$k" $v }
         Start-Process (Join-Path $inst 'rpcs3.exe') -ArgumentList '--no-gui', '"C:\Emulator\Games\Order Up!! (Europe) (En,Fr,De,Es,It)\PS3_GAME\USRDIR\EBOOT.BIN"' -WorkingDirectory $inst -WindowStyle Minimized
         'started'
