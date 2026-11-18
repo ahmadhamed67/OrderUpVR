@@ -573,6 +573,7 @@ namespace OrderUpVR
             new[] { "You and the view", "cutscenes", "Cutscenes", "Big screen: cutscenes and camera fly-throughs play on the diner screen", "screen", "screen", "Big screen", "3d", "Inside the game" },
             new[] { "In the kitchen", "kitchen", "Kitchen", "Room: the kitchen stays still around you, every station where it really is", "room", "room", "Room (true VR)", "follow", "Follows the camera" },
             new[] { "In the kitchen", "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there", "on", "on", "On", "off", "Off" },
+            new[] { "In the kitchen", "wideview", "Wide view", "The game draws the whole restaurant around you, not just what its camera faces", "on", "on", "On", "off", "Off" },
             new[] { "In the kitchen", "pointing", "Pointing", "Hands: reach for things. Laser: point from a distance", "hand", "hand", "Hands", "laser", "Laser" },
         };
 

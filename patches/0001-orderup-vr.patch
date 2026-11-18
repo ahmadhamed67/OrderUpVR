@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..1551ff5a6
+index 000000000..777a7865b
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,5473 @@
+@@ -0,0 +1,5819 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -531,6 +531,9 @@ index 000000000..1551ff5a6
 +#include <windows.h>
 +#include <d3d11.h>
 +#include <dxgi1_2.h>
++#include <d2d1.h>
++#include <dwrite.h>
++#include <wincodec.h>
 +
 +#define XR_USE_PLATFORM_WIN32
 +#define XR_USE_GRAPHICS_API_D3D11
@@ -554,11 +557,15 @@ index 000000000..1551ff5a6
 +#include <thread>
 +
 +#pragma comment(lib, "d3d11.lib")
++#pragma comment(lib, "d2d1.lib")
++#pragma comment(lib, "dwrite.lib")
++#pragma comment(lib, "windowscodecs.lib")
 +#pragma comment(lib, "dxgi.lib")
 +#pragma comment(lib, "openxr_loader.lib")
 +
 +namespace ouvr
 +{
++	static bool read_fake_pointer(pointer_state& out);
 +	namespace
 +	{
 +		constexpr std::string_view target_title = "BLES01470";
@@ -655,6 +662,7 @@ index 000000000..1551ff5a6
 +		}
 +
 +#include "OrderUpVR_chef.inl"
++#include "OrderUpVR_ui.inl"
 +
 +		struct mat4 { f32 m[16]{}; };
 +
@@ -723,6 +731,7 @@ index 000000000..1551ff5a6
 +			bool room = true;    // kitchen stays still in the room while the game camera moves
 +			u64 input_tick = 0;  // last time you pressed something (camera moves right after that are yours, not a cutscene's)
 +			bool cinema = true;  // cutscenes and camera fly-throughs play on the big screen
++			bool wide = true;    // widen the game's field of view inside the game (the game draws what is around you)
 +			bool fixed_unit = false;   // the player set a world scale by hand: no automatic scale
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
@@ -741,6 +750,8 @@ index 000000000..1551ff5a6
 +			int still = 0;            // frames the game camera has not moved
 +			u64 moves = 0;            // frames it moved (changes when a station change starts)
 +			bool cinema = false;      // a cutscene is playing on the big screen
++			f32 hud_k = 1.f;          // HUD plane: natural size = measured sx, sy times this
++			int n2 = 0;               // HUD draws last frame (the pause menu has many)
 +			f32 auto_unit = 0.f;      // metres per game unit from the camera's height above the floor (0 = not known)
 +			bool bounds = false;      // where the restaurant's things are, around the anchor (levelled, game units)
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
@@ -780,7 +791,7 @@ index 000000000..1551ff5a6
 +			u64 scene_key = ~0ull, composite_key = ~0ull, composite_this = ~0ull, display_key = ~0ull;
 +			u64 screens[6]{~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull}; // recent display buffers and scene-copy targets (games alternate buffers)
 +			u32 screens_next = 0;
-+			bool is_screen(u64 k) const { for (u64 x : screens) if (x == k) return true; return false; }
++			bool is_screen(u64 k) const { if (k == ~0ull) return false; for (u64 x : screens) if (x == k) return true; return false; }
 +			void add_screen(u64 k) { if (k == ~0ull || is_screen(k)) return; screens[screens_next++ % 6] = k; }
 +			u32 scene_w = 0, scene_h = 0;
 +			std::vector<u64> tainted;   // targets holding scene pixels this frame
@@ -837,6 +848,20 @@ index 000000000..1551ff5a6
 +			f32 auto_unit = 0.f;
 +			bool bounds = false;
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
++			// Developer: log every draw of one frame (simulator: create <sim folder>/drawlog)
++			// The scene's own target is the one most 3D draws go to (some restaurants first draw a small shadow mask)
++			std::vector<std::pair<u64, int>> n3_by_key;
++			// Wide view: the game only draws what its camera sees (about 26-30 degrees tall). Inside the game the mod
++			// widens every camera's field of view so the restaurant around you is drawn too; the HUD keeps its size.
++			struct fov_rec { u32 addr; f32 orig; f32 written; };
++			std::vector<fov_rec> fovs;
++			u64 fov_scan_tick = 0;
++			bool wide_on = false, wide_pref = true;
++			f32 hud_k = 1.f;     // natural / widened (tan of half the field of view): the HUD and pointer use the natural size
++			u64 dominant_key = ~0ull;
++			bool drawlog = false;
++			int drawlog_n = 0;
++			std::FILE* drawlog_f = nullptr;
 +		};
 +		rsx_vr_state g_rv;
 +		frame_tag rv_end_frame(u64 display_key);
@@ -945,6 +970,7 @@ index 000000000..1551ff5a6
 +			bool panel_is_bgra = false;
 +			bool panel_has_image = false;
 +			std::string panel_text;
++			std::wstring panel_title;
 +
 +			int active_hand = 1; // 0 = left, 1 = right
 +			u64 frames = 0;
@@ -1014,7 +1040,7 @@ index 000000000..1551ff5a6
 +				bool body = true, female = false, seated = false;
 +				bool smooth_turn = false, vignette = true;
 +				f32 snap_deg = 45.f, turn_speed = 120.f, move_speed = 1.4f, hud_dist = 1.5f;
-+				bool room = true, look_switch = true, cinema = true;
++				bool room = true, look_switch = true, cinema = true, wide = true;
 +			} comfort;
 +			u64 input_tick = 0;       // last button or trigger press (camera moves right after it are yours)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
@@ -1056,8 +1082,8 @@ index 000000000..1551ff5a6
 +		vec3 to_player(const xr_state& xr, vec3 local) { return rotate(qconj(yaw_q(xr.player_yaw)), local - xr.player_pos); }
 +		vec3 from_player(const xr_state& xr, vec3 rel) { return xr.player_pos + rotate(yaw_q(xr.player_yaw), rel); }
 +
-+		constexpr u32 panel_w = 1024, panel_h = 512;
-+		constexpr u32 help_w = 1024, help_h = 760;
++		constexpr u32 panel_w = 1200, panel_h = 660;
++		constexpr u32 help_w = 1200, help_h = 660;
 +		constexpr u32 sign_w = 1280, sign_h = 300;
 +		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
@@ -1398,15 +1424,16 @@ index 000000000..1551ff5a6
 +		// True when this mod version has already finished preparing once on this PC.
 +		bool already_prepared() { return persist_get("prepared") == mod_version(); }
 +
-+		const char* loading_tip(u64 now)
++		const wchar_t* loading_tip(u64 now)
 +		{
-+			static const char* tips[] =
++			static const wchar_t* tips[] =
 +			{
-+				"Tip: GRIP grabs and holds, TRIGGER selects.",
-+				"Tip: to flip, hold GRIP and flick the controller up and over, or flick the thumbstick up.",
-+				"Tip: click the left thumbstick to bring the screen back in front of you.",
-+				"Tip: hold Left MENU for 2 seconds to see all controls.",
-+				"Tip: the hand you press GRIP or TRIGGER with becomes the pointing hand.",
++				L"GRIP grabs and holds. TRIGGER chooses.",
++				L"To flip, hold GRIP and flick your wrist up. Or flick the thumbstick up.",
++				L"Click the left thumbstick to bring everything back in front of you.",
++				L"Hold the left MENU button for 2 seconds to see all controls.",
++				L"In the kitchen, just turn your head toward the next station.",
++				L"There's a mirror on the diner's left wall. Say hi to your chef.",
 +			};
 +			return tips[(now / 8000) % std::size(tips)];
 +		}
@@ -1427,11 +1454,13 @@ index 000000000..1551ff5a6
 +			return true;
 +		}
 +
-+		// What the status panel should say right now. Empty = the game picture is live, no panel.
-+		// A first line "@progress=N" makes the panel draw a progress bar at N percent.
-+		std::string panel_message()
++		// What the loading card shows right now. Returns false when the game picture is live (no card).
++		bool panel_card(ui::card& c)
 +		{
 +			const u64 now = GetTickCount64();
++			c = {};
++			c.style = ui::card::PANEL;
++			c.tip = loading_tip(now);
 +
 +			static u64 progress_since = 0;
 +			static u32 logged_percent = 1000;
@@ -1444,25 +1473,23 @@ index 000000000..1551ff5a6
 +
 +				// While the game picture is already live, RPCS3 draws its own progress on it; do not cover it.
 +				const u64 live_frame = g_last_frame_tick.load();
-+				if (live_frame && now - live_frame < 3000) return {};
++				if (live_frame && now - live_frame < 3000) return false;
 +
-+				char eta[96] = "";
++				const bool first = !already_prepared();
++				if (percent >= 100) persist_set("prepared", mod_version());
++				std::wstring eta;
 +				const u64 elapsed = (now - progress_since) / 1000;
 +				if (percent >= 3 && percent < 100 && elapsed >= 10)
 +				{
 +					const u64 left = elapsed * (100 - percent) / percent;
-+					if (left >= 90) std::snprintf(eta, sizeof(eta), "About %llu minutes left.", static_cast<unsigned long long>((left + 30) / 60));
-+					else std::snprintf(eta, sizeof(eta), "Less than 2 minutes left.");
++					eta = left >= 90 ? L"About " + std::to_wstring((left + 30) / 60) + L" minutes left" : L"Less than 2 minutes left";
 +				}
-+				const bool first = !already_prepared();
-+				if (percent >= 100) persist_set("prepared", mod_version());
-+				char buf[900];
-+				std::snprintf(buf, sizeof(buf),
-+					"@progress=%u\n%s  %u%%\n%s%s\n\n%s %s\n%s",
-+					percent, first ? "Preparing the game for this PC:" : "Loading:", percent, what.empty() ? "Compiling" : what.c_str(),
-+					total ? (" (" + std::to_string(done) + " of " + std::to_string(total) + ")").c_str() : "",
-+					first ? "This one-time step runs after installing or updating the mod." : "", eta, loading_tip(now));
-+				return buf;
++				c.kicker = first ? L"FIRST START" : L"LOADING";
++				c.title = first ? L"Setting up your kitchen" : L"Getting the kitchen ready";
++				c.subtitle = first ? L"A one-time step after installing or updating. Later starts are quick." : L"Order Up!! is loading on your PC.";
++				c.progress = static_cast<int>(percent);
++				c.progress_label = eta.empty() ? (total ? L"Step " + std::to_wstring(done) + L" of " + std::to_wstring(total) : L"Working on it") : eta;
++				return true;
 +			}
 +			progress_since = 0;
 +			const u64 last_frame = g_last_frame_tick.load();
@@ -1471,32 +1498,36 @@ index 000000000..1551ff5a6
 +			if (last_frame && now - last_frame < 3000)
 +			{
 +				persist_set("prepared", mod_version());
-+				return {};
++				return false;
 +			}
-+
++			c.progress = -2;
++			c.phase = static_cast<f32>(now % 1600) / 1600.f;
 +			if (no_window && now - no_window < 2000)
 +			{
-+				return "The game window on the PC is minimized.\n\nRestore the Order Up!! window on the PC (click it in the taskbar). "
-+					"The headset can only show the game while that window is open.";
++				c.kicker = L"PAUSED";
++				c.title = L"The game window is minimized";
++				c.subtitle = L"Restore the Order Up!! window on your PC (click it in the taskbar). The headset needs that window open.";
++				c.progress = -1;
++				return true;
 +			}
 +			if (last_frame)
 +			{
-+				return "Waiting for the game picture...\n\nThe game is busy loading.\nIf this stays for minutes, close the game and press Collect logs in the launcher.";
++				c.kicker = L"ALMOST THERE";
++				c.title = L"Loading the next scene";
++				c.subtitle = L"Hang tight, Chef. If this takes minutes, close the game and send the logs from the launcher.";
++				return true;
 +			}
-+
 +			const u64 secs = (now - g_start_tick.load()) / 1000;
-+			char buf[700];
-+			std::snprintf(buf, sizeof(buf),
-+				already_prepared()
-+					? "Starting Order Up!!...   %llu s\n\nThe game also opens in a window on the PC monitor. Keep that window open.\n\n%s"
-+					: "Starting Order Up!!...   %llu s\n\nAfter installing or updating, the first start prepares the game for this PC and can take a few minutes. "
-+					  "Later starts are quick.\n\nThe game also opens in a window on the PC monitor. Keep that window open.\n%s",
-+				static_cast<unsigned long long>(secs), loading_tip(now));
-+			return buf;
++			c.kicker = L"ORDER UP!! VR";
++			c.title = already_prepared() ? L"Opening the restaurant" : L"Opening the restaurant for the first time";
++			c.subtitle = already_prepared() ? L"Starting the game on your PC. Keep its window open."
++				: L"The first start after an install or update prepares the game for this PC. It can take a few minutes.";
++			c.progress_label = std::to_wstring(secs) + L" s";
++			return true;
 +		}
 +
-+		// Draws a text card with GDI and uploads it to its swapchain.
-+		void draw_card(xr_state& xr, XrSwapchain& sc, std::vector<XrSwapchainImageD3D11KHR>& images, bool& is_bgra, bool& has_image, u32 cw, u32 ch, const wchar_t* title_text, const std::string& text)
++		// Draws a card (see OrderUpVR_ui.inl) and uploads it to its swapchain (premultiplied alpha).
++		void draw_card(xr_state& xr, XrSwapchain& sc, std::vector<XrSwapchainImageD3D11KHR>& images, bool& is_bgra, bool& has_image, u32 cw, u32 ch, const ui::card& card)
 +		{
 +			if (sc == XR_NULL_HANDLE)
 +			{
@@ -1512,13 +1543,13 @@ index 000000000..1551ff5a6
 +				info.faceCount = 1;
 +				info.arraySize = 1;
 +				info.mipCount = 1;
-+				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &sc), "xrCreateSwapchain(panel)")) return;
++				if (!xr_ok(xr, xrCreateSwapchain(xr.session, &info, &sc), "xrCreateSwapchain(card)")) return;
 +
 +				u32 count = 0;
 +				xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
 +				images.assign(count, XrSwapchainImageD3D11KHR{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
 +				if (!xr_ok(xr, xrEnumerateSwapchainImages(sc, count, &count,
-+					reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "xrEnumerateSwapchainImages(panel)"))
++					reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "xrEnumerateSwapchainImages(card)"))
 +				{
 +					xrDestroySwapchain(sc);
 +					sc = XR_NULL_HANDLE;
@@ -1526,89 +1557,9 @@ index 000000000..1551ff5a6
 +				}
 +			}
 +
-+			HDC dc = CreateCompatibleDC(nullptr);
-+			BITMAPINFO bmi{};
-+			bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-+			bmi.bmiHeader.biWidth = cw;
-+			bmi.bmiHeader.biHeight = -static_cast<LONG>(ch); // top-down
-+			bmi.bmiHeader.biPlanes = 1;
-+			bmi.bmiHeader.biBitCount = 32;
-+			bmi.bmiHeader.biCompression = BI_RGB;
-+			void* bits = nullptr;
-+			HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-+			if (!bmp || !bits)
-+			{
-+				DeleteDC(dc);
-+				return;
-+			}
-+			HGDIOBJ old_bmp = SelectObject(dc, bmp);
-+
-+			RECT all{0, 0, static_cast<LONG>(cw), static_cast<LONG>(ch)};
-+			HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
-+			FillRect(dc, &all, bg);
-+			DeleteObject(bg);
-+			RECT bar{0, 0, static_cast<LONG>(cw), 10};
-+			HBRUSH accent = CreateSolidBrush(RGB(242, 108, 36));
-+			FillRect(dc, &bar, accent);
-+			DeleteObject(accent);
-+
-+			SetBkMode(dc, TRANSPARENT);
-+			HFONT title = CreateFontW(64, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
-+			HFONT body = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
-+
-+			HGDIOBJ old_font = SelectObject(dc, title);
-+			SetTextColor(dc, RGB(242, 108, 36));
-+			RECT rt{48, 36, static_cast<LONG>(cw) - 48, 120};
-+			DrawTextW(dc, title_text, -1, &rt, DT_LEFT | DT_TOP | DT_SINGLELINE);
-+
-+			// Optional progress bar
-+			std::string msg_body = text;
-+			int bar_percent = -1;
-+			if (msg_body.rfind("@progress=", 0) == 0)
-+			{
-+				bar_percent = std::clamp(std::atoi(msg_body.c_str() + 10), 0, 100);
-+				const usz nl = msg_body.find('\n');
-+				msg_body = nl == std::string::npos ? std::string() : msg_body.substr(nl + 1);
-+			}
-+			if (bar_percent >= 0)
-+			{
-+				const LONG x0 = 48, x1 = static_cast<LONG>(cw) - 48, y0 = static_cast<LONG>(ch) - 74, y1 = y0 + 22;
-+				HBRUSH track = CreateSolidBrush(RGB(52, 58, 70));
-+				HBRUSH fill = CreateSolidBrush(RGB(255, 138, 0));
-+				HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-+				HGDIOBJ old_brush = SelectObject(dc, track);
-+				RoundRect(dc, x0, y0, x1, y1, 22, 22);
-+				const LONG xf = x0 + (x1 - x0) * bar_percent / 100;
-+				if (xf > x0 + 22)
-+				{
-+					SelectObject(dc, fill);
-+					RoundRect(dc, x0, y0, xf, y1, 22, 22);
-+				}
-+				SelectObject(dc, old_brush);
-+				SelectObject(dc, old_pen);
-+				DeleteObject(track);
-+				DeleteObject(fill);
-+			}
-+
-+			wchar_t wide[1024]{};
-+			MultiByteToWideChar(CP_UTF8, 0, msg_body.c_str(), -1, wide, 1023);
-+			SelectObject(dc, body);
-+			SetTextColor(dc, RGB(235, 235, 240));
-+			RECT rb{48, 130, static_cast<LONG>(cw) - 48, static_cast<LONG>(ch) - 30};
-+			DrawTextW(dc, wide, -1, &rb, DT_LEFT | DT_TOP | DT_WORDBREAK);
-+
-+			SelectObject(dc, old_font);
-+			DeleteObject(title);
-+			DeleteObject(body);
-+			GdiFlush();
-+
-+			// GDI gives BGRX; set alpha and swap to RGBA when needed.
-+			u8* px = static_cast<u8*>(bits);
-+			for (u32 i = 0; i < cw * ch; i++, px += 4)
-+			{
-+				if (!is_bgra) std::swap(px[0], px[2]);
-+				px[3] = 255;
-+			}
++			std::vector<u8> px;
++			if (!ui::render(card, cw, ch, px)) { vr_log("Card: could not draw \"%s\"", fmt::format("%s", std::string(card.title.begin(), card.title.end())).c_str()); return; }
++			if (!is_bgra) for (usz i = 0; i + 3 < px.size(); i += 4) std::swap(px[i], px[i + 2]);
 +
 +			u32 index = 0;
 +			XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -1618,45 +1569,72 @@ index 000000000..1551ff5a6
 +				wait.timeout = XR_INFINITE_DURATION;
 +				if (XR_SUCCEEDED(xrWaitSwapchainImage(sc, &wait)))
 +				{
-+					xr.context->UpdateSubresource(images[index].texture, 0, nullptr, bits, cw * 4, 0);
++					xr.context->UpdateSubresource(images[index].texture, 0, nullptr, px.data(), cw * 4, 0);
 +					has_image = true;
 +				}
 +				XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
 +				xrReleaseSwapchainImage(sc, &release);
 +			}
-+
-+			SelectObject(dc, old_bmp);
-+			DeleteObject(bmp);
-+			DeleteDC(dc);
 +		}
 +
-+		void draw_panel(xr_state& xr, const std::string& text)
++		void draw_panel(xr_state& xr, const ui::card& c)
 +		{
-+			draw_card(xr, xr.panel, xr.panel_images, xr.panel_is_bgra, xr.panel_has_image, panel_w, panel_h, L"ORDER UP VR", text);
++			draw_card(xr, xr.panel, xr.panel_images, xr.panel_is_bgra, xr.panel_has_image, panel_w, panel_h, c);
++		}
++
++		// The cards' content (also used by the developer tool that renders them to PNG)
++		ui::card sign_card(bool first_time)
++		{
++			ui::card c;
++			c.style = ui::card::SIGN;
++			c.title = L"ORDER UP!!";
++			c.subtitle = first_time ? L"Welcome to your kitchen, Chef!" : L"Welcome back, Chef. Your kitchen is waiting.";
++			c.tip = L"Point at the menu board and pull the TRIGGER to choose";
++			return c;
++		}
++
++		ui::card help_card()
++		{
++			ui::card c;
++			c.style = ui::card::HELP;
++			c.kicker = L"HOW TO PLAY";
++			c.title = L"Your hands are the chef's hands";
++			c.columns = 2;
++			c.rows = {
++				{L"TRIGGER", L"Choose and confirm"},
++				{L"GRIP", L"Grab and hold food"},
++				{L"A  B", L"Cross and Circle"},
++				{L"X  Y", L"Square (pink) and Triangle"},
++				{L"MENU", L"Pause the game"},
++				{L"FLIP", L"Hold GRIP, flick your wrist up"},
++				{L"LEFT STICK", L"Walk.  Click: recentre"},
++				{L"RIGHT STICK", L"Turn"},
++				{L"LOOK", L"Turn your head to change station"},
++				{L"BOTH GRIPS", L"Move or resize the menu board"},
++			};
++			c.tip = L"Hold the left MENU button for 2 seconds to see this again.";
++			return c;
++		}
++
++		ui::card calib_card()
++		{
++			ui::card c;
++			c.style = ui::card::HINT;
++			c.kicker = L"ONE MORE THING";
++			c.title = L"Press X";
++			c.subtitle = L"The game asks for the pink square. On your controller that's X, on the left hand.";
++			return c;
 +		}
 +
 +		// The sign over the menu board in the restaurant
 +		void draw_sign(xr_state& xr, bool first_time)
 +		{
-+			draw_card(xr, xr.sign, xr.sign_images, xr.sign_bgra, xr.sign_has, sign_w, sign_h, L"ORDER UP!!  VR",
-+				first_time
-+					? "Welcome to your kitchen, Chef!\nPoint with your hand and pull the TRIGGER to choose.\nIn the kitchen everything is around you: reach for it, and turn to change station."
-+					: "Welcome back, Chef. Your kitchen is waiting.\nPoint with your hand and pull the TRIGGER to choose.");
++			draw_card(xr, xr.sign, xr.sign_images, xr.sign_bgra, xr.sign_has, sign_w, sign_h, sign_card(first_time));
 +		}
 +
 +		void draw_help(xr_state& xr)
 +		{
-+			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, L"CONTROLS",
-+				"GRIP  -  grab and hold (the game's T button)\n"
-+				"TRIGGER  -  select and confirm (the Move button)\n"
-+				"A / B / X / Y  -  Cross / Circle / Square / Triangle (X is the pink square)\n"
-+				"Left MENU  -  Start (pause).   Right stick click  -  Select\n"
-+				"Flip and other motions  -  hold GRIP and flick the controller,\n      or flick that hand's thumbstick up\n"
-+				"In the kitchen  -  reach for things: the pointer is where your hand\n      covers them. Left stick: walk, right stick: turn and height\n"
-+				"Stations  -  A / B move along the kitchen; after one press, just turn\n      your head toward the next station and the game goes there\n"
-+				"Menu board  -  hold both GRIPs, then right stick: nearer / farther, left stick: size\n"
-+				"Left stick click: recentre.  Hold it 1 s: switch 3D / big screen\n"
-+				"Hold Left MENU for 2 seconds to show this card again.");
++			draw_card(xr, xr.help, xr.help_images, xr.help_bgra, xr.help_has, help_w, help_h, help_card());
 +		}
 +
 +		// Small static images: pointer cursor and laser beam (premultiplied alpha).
@@ -2817,17 +2795,18 @@ index 000000000..1551ff5a6
 +				box(sc - Up * (sh * 0.5f + t + 0.06f) - F * 0.04f, {sw * 0.9f, 0.04f, 0.04f}, steel, 0.f);
 +			}
 +			// Counters along both sides: wooden body, steel top, a grill and a fryer on the left
-+			for (int side = -1; side <= 1; side += 2)
++			// Counters: the right one with the grill and the fryer; the left wall is kept clear for the full-length mirror
 +			{
-+				const vec3 c = mid + Rt * (side * (W * 0.5f - 0.4f));
++				const vec3 c = mid + Rt * (W * 0.5f - 0.4f);
 +				box(c + Up * 0.45f, {0.75f, 0.9f, Dp * 0.8f}, wood, 0.f);
 +				box(c + Up * 0.92f, {0.8f, 0.04f, Dp * 0.8f + 0.04f}, steel, 0.f);
-+				if (side < 0)
-+				{
-+					box(c + Up * 0.98f - F * 1.2f, {0.6f, 0.08f, 0.9f}, {0.12f, 0.12f, 0.12f}, 0.f);   // grill
-+					box(c + Up * 1.06f - F * 2.4f, {0.5f, 0.24f, 0.5f}, steel, 0.f);                  // fryer
-+					box(c + Up * 1.19f - F * 2.4f, {0.4f, 0.02f, 0.4f}, {0.75f, 0.55f, 0.18f}, 4.f);   // oil
-+				}
++				box(c + Up * 0.98f + F * 0.6f, {0.6f, 0.08f, 0.9f}, {0.12f, 0.12f, 0.12f}, 0.f);    // grill
++				box(c + Up * 1.06f - F * 0.8f, {0.5f, 0.24f, 0.5f}, steel, 0.f);                   // fryer
++				box(c + Up * 1.19f - F * 0.8f, {0.4f, 0.02f, 0.4f}, {0.75f, 0.55f, 0.18f}, 4.f);    // oil
++				// a short counter on the left, at the back of the diner
++				const vec3 l = base - F * (Dp - 1.2f) - Rt * (W * 0.5f - 0.4f);
++				box(l + Up * 0.45f, {0.75f, 0.9f, 1.6f}, wood, 0.f);
++				box(l + Up * 0.92f, {0.8f, 0.04f, 1.64f}, steel, 0.f);
 +			}
 +			// Back counter with stools, facing the board
 +			{
@@ -3102,7 +3081,7 @@ index 000000000..1551ff5a6
 +			ctx->PSSetConstantBuffers(0, 1, &g.cb);
 +		}
 +
-+		// A diner mirror on the left wall, above the counter, in a chrome frame: see your chef move.
++		// A full-length diner mirror on the left wall, in a chrome frame: see your chef from head to toe.
 +		void draw_mirror(xr_state& xr, int e)
 +		{
 +			auto& g = g_gfx;
@@ -3115,10 +3094,10 @@ index 000000000..1551ff5a6
 +			const vec3 front = xr.screen_center + F * 0.04f;
 +			const vec3 spot = xr.screen_center + normal_s * xr.screen_distance;      // where you started, in the room
 +			vec3 C = front + F * dot(spot - front, F) + F * 0.5f - Rt * (W * 0.5f - 0.035f);
-+			C.y = floor + 1.78f;
++			C.y = floor + 1.16f;   // full length: from just above the floor to well over your head
 +			const vec3 N = Rt;                                                        // facing into the room
 +			const vec3 Mr = normalize(cross(up, N));
-+			const f32 mw = 1.8f, mh = 1.45f;
++			const f32 mw = 1.25f, mh = 2.2f;
 +			const mat4 glass = m_cols(Mr * mw, up * mh, N * 0.004f, C);
 +			const mat4 vp_saved = g.vp;
 +			g.pattern_size = {1.f, 1.f, 1.f};
@@ -3240,10 +3219,7 @@ index 000000000..1551ff5a6
 +
 +		void draw_calib_hint(xr_state& xr)
 +		{
-+			draw_card(xr, xr.calib, xr.calib_images, xr.calib_bgra, xr.calib_has, 1024, 300, L"PRESS THE PINK SQUARE",
-+				"The game asks for the PlayStation SQUARE button: on your Quest that is X on the left controller "
-+				"(look at your left hand: the pink square floats over it).\n"
-+				"Point at the middle of the screen and press X. Pulling the TRIGGER works too.");
++			draw_card(xr, xr.calib, xr.calib_images, xr.calib_bgra, xr.calib_has, 1024, 300, calib_card());
 +		}
 +
 +		void load_comfort(xr_state& xr)
@@ -3267,6 +3243,7 @@ index 000000000..1551ff5a6
 +			const auto old = c;
 +			c.body = get("chef", "auto") != "off";
 +			c.cinema = get("cutscenes", "screen") != "3d";
++			c.wide = get("wideview", "on") != "off";
 +			c.seated = get("playmode", "standing") == "seated";
 +			c.smooth_turn = get("turn", "snap") == "smooth";
 +			c.vignette = get("vignette", "on") != "off";
@@ -3679,9 +3656,38 @@ index 000000000..1551ff5a6
 +
 +					// Hands: the game's pointer is wherever your hand covers the game's picture, as seen from the game
 +					// camera (= your eyes). Reach for a burger and it is under the pointer. Laser: where the ray meets it.
-+					bool have = false;
++					bool have = false, on_hud = false;
++					vec3 hud_q{};
 +					f32 nx = 0.f, ny = 0.f;
-+					if (!xr.pointing_laser && cam.depth * xr.unit < 2.2f && xr.hand_valid[hand])
++					// The HUD (order tickets along the top, the pause menu) floats on its own plane at its natural size:
++					// pointing at it gives its own spot, whatever the game camera sees behind it
++					{
++						const f32 Dh = xr.comfort.hud_dist / xr.unit, hsx = cam.sx * cam.hud_k * 0.8f, hsy = cam.sy * cam.hud_k * 0.8f;
++						vec3 ro = origin, rd = dir;
++						if (!xr.pointing_laser && xr.hand_valid[hand])
++						{
++							const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
++							ro = xr.last_head;
++							rd = normalize(hg.grab - xr.last_head);
++						}
++						const vec3 ho = level(cam.up_a, to_player(xr, ro) * (1.f / xr.unit), -1.f);
++						const vec3 hd = level(cam.up_a, rotate(qconj(yaw_q(xr.player_yaw)), rd), -1.f);
++						if (hd.z < -0.001f && (-Dh - ho.z) / hd.z > 0.f)
++						{
++							const vec3 q = ho + hd * ((-Dh - ho.z) / hd.z);
++							const f32 hx = (hsx * q.x - cam.cx * Dh) / Dh, hy = (hsy * q.y - cam.cy * Dh) / Dh;
++							const bool paused = cam.n2 >= 15;
++							if (std::fabs(hx) < 1.f && std::fabs(hy) < 1.f && (hy > 0.6f || paused))
++							{
++								nx = hx;
++								ny = hy;
++								have = on_hud = true;
++								hud_q = q;
++							}
++						}
++					}
++					if (have) {}
++					else if (!xr.pointing_laser && cam.depth * xr.unit < 2.2f && xr.hand_valid[hand])
 +					{
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
 +						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f));
@@ -3722,7 +3728,7 @@ index 000000000..1551ff5a6
 +							out.y = xr.fy;
 +						}
 +						xr.aim_origin = origin;
-+						xr.aim_hit = to_local(out.x * 2.f - 1.f, 1.f - out.y * 2.f);
++						xr.aim_hit = on_hud ? from_player(xr, level(cam.up_a, hud_q) * xr.unit) : to_local(out.x * 2.f - 1.f, 1.f - out.y * 2.f);
 +					}
 +					else
 +					{
@@ -3900,6 +3906,7 @@ index 000000000..1551ff5a6
 +				g_views.room = xr.comfort.room;
 +				g_views.input_tick = xr.input_tick;
 +				g_views.cinema = xr.comfort.cinema;
++				g_views.wide = xr.comfort.wide;
 +				g_views.fixed_unit = xr.fixed_unit;
 +			}
 +			const u64 now_tick = GetTickCount64();
@@ -3950,12 +3957,16 @@ index 000000000..1551ff5a6
 +				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&env_layer);
 +			}
 +
-+			const std::string message = panel_message();
++			ui::card pcard;
++			const bool have_panel = panel_card(pcard);
++			const std::wstring wsig = have_panel ? pcard.signature() : std::wstring();
++			const std::string message = have_panel ? std::string(wsig.begin(), wsig.end()) : std::string();   // empty = no card
 +			if (!message.empty() && message != xr.panel_text)
 +			{
-+				draw_panel(xr, message);
++				draw_panel(xr, pcard);
++				if (pcard.title != xr.panel_title) vr_log("Panel: %s", std::string(pcard.title.begin(), pcard.title.end()).c_str());
++				xr.panel_title = pcard.title;
 +				xr.panel_text = message;
-+				vr_log("Panel: %s", message.substr(0, message.find('\n')).c_str());
 +			}
 +			else if (message.empty() && !xr.panel_text.empty())
 +			{
@@ -4059,6 +4070,7 @@ index 000000000..1551ff5a6
 +					const f32 width = std::min(xr.screen_width * 0.9f, 2.6f), height = width * sign_h / sign_w;
 +					const vec3 pos = xr.screen_center + vec3{0.f, sh * 0.5f + 0.16f + height * 0.5f, 0.f} + normal * 0.02f;
 +					sign.space = xr.local_space;
++					sign.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					sign.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +					sign.subImage.swapchain = xr.sign;
 +					sign.subImage.imageRect.extent = {static_cast<s32>(sign_w), static_cast<s32>(sign_h)};
@@ -4094,6 +4106,7 @@ index 000000000..1551ff5a6
 +						: xr.screen_center - right * (xr.screen_width * 0.5f + help_width_m * 0.55f) + normal * 0.35f + vec3{0.f, sh * 0.5f - help_width_m * help_h / help_w * 0.5f, 0.f};
 +					const f32 yaw = xr.live3d ? xr.player_yaw + 0.7f : xr.screen_yaw + 0.35f;
 +					help.space = xr.local_space;
++					help.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					help.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +					help.subImage.swapchain = xr.help;
 +					help.subImage.imageRect.extent = {static_cast<s32>(help_w), static_cast<s32>(help_h)};
@@ -4116,6 +4129,7 @@ index 000000000..1551ff5a6
 +						: xr.screen_center + normal * 0.4f - vec3{0.f, sh * 0.5f + 0.12f, 0.f};
 +					const f32 yaw = xr.live3d ? xr.player_yaw : xr.screen_yaw;
 +					calib.space = xr.local_space;
++					calib.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					calib.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +					calib.subImage.swapchain = xr.calib;
 +					calib.subImage.imageRect.extent = {1024, 300};
@@ -4132,6 +4146,7 @@ index 000000000..1551ff5a6
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
 +				const vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f);
 +				panel.space = xr.local_space;
++				panel.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +				panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 +				panel.subImage.swapchain = xr.panel;
 +				panel.subImage.imageRect.offset = {0, 0};
@@ -4214,6 +4229,169 @@ index 000000000..1551ff5a6
 +			xr = {};
 +		}
 +
++		// ------------------------------------------------------------- headset simulator (developer testing)
++		// ORDERUP_VR_SIM=<folder>: no headset needed. A virtual head looks where <folder>/sim.txt says
++		// ("yaw pitch x z mode3d shot": degrees, metres, 1/0, a number that asks for pictures when it changes) and the
++		// game renders for it exactly as for a headset. Each eye's newest picture and the flat picture are saved as
++		// PNG (the see-through background in magenta), with state.txt describing what the mod measured.
++		void sim_save(const std::string& dir, const char* name, const pending_frame& f)
++		{
++			if (f.px.empty() || !f.w || !f.h) return;
++			std::vector<u8> px(f.px);
++			const int ri = f.bgra ? 2 : 0, bi = f.bgra ? 0 : 2;
++			for (usz i = 0; i + 3 < px.size(); i += 4)
++			{
++				u8* q = &px[i];
++				const bool key = q[ri] >= 1 && q[ri] <= 3 && q[1] >= 2 && q[1] <= 4 && q[bi] >= 4 && q[bi] <= 6;
++				u8 r = q[ri], g = q[1], b = q[bi];
++				if (key) { r = 255; g = 0; b = 255; }
++				q[0] = b; q[1] = g; q[2] = r; q[3] = 255;
++			}
++			ui::save_png(dir + name, px.data(), f.w, f.h, false);
++		}
++
++		void sim_main(const std::string& dir)
++		{
++			vr_log("Simulator: no headset, pictures go to %s", dir.c_str());
++			g_session_running = true;
++			const vec3 head0{0.f, 1.6f, 0.f};
++			std::string last_shot;
++			u64 last_auto = 0;
++			int auto_n = 0;
++			while (!g_stop)
++			{
++				f32 yaw = 0.f, pitch = 0.f, x = 0.f, z = 0.f;
++				int mode3d = 1;
++				char shot[64] = "";
++				if (std::FILE* f = std::fopen((dir + "sim.txt").c_str(), "r"))
++				{
++					std::fscanf(f, "%f %f %f %f %d %63s", &yaw, &pitch, &x, &z, &mode3d, shot);
++					std::fclose(f);
++				}
++				const XrQuaternionf q = qnorm(qmul(yaw_q(yaw * 0.01745329f), XrQuaternionf{std::sin(pitch * 0.00872665f), 0.f, 0.f, std::cos(pitch * 0.00872665f)}));
++				const vec3 right = rotate(q, {1.f, 0.f, 0.f});
++				const vec3 head{head0.x + x, head0.y, head0.z + z};
++				pointer_state fake;
++				const bool pressing = read_fake_pointer(fake) && (fake.t || fake.move || fake.cross || fake.circle || fake.square || fake.triangle || fake.start);
++				{
++					std::lock_guard lock(g_state_mutex);
++					g_views.valid = true;
++					for (int e = 0; e < 2; e++)
++					{
++						const vec3 p = head + right * (e ? 0.032f : -0.032f);
++						g_views.eye[e].position = {p.x, p.y, p.z};
++						g_views.eye[e].orientation = q;
++						g_views.fov[e] = {-0.80f, 0.80f, 0.75f, -0.80f};
++					}
++					g_views.player_pos = head0;
++					g_views.player_yaw = 0.f;
++					g_views.unit = g_cam.auto_unit > 0.f ? g_cam.auto_unit : 0.3048f;
++					g_views.mode3d = mode3d != 0;
++					g_views.stereo = true;
++					g_views.hud_dist = 1.5f;
++					g_views.room = true;
++					if (pressing) g_views.input_tick = GetTickCount64();
++					g_views.cinema = true;
++					g_views.wide = std::getenv("ORDERUP_VR_NARROW") == nullptr;
++					g_views.fixed_unit = false;
++				}
++				const u64 now = GetTickCount64();
++				const bool asked = shot[0] && last_shot != shot;
++				if (asked || now - last_auto > 10000)
++				{
++					const std::string tag = asked ? std::string(shot) : "auto" + std::to_string(auto_n++ % 6);
++					last_shot = shot;
++					last_auto = now;
++					pending_frame f[3];
++					cam_info c;
++					{
++						std::lock_guard lock(g_state_mutex);
++						for (int i = 0; i < 3; i++) f[i] = g_pending[i];
++						c = g_cam;
++					}
++					sim_save(dir, (tag + "_eye0.png").c_str(), f[0]);
++					sim_save(dir, (tag + "_eye1.png").c_str(), f[1]);
++					sim_save(dir, (tag + "_flat.png").c_str(), f[2]);
++					if (std::FILE* st = std::fopen((dir + tag + "_state.txt").c_str(), "w"))
++					{
++						const auto& r = g_rv;
++						std::fprintf(st, "yaw %.1f pitch %.1f pos %.2f %.2f mode3d %d\ncamera %s room %d cinema %d still %d moves %llu depth %.2f auto_unit %.3f\n"
++							"bounds %d x %.1f..%.1f z %.1f..%.1f (game units)\nper frame 3D %d 2D %d backdrop %d other %d, want3d %d enabled %d\n"
++							"eye0 %ux%u eye1 %ux%u flat %ux%u\n",
++							yaw, pitch, x, z, mode3d, c.valid ? "found" : "not found", c.room, c.cinema, c.still, static_cast<unsigned long long>(c.moves), c.depth, c.auto_unit,
++							c.bounds, c.bx0, c.bx1, c.bz0, c.bz1, r.n3, r.n2, r.n2b, r.n0, r.want3d, r.enabled, f[0].w, f[0].h, f[1].w, f[1].h, f[2].w, f[2].h);
++						std::fclose(st);
++					}
++				}
++				// Memory: <folder>/peek "addr len" -> peek.txt (big-endian floats), find "lo hi" -> find.txt (float addresses),
++				// poke "addr value" writes a float (to try a change and look at the result)
++				static u64 last_mem = 0;
++				if (now - last_mem > 250)
++				{
++					last_mem = now;
++					const auto take = [&](const char* name, std::string& line) -> bool
++					{
++						std::FILE* f = std::fopen((dir + name).c_str(), "r");
++						if (!f) return false;
++						char buf[256] = "";
++						std::fgets(buf, sizeof(buf), f);
++						std::fclose(f);
++						fs::remove_file(dir + name);
++						line = buf;
++						return true;
++					};
++					const auto rdf = [](u32 a) { return std::bit_cast<f32>(_byteswap_ulong(*static_cast<const u32*>(vm::base(a)))); };
++					std::string line;
++					if (take("peek", line))
++					{
++						u32 a = 0, n = 0;
++						std::sscanf(line.c_str(), "%x %x", &a, &n);
++						if (std::FILE* o = std::fopen((dir + "peek.txt").c_str(), "w"))
++						{
++							for (u32 k = 0; k < n; k += 4)
++							{
++								if (!vm::check_addr(a + k, vm::page_readable, 4)) { std::fprintf(o, "%08x ----\n", a + k); continue; }
++								const u32 raw = _byteswap_ulong(*static_cast<const u32*>(vm::base(a + k)));
++								std::fprintf(o, "%08x %08x %g\n", a + k, raw, rdf(a + k));
++							}
++							std::fclose(o);
++						}
++					}
++					if (take("find", line))
++					{
++						f32 lo = 0.f, hi = 0.f;
++						std::sscanf(line.c_str(), "%f %f", &lo, &hi);
++						if (std::FILE* o = std::fopen((dir + "find.txt").c_str(), "w"))
++						{
++							int hits = 0;
++							for (u64 page = 0x10000; page < 0x40000000 && hits < 4000; page += 0x10000)
++							{
++								if (!vm::check_addr(static_cast<u32>(page), vm::page_readable, 0x10000)) continue;
++								for (u32 k = 0; k < 0x10000 && hits < 4000; k += 4)
++								{
++									const f32 v = rdf(static_cast<u32>(page) + k);
++									if (v >= lo && v <= hi) { std::fprintf(o, "%08x %g\n", static_cast<u32>(page) + k, v); hits++; }
++								}
++							}
++							std::fclose(o);
++						}
++					}
++					if (take("poke", line))
++					{
++						u32 a = 0;
++						f32 v = 0.f;
++						if (std::sscanf(line.c_str(), "%x %f", &a, &v) == 2 && vm::check_addr(a, vm::page_writable, 4))
++						{
++							*static_cast<u32*>(vm::base(a)) = _byteswap_ulong(std::bit_cast<u32>(v));
++							vr_log("Simulator: wrote %g at 0x%08x", v, a);
++						}
++					}
++				}
++				std::this_thread::sleep_for(std::chrono::milliseconds(12));
++			}
++			g_session_running = false;
++		}
++
 +		void thread_main()
 +		{
 +			vr_log("Order Up VR starting (title %s)", Emu.GetTitleID().c_str());
@@ -4230,6 +4408,14 @@ index 000000000..1551ff5a6
 +			}
 +			vr_log("True VR settings: view %s, %s, %.4f m per game unit", xr.mode3d ? "inside the game" : "big screen",
 +				xr.stereo ? "stereo" : "mono", xr.unit);
++			if (const char* sim_dir = std::getenv("ORDERUP_VR_SIM"); sim_dir && *sim_dir)
++			{
++				std::string d = sim_dir;
++				if (d.back() != '/' && d.back() != '\\') d += '/';
++				sim_main(d);
++				vr_log("Order Up VR stopped (simulator)");
++				return;
++			}
 +			if (create_instance(xr) && wait_for_system(xr) && create_device(xr) && create_session(xr) && create_actions(xr))
 +			{
 +				if (bool b = false; pick_format(xr, b)) g_dst_bgra = b;
@@ -4488,9 +4674,22 @@ index 000000000..1551ff5a6
 +			s.room_on = v.room;
 +			s.input_tick = v.input_tick;
 +			s.cinema_pref = v.cinema;
++			s.wide_pref = v.wide;
 +			s.fixed_unit = v.fixed_unit;
 +			s.vms.clear();
 +			s.near_depths.clear();
++			s.n3_by_key.clear();
++			if (s.drawlog_f) { std::fclose(s.drawlog_f); s.drawlog_f = nullptr; s.drawlog = false; }
++			{
++				static const std::string sim = []{ const char* e = std::getenv("ORDERUP_VR_SIM"); return std::string(e ? e : ""); }();
++				if (!sim.empty() && fs::is_file(sim + "/drawlog"))
++				{
++					fs::remove_file(sim + "/drawlog");
++					s.drawlog_f = std::fopen((sim + "/drawlog.txt").c_str(), "w");
++					s.drawlog = s.drawlog_f != nullptr;
++					s.drawlog_n = 0;
++				}
++			}
 +			s.enabled = v.valid && v.mode3d && s.want3d && !s.cinema;
 +			if (!s.enabled) return;
 +
@@ -4596,17 +4795,95 @@ index 000000000..1551ff5a6
 +				// 2D: a flat plane that exactly fills the game camera's view. The HUD and menus float at a comfortable
 +				// distance; backdrops (drawn before the 3D scene) sit just inside the far plane, behind everything.
 +				const f32 far_plane = (c.A + 1.f) < -1e-4f ? c.B / (c.A + 1.f) : 60.f;
-+				const f32 hud_d = s.hud_depth > 0.f ? s.hud_depth : s.depth * 0.9f;
-+				const f32 D = backdrop ? std::clamp(far_plane * 0.9f, 2.f, 200.f) : std::max({s.hud_dist / s.unit, c.B / c.A * 1.2f, hud_d});
++				// The HUD (tickets, timers, the pause menu) floats at a fixed, comfortable distance at its natural size,
++				// even while the game's field of view is widened
++				const f32 D = backdrop ? std::clamp(far_plane * 0.9f, 2.f, 200.f) : std::max(s.hud_dist / s.unit, c.B / c.A * 1.2f);
++				const f32 k = backdrop ? 1.f : s.hud_k * 0.8f;   // natural size, a little bigger so the tickets read well
++				const f32 hsx = c.sx * k, hsy = c.sy * k, hcx = c.cx, hcy = c.cy;
 +				mat4 S2;
-+				S2.m[0] = D / c.sx; S2.m[3] = D * c.cx / c.sx;
-+				S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
++				S2.m[0] = D / hsx; S2.m[3] = D * hcx / hsx;
++				S2.m[5] = D / hsy; S2.m[7] = D * hcy / hsy;
 +				S2.m[11] = -D;
 +				S2.m[15] = 1.f;
 +				if (backdrop) { s.X2b = mmul(room, S2); s.x2b_ready = true; s.x2b_gen = gen; }
 +				else { s.X2 = mmul(base, S2); s.x2_ready = true; s.x2_gen = gen; }
 +			}
 +			return true;
++		}
++
++		// Wide view. The game's cameras keep their field of view (degrees) in float property records (0x30 bytes): the
++		// value at +0x0c, the camera object at +0x04, the property type 0x00344d60 at +0x20. The camera object holds the
++		// same value at +0x64, after its position stored twice (+0x44 and +0x54) with 1.0 after each.
++		u32 rd32(u32 a) { return _byteswap_ulong(*static_cast<const u32*>(vm::base(a))); }
++		f32 rdf32(u32 a) { return std::bit_cast<f32>(rd32(a)); }
++		void wrf32(u32 a, f32 v) { *static_cast<u32*>(vm::base(a)) = _byteswap_ulong(std::bit_cast<u32>(v)); }
++
++		void fov_scan()
++		{
++			auto& s = g_rv;
++			const usz before = s.fovs.size();
++			for (u32 page = 0x30000000u; page < 0x40000000u; page += 0x10000u)
++			{
++				if (!vm::check_addr(page, vm::page_readable | vm::page_writable, 0x10000u)) continue;
++				for (u32 a = page; a + 0x30 <= page + 0x10000u; a += 0x10)
++				{
++					if (rd32(a + 0x20) != 0x00344d60u) continue;
++					const f32 v = rdf32(a + 0x0c);
++					if (!(v >= 5.f && v <= 100.f)) continue;
++					const u32 node = rd32(a + 0x04);
++					if (node < 0x10000u || !vm::check_addr(node, vm::page_readable, 0x70)) continue;
++					if (rdf32(node + 0x50) != 1.f || rdf32(node + 0x60) != 1.f) continue;
++					if (rd32(node + 0x44) != rd32(node + 0x54) || rd32(node + 0x48) != rd32(node + 0x58) || rd32(node + 0x4c) != rd32(node + 0x5c)) continue;
++					const f32 nf = rdf32(node + 0x64);
++					if (!(nf >= 5.f && nf <= 120.f)) continue;
++					if (std::find_if(s.fovs.begin(), s.fovs.end(), [&](const auto& r) { return r.addr == a; }) != s.fovs.end()) continue;
++					s.fovs.push_back({a, v, -1.f});
++				}
++			}
++			if (s.fovs.size() != before) vr_log("Wide view: found %zu camera field-of-view settings (%zu new)", s.fovs.size(), s.fovs.size() - before);
++		}
++
++		f32 widen(f32 deg)
++		{
++			const f32 t = std::tan(deg * 0.00872665f);
++			return std::max(deg, 2.f * std::atan(std::min(t * 2.4f, std::tan(0.698f))) * 57.29578f);   // at most 80 degrees tall
++		}
++
++		void fov_update()
++		{
++			auto& s = g_rv;
++			const bool want = s.wide_pref && s.enabled && s.want3d && !s.cinema;
++			const u64 now = GetTickCount64();
++			if (want && now - s.fov_scan_tick > (s.fovs.empty() ? 4000u : 20000u))
++			{
++				s.fov_scan_tick = now;
++				fov_scan();
++			}
++			f32 k_best = 1.f, err_best = 1e9f;
++			for (auto& r : s.fovs)
++			{
++				if (!vm::check_addr(r.addr, vm::page_readable | vm::page_writable, 0x30) || rd32(r.addr + 0x20) != 0x00344d60u) { r.addr = 0; continue; }
++				const f32 cur = rdf32(r.addr + 0x0c);
++				if (r.written < 0.f || std::fabs(cur - r.written) > 1e-3f) r.orig = cur;   // the game set a new value
++				const f32 target = want ? widen(r.orig) : r.orig;
++				if (std::fabs(cur - target) > 1e-4f) wrf32(r.addr + 0x0c, target);
++				r.written = target;
++				// Which camera is drawing now: its widened value gives the measured picture size
++				if (want && s.cam.valid)
++				{
++					const f32 sy_t = 1.f / std::tan(target * 0.00872665f);
++					const f32 e = std::fabs(sy_t - s.cam.sy) / s.cam.sy;
++					if (e < err_best) { err_best = e; k_best = std::tan(target * 0.00872665f) / std::tan(r.orig * 0.00872665f); }
++				}
++			}
++			std::erase_if(s.fovs, [](const auto& r) { return r.addr == 0; });
++			s.hud_k = want && err_best < 0.02f ? k_best : 1.f;
++			if (want != s.wide_on)
++			{
++				s.wide_on = want;
++				vr_log("Wide view: %s (%zu cameras)", want ? "on, the game draws the restaurant around you" : "off, the game's own field of view", s.fovs.size());
++			}
++			if (!s.want3d && !s.fovs.empty() && !want) s.fovs.clear();   // left the scene: values restored above
 +		}
 +
 +		// From where the restaurant's things are around you: the walls for walking (most things lie inside them) and the
@@ -4628,10 +4905,12 @@ index 000000000..1551ff5a6
 +					s.auto_unit = u;
 +				}
 +			}
-+			s.bx0 = std::min(pct(xs, 0.04f), -1.f);
-+			s.bx1 = std::max(pct(xs, 0.96f), 1.f);
-+			s.bz0 = std::min(pct(zs, 0.04f), -1.f);
-+			s.bz1 = std::max(pct(zs, 0.96f), 1.f);
++			// Walls: where nearly all of the restaurant's things are (the outermost 1% left out), at least 2 m each way
++			const f32 two_m = 2.f / std::max(s.unit, 0.05f);
++			s.bx0 = std::min(pct(xs, 0.01f), -two_m);
++			s.bx1 = std::max(pct(xs, 0.99f), two_m);
++			s.bz0 = std::min(pct(zs, 0.01f), -two_m);
++			s.bz1 = std::max(pct(zs, 0.99f), two_m * 0.5f);
 +			s.bounds = true;
 +			vr_log("Walls: the restaurant reaches %.1f to %.1f m sideways and %.1f to %.1f m front to back (%zu things)",
 +				s.bx0 * s.unit, s.bx1 * s.unit, s.bz0 * s.unit, s.bz1 * s.unit, s.things.size());
@@ -4903,6 +5182,8 @@ index 000000000..1551ff5a6
 +				rv_room_update(have_R, R);
 +			}
 +
++			fov_update();
++
 +			// Typical distance of things in view
 +			if (s.depths.size() >= 3)
 +			{
@@ -4911,6 +5192,15 @@ index 000000000..1551ff5a6
 +				const f32 med = *mid;
 +				if (std::fabs(med - s.depth) > 0.5f * s.depth) s.depth = med;
 +				else s.depth += (med - s.depth) * 0.1f;
++			}
++			if (!s.n3_by_key.empty())
++			{
++				const auto best_key = std::max_element(s.n3_by_key.begin(), s.n3_by_key.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
++				if (best_key->first != s.dominant_key && best_key->second >= 20)
++				{
++					vr_log("True VR: the scene is drawn into 0x%llx (%d 3D draws)", static_cast<unsigned long long>(best_key->first), best_key->second);
++					s.dominant_key = best_key->first;
++				}
 +			}
 +			if (s.composite_this != ~0ull) s.composite_key = s.composite_this;
 +			if (display_key != ~0ull) s.display_key = display_key;
@@ -4940,6 +5230,8 @@ index 000000000..1551ff5a6
 +				g_cam.still = s.still;
 +				g_cam.moves = s.moves;
 +				g_cam.cinema = s.cinema;
++				g_cam.hud_k = s.hud_k;
++				g_cam.n2 = s.n2;
 +				g_cam.auto_unit = s.auto_unit;
 +				g_cam.bounds = s.bounds && s.anchored;
 +				g_cam.bx0 = s.bx0; g_cam.bx1 = s.bx1; g_cam.bz0 = s.bz0; g_cam.bz1 = s.bz1;
@@ -5730,19 +6022,31 @@ index 000000000..1551ff5a6
 +					}
 +					s.cam = {true, sx, sy, cx, cy, A, B};
 +					s.cam_this_frame = true;
-+					if (s.scene_key != color_key)
++					if (s.scene_key != color_key && (s.dominant_key == ~0ull || s.dominant_key == color_key))
 +					{
 +						s.scene_key = color_key;
 +						if (std::find(s.tainted.begin(), s.tainted.end(), color_key) == s.tainted.end()) s.tainted.push_back(color_key);
++						s.scene_w = surface_w;
++						s.scene_h = surface_h;
 +					}
-+					s.scene_w = surface_w;
-+					s.scene_h = surface_h;
 +					is_cam = true;
 +				}
 +
 +				if (is_cam)
 +				{
 +					kind = 1;
++					if (color_key != ~0ull)
++					{
++						auto it = std::find_if(s.n3_by_key.begin(), s.n3_by_key.end(), [&](const auto& e) { return e.first == color_key; });
++						if (it == s.n3_by_key.end()) s.n3_by_key.emplace_back(color_key, 1); else it->second++;
++						if (color_key == s.dominant_key && s.scene_key != color_key)
++						{
++							s.scene_key = color_key;
++							s.scene_w = surface_w;
++							s.scene_h = surface_h;
++							if (std::find(s.tainted.begin(), s.tainted.end(), color_key) == s.tainted.end()) s.tainted.push_back(color_key);
++						}
++					}
 +					if (!s.fp_set) { std::memcpy(s.fp, m, sizeof(s.fp)); s.fp_set = true; }
 +					// World up = the model's own up axis, for the (many) objects that are not rotated
 +					const vec3 xn = normalize(xr), yn = normalize(yr), zn = r3 * (-1.f / len);
@@ -5790,16 +6094,14 @@ index 000000000..1551ff5a6
 +		else
 +		{
 +			// A draw that reads the scene's picture copies it (onto the screen, or into effects): leave it alone, and
-+			// remember which frame's eye view its target now holds.
++			// remember which frame's eye view its target now holds. Only the first texture counts: the game leaves a
++			// blurred scene copy bound in another slot while it draws the HUD, which does not read it.
 +			bool reads_scene = false;
 +			u64 src_gen = 0;
-+			for (u32 i = 0; i < tex_count; i++)
++			if (tex_count && std::find(s.tainted.begin(), s.tainted.end(), tex_keys[0]) != s.tainted.end())
 +			{
-+				if (std::find(s.tainted.begin(), s.tainted.end(), tex_keys[i]) != s.tainted.end())
-+				{
-+					reads_scene = true;
-+					src_gen = std::max(src_gen, rv_content_get(tex_keys[i]));
-+				}
++				reads_scene = true;
++				src_gen = rv_content_get(tex_keys[0]);
 +			}
 +			if (reads_scene)
 +			{
@@ -5807,7 +6109,7 @@ index 000000000..1551ff5a6
 +				if (src_gen) rv_content_set(color_key, src_gen);
 +				if (color_key != s.scene_key && surface_w * 4 >= s.scene_w * 3 && surface_h * 4 >= s.scene_h * 3) s.composite_this = color_key;
 +			}
-+			else if (!perspective && s.cam.valid && (color_key == s.scene_key || color_key == s.composite_this || s.is_screen(color_key)))
++			else if (!perspective && s.cam.valid && color_key != ~0ull && (color_key == s.scene_key || color_key == s.composite_this || s.is_screen(color_key)))
 +			{
 +				// HUD, order tickets, menus: on a plane in the world, in the eye view of the picture already in that target.
 +				// Flat draws before any 3D draw this frame are backdrops (sky, scenery pictures): far away instead.
@@ -5816,6 +6118,24 @@ index 000000000..1551ff5a6
 +			}
 +		}
 +
++		if (s.drawlog)
++		{
++			const f32* m = consts ? consts + 4 : nullptr;
++			std::fprintf(s.drawlog_f, "%4d kind %d mvp %d persp %d surf %ux%u key %llx%s%s%s tex %u",
++				s.drawlog_n++, kind, uses_mvp, perspective, surface_w, surface_h, static_cast<unsigned long long>(color_key),
++				color_key == s.scene_key ? " SCENE" : "", color_key == s.composite_this ? " COMP" : "", s.is_screen(color_key) ? " SCREEN" : "", tex_count);
++			for (u32 i = 0; i < tex_count && i < 4; i++) std::fprintf(s.drawlog_f, " %llx%s", static_cast<unsigned long long>(tex_keys[i]),
++				std::find(s.tainted.begin(), s.tainted.end(), tex_keys[i]) != s.tainted.end() ? "*" : "");
++			if (m)
++			{
++				const vec3 r2{m[8], m[9], m[10]}, r3{m[12], m[13], m[14]};
++				const f32 l2 = dot(r3, r3);
++				std::fprintf(s.drawlog_f, " | r0 %.3f %.3f %.3f %.3f r1 %.3f %.3f %.3f %.3f r2 %.3f %.3f %.3f %.3f r3 %.3f %.3f %.3f %.3f",
++					m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
++				if (l2 > 1e-8f) std::fprintf(s.drawlog_f, " A %.4f", -dot(r2, r3) / l2);
++			}
++			std::fprintf(s.drawlog_f, "\n");
++		}
 +		if (kind == 1) s.n3++;
 +		else if (kind == 2) s.n2++;
 +		else if (kind == 3) s.n2b++;
@@ -5928,6 +6248,32 @@ index 000000000..1551ff5a6
 +				std::fprintf(out, "%05x: %08x  %s\n", pc, static_cast<u32>(data[pc] << 24 | data[pc + 1] << 16 | data[pc + 2] << 8 | data[pc + 3]), dis.last_opcode.c_str());
 +			}
 +			std::fclose(out);
++			return 0;
++		}
++		if (cmd == "--ouvr-cards" && argc >= 3)
++		{
++			// Draws every headset card to PNG files in a folder, to look at the design without a headset
++			const std::string dir = std::string(argv[2]) + "/";
++			const auto out = [&](const char* name, const ui::card& c, u32 w, u32 h)
++			{
++				std::vector<u8> px;
++				const bool ok = ui::render(c, w, h, px) && ui::save_png(dir + name, px.data(), w, h);
++				std::printf("%s: %s\n", name, ok ? "ok" : "FAILED");
++			};
++			ui::card c;
++			c.kicker = L"ORDER UP!! VR"; c.title = L"Opening the restaurant"; c.subtitle = L"Starting the game on your PC. Keep its window open.";
++			c.progress = -2; c.phase = 0.35f; c.progress_label = L"12 s"; c.tip = L"GRIP grabs and holds. TRIGGER chooses.";
++			out("panel_start.png", c, panel_w, panel_h);
++			c = {}; c.kicker = L"FIRST START"; c.title = L"Setting up your kitchen"; c.subtitle = L"A one-time step after installing or updating. Later starts are quick.";
++			c.progress = 42; c.progress_label = L"About 3 minutes left"; c.tip = L"To flip, hold GRIP and flick your wrist up. Or flick the thumbstick up.";
++			out("panel_progress.png", c, panel_w, panel_h);
++			c = {}; c.kicker = L"PAUSED"; c.title = L"The game window is minimized";
++			c.subtitle = L"Restore the Order Up!! window on your PC (click it in the taskbar). The headset needs that window open.";
++			c.tip = L"Hold the left MENU button for 2 seconds to see all controls.";
++			out("panel_minimized.png", c, panel_w, panel_h);
++			out("help.png", help_card(), help_w, help_h);
++			out("sign.png", sign_card(true), sign_w, sign_h);
++			out("calib.png", calib_card(), 1024, 300);
 +			return 0;
 +		}
 +		if (cmd == "--ouvr-chef-test" && argc >= 4)
@@ -6789,6 +7135,417 @@ index 000000000..fa57e5421
 +			nrm[i] = normalize(n);
 +		}
 +		(void)root;
++	}
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_ui.inl b/rpcs3/Emu/Io/OrderUpVR_ui.inl
+new file mode 100644
+index 000000000..3ee399e1b
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_ui.inl
+@@ -0,0 +1,405 @@
++// Order Up VR: the cards shown in the headset (loading, controls, the diner sign, hints), drawn with Direct2D and
++// DirectWrite into premultiplied BGRA pictures. Also writes PNG files for the developer tools.
++// Included from OrderUpVR.cpp inside namespace ouvr.
++
++namespace ui
++{
++	struct row { std::wstring key, text; };
++
++	struct card
++	{
++		enum style_t { PANEL, SIGN, HELP, HINT } style = PANEL;
++		std::wstring kicker, title, subtitle;
++		std::vector<row> rows;
++		int progress = -1;            // 0..100; -2 = busy (moving bar)
++		f32 phase = 0.f;              // 0..1: where the busy bar is
++		std::wstring progress_label;  // under the bar, left
++		std::wstring tip;             // footer
++		int columns = 1;              // rows in this many columns (controls card)
++
++		std::wstring signature() const
++		{
++			std::wstring s = kicker + L"|" + title + L"|" + subtitle + L"|" + progress_label + L"|" + tip + L"|" + std::to_wstring(progress) + L"|" + std::to_wstring(static_cast<int>(phase * 20));
++			for (const auto& r : rows) s += L"|" + r.key + L"=" + r.text;
++			return s;
++		}
++	};
++
++	inline std::wstring wide(const std::string& s)
++	{
++		if (s.empty()) return {};
++		const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
++		std::wstring w(n, L'\0');
++		MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
++		return w;
++	}
++
++	struct factories
++	{
++		ID2D1Factory* d2d = nullptr;
++		IDWriteFactory* dw = nullptr;
++		IWICImagingFactory* wic = nullptr;
++		bool tried = false;
++	};
++
++	inline factories& fac()
++	{
++		thread_local factories f;
++		if (!f.tried)
++		{
++			f.tried = true;
++			CoInitializeEx(nullptr, COINIT_MULTITHREADED);
++			D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &f.d2d);
++			DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&f.dw));
++			CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f.wic));
++		}
++		return f;
++	}
++
++	template <typename T> void rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
++
++	inline D2D1_COLOR_F rgba(u32 rgb, f32 a = 1.f) { return D2D1::ColorF(rgb, a); }
++
++	struct painter
++	{
++		ID2D1RenderTarget* rt = nullptr;
++		IDWriteFactory* dw = nullptr;
++		ID2D1Factory* d2d = nullptr;
++
++		IDWriteTextFormat* font(f32 size, DWRITE_FONT_WEIGHT weight, bool display = false, bool wrap = true, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING)
++		{
++			IDWriteTextFormat* tf = nullptr;
++			dw->CreateTextFormat(display ? L"Segoe UI Variable Display" : L"Segoe UI Variable Text", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", &tf);
++			if (!tf) dw->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", &tf);
++			if (tf)
++			{
++				tf->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
++				tf->SetTextAlignment(align);
++				if (!wrap)
++				{
++					DWRITE_TRIMMING tr{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
++					IDWriteInlineObject* ell = nullptr;
++					dw->CreateEllipsisTrimmingSign(tf, &ell);
++					tf->SetTrimming(&tr, ell);
++					rel(ell);
++				}
++			}
++			return tf;
++		}
++
++		// Draws text in a box; returns the height it took
++		f32 text(const std::wstring& s, f32 x, f32 y, f32 w, f32 h, f32 size, DWRITE_FONT_WEIGHT weight, D2D1_COLOR_F col, bool display = false, bool wrap = true,
++			DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING)
++		{
++			if (s.empty()) return 0.f;
++			IDWriteTextFormat* tf = font(size, weight, display, wrap, align);
++			if (!tf) return 0.f;
++			IDWriteTextLayout* tl = nullptr;
++			dw->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), tf, w, h, &tl);
++			f32 used = 0.f;
++			if (tl)
++			{
++				ID2D1SolidColorBrush* b = nullptr;
++				rt->CreateSolidColorBrush(col, &b);
++				if (b) rt->DrawTextLayout({x, y}, tl, b, D2D1_DRAW_TEXT_OPTIONS_CLIP);
++				DWRITE_TEXT_METRICS m{};
++				tl->GetMetrics(&m);
++				used = m.height;
++				rel(b);
++				rel(tl);
++			}
++			rel(tf);
++			return used;
++		}
++
++		f32 text_width(const std::wstring& s, f32 size, DWRITE_FONT_WEIGHT weight)
++		{
++			IDWriteTextFormat* tf = font(size, weight, false, false);
++			if (!tf) return 0.f;
++			IDWriteTextLayout* tl = nullptr;
++			dw->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), tf, 4000.f, 400.f, &tl);
++			DWRITE_TEXT_METRICS m{};
++			if (tl) tl->GetMetrics(&m);
++			rel(tl);
++			rel(tf);
++			return m.widthIncludingTrailingWhitespace;
++		}
++
++		void fill_round(D2D1_RECT_F r, f32 rad, D2D1_COLOR_F col)
++		{
++			ID2D1SolidColorBrush* b = nullptr;
++			rt->CreateSolidColorBrush(col, &b);
++			if (b) rt->FillRoundedRectangle({r, rad, rad}, b);
++			rel(b);
++		}
++
++		void stroke_round(D2D1_RECT_F r, f32 rad, D2D1_COLOR_F col, f32 width)
++		{
++			ID2D1SolidColorBrush* b = nullptr;
++			rt->CreateSolidColorBrush(col, &b);
++			if (b) rt->DrawRoundedRectangle({r, rad, rad}, b, width);
++			rel(b);
++		}
++
++		ID2D1LinearGradientBrush* linear(D2D1_POINT_2F a, D2D1_POINT_2F b, std::initializer_list<D2D1_GRADIENT_STOP> stops)
++		{
++			ID2D1GradientStopCollection* sc = nullptr;
++			std::vector<D2D1_GRADIENT_STOP> v(stops);
++			rt->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), &sc);
++			ID2D1LinearGradientBrush* br = nullptr;
++			if (sc) rt->CreateLinearGradientBrush({a, b}, sc, &br);
++			rel(sc);
++			return br;
++		}
++
++		ID2D1RadialGradientBrush* radial(D2D1_POINT_2F c, f32 r, D2D1_COLOR_F col)
++		{
++			const D2D1_GRADIENT_STOP st[2] = {{0.f, col}, {1.f, D2D1::ColorF(col.r, col.g, col.b, 0.f)}};
++			ID2D1GradientStopCollection* sc = nullptr;
++			rt->CreateGradientStopCollection(st, 2, &sc);
++			ID2D1RadialGradientBrush* br = nullptr;
++			if (sc) rt->CreateRadialGradientBrush({c, {0, 0}, r, r}, sc, &br);
++			rel(sc);
++			return br;
++		}
++
++		// The brand mark: a rounded square in the orange-to-pink gradient with "VR"
++		void badge(f32 x, f32 y, f32 s)
++		{
++			ID2D1LinearGradientBrush* g = linear({x, y}, {x + s, y + s}, {{0.f, rgba(0xFFA21F)}, {1.f, rgba(0xFF3D6E)}});
++			if (g) rt->FillRoundedRectangle({{x, y, x + s, y + s}, s * 0.28f, s * 0.28f}, g);
++			rel(g);
++			text(L"VR", x, y + s * 0.18f, s, s, s * 0.40f, DWRITE_FONT_WEIGHT_BLACK, rgba(0xFFFFFF), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++		}
++
++		// A key chip like the launcher's: tinted orange with a thin border; returns its width
++		f32 chip(const std::wstring& s, f32 x, f32 y, f32 size, f32 min_w = 0.f)
++		{
++			const f32 pad = size * 0.65f, w = std::max(min_w, text_width(s, size, DWRITE_FONT_WEIGHT_BOLD) + pad * 2.f), h = size * 1.75f;
++			fill_round({x, y, x + w, y + h}, h * 0.32f, rgba(0xFF8A00, 0.16f));
++			stroke_round({x + 0.75f, y + 0.75f, x + w - 0.75f, y + h - 0.75f}, h * 0.32f, rgba(0xFF8A00, 0.55f), 1.5f);
++			text(s, x, y + (h - size * 1.33f) * 0.5f, w, h, size, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFB25C), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++			return w;
++		}
++
++		// Frosted dark glass with a soft shadow, warm glows and a fine edge
++		void glass(D2D1_RECT_F r, f32 rad)
++		{
++			for (int k = 6; k >= 1; k--)
++			{
++				const f32 g = k * 3.f;
++				fill_round({r.left - g, r.top - g + 6.f, r.right + g, r.bottom + g + 6.f}, rad + g, rgba(0x000000, 0.045f));
++			}
++			ID2D1LinearGradientBrush* body = linear({r.left, r.top}, {r.left, r.bottom}, {{0.f, rgba(0x1D2130, 0.97f)}, {1.f, rgba(0x111319, 0.97f)}});
++			if (body) rt->FillRoundedRectangle({r, rad, rad}, body);
++			rel(body);
++			ID2D1RoundedRectangleGeometry* clip = nullptr;
++			d2d->CreateRoundedRectangleGeometry({r, rad, rad}, &clip);
++			if (clip)
++			{
++				ID2D1Layer* layer = nullptr;
++				rt->CreateLayer(&layer);
++				if (layer)
++				{
++					rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip), layer);
++					const f32 w = r.right - r.left, h = r.bottom - r.top;
++					if (auto* g1 = radial({r.left + w * 0.08f, r.top + h * 0.02f}, std::max(w, h) * 0.55f, rgba(0xFF8A00, 0.22f))) { rt->FillRectangle(r, g1); g1->Release(); }
++					if (auto* g2 = radial({r.right - w * 0.05f, r.bottom}, std::max(w, h) * 0.5f, rgba(0xFF3D6E, 0.16f))) { rt->FillRectangle(r, g2); g2->Release(); }
++					if (auto* g3 = radial({r.left + w * 0.55f, r.top + h * 0.6f}, std::max(w, h) * 0.35f, rgba(0x8B5CF6, 0.08f))) { rt->FillRectangle(r, g3); g3->Release(); }
++					// light along the top edge
++					if (auto* hl = linear({r.left, r.top}, {r.left, r.top + 90.f}, {{0.f, rgba(0xFFFFFF, 0.07f)}, {1.f, rgba(0xFFFFFF, 0.f)}})) { rt->FillRectangle({r.left, r.top, r.right, r.top + 90.f}, hl); hl->Release(); }
++					rt->PopLayer();
++					rel(layer);
++				}
++				rel(clip);
++			}
++			stroke_round({r.left + 1.f, r.top + 1.f, r.right - 1.f, r.bottom - 1.f}, rad - 1.f, rgba(0xFFFFFF, 0.13f), 2.f);
++		}
++
++		void progress(D2D1_RECT_F r, int percent, f32 phase)
++		{
++			const f32 h = r.bottom - r.top;
++			fill_round(r, h * 0.5f, rgba(0x2A2F3B));
++			f32 x0 = r.left, x1 = r.left;
++			if (percent >= 0) x1 = r.left + (r.right - r.left) * std::clamp(percent, 0, 100) / 100.f;
++			else
++			{
++				const f32 span = (r.right - r.left) * 0.28f, t = phase - std::floor(phase);
++				x0 = r.left - span + (r.right - r.left + span) * t;
++				x1 = x0 + span;
++				x0 = std::max(x0, r.left);
++				x1 = std::min(x1, r.right);
++			}
++			if (x1 - x0 < h) return;
++			ID2D1LinearGradientBrush* g = linear({r.left, r.top}, {r.right, r.top}, {{0.f, rgba(0xFFA21F)}, {1.f, rgba(0xFF3D6E)}});
++			if (g) rt->FillRoundedRectangle({{x0, r.top, x1, r.bottom}, h * 0.5f, h * 0.5f}, g);
++			rel(g);
++			// a soft glow under the fill
++			fill_round({x0, r.top - 3.f, x1, r.bottom + 3.f}, h * 0.5f + 3.f, rgba(0xFF7A00, 0.10f));
++		}
++
++		// Neon tube text for the diner sign: a wide soft halo, then the bright tube
++		void neon(const std::wstring& s, f32 x, f32 y, f32 w, f32 h, f32 size, u32 col)
++		{
++			for (int ring = 3; ring >= 1; ring--)
++			{
++				const f32 d = ring * 2.6f;
++				for (int k = 0; k < 12; k++)
++				{
++					const f32 a = k * 0.5235988f;
++					text(s, x + std::cos(a) * d, y + std::sin(a) * d, w, h, size, DWRITE_FONT_WEIGHT_BOLD, rgba(col, 0.035f * (4 - ring)), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++				}
++			}
++			text(s, x, y, w, h, size, DWRITE_FONT_WEIGHT_BOLD, rgba(col), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++			text(s, x, y, w, h, size, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFF3E0, 0.35f), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++		}
++	};
++
++	// Draws the card into premultiplied BGRA pixels (w x h)
++	inline bool render(const card& c, u32 w, u32 h, std::vector<u8>& out)
++	{
++		auto& f = fac();
++		if (!f.d2d || !f.dw || !f.wic) return false;
++		IWICBitmap* bmp = nullptr;
++		if (FAILED(f.wic->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bmp))) return false;
++		ID2D1RenderTarget* rt = nullptr;
++		const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.f, 96.f);
++		if (FAILED(f.d2d->CreateWicBitmapRenderTarget(bmp, props, &rt))) { rel(bmp); return false; }
++		painter p{rt, f.dw, f.d2d};
++		rt->BeginDraw();
++		rt->Clear(D2D1::ColorF(0, 0.f));
++		rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
++		const f32 W = static_cast<f32>(w), H = static_cast<f32>(h), m = 22.f;   // margin for the shadow
++		const D2D1_RECT_F r{m, m, W - m, H - m};
++
++		if (c.style == card::SIGN)
++		{
++			// A diner's neon sign: dark enamel board, a pink neon border, the name in orange neon
++			p.fill_round({r.left - 6.f, r.top - 6.f, r.right + 6.f, r.bottom + 6.f}, 40.f, rgba(0x000000, 0.25f));
++			ID2D1LinearGradientBrush* board = p.linear({r.left, r.top}, {r.left, r.bottom}, {{0.f, rgba(0x1A1C26)}, {1.f, rgba(0x0D0E13)}});
++			if (board) rt->FillRoundedRectangle({r, 34.f, 34.f}, board);
++			rel(board);
++			p.stroke_round(r, 34.f, rgba(0xB9BFCC, 0.55f), 5.f);   // chrome trim
++			const D2D1_RECT_F tube{r.left + 18.f, r.top + 18.f, r.right - 18.f, r.bottom - 18.f};
++			for (int k = 4; k >= 1; k--) p.stroke_round(tube, 22.f, rgba(0xFF3D6E, 0.07f), 3.f + k * 5.f);
++			p.stroke_round(tube, 22.f, rgba(0xFF6F96), 3.f);
++			const f32 left = tube.left + 30.f, inner_w = tube.right - tube.left - 60.f;
++			p.neon(c.title, left, tube.top + 14.f, inner_w, 120.f, 92.f, 0xFF9A2E);
++			p.text(c.subtitle, left, tube.top + 132.f, inner_w, 60.f, 30.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xF3F4F7), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++			p.text(c.tip, left, tube.top + 176.f, inner_w, 50.f, 23.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++		}
++		else
++		{
++			const f32 rad = c.style == card::HINT ? 34.f : 40.f;
++			p.glass(r, rad);
++			const f32 pad = 52.f;
++			f32 x = r.left + pad, y = r.top + 44.f;
++			const f32 cw = r.right - r.left - pad * 2.f;
++			if (c.style == card::HINT)
++			{
++				// The PlayStation square, pink, as big as the card allows
++				const f32 s = H - m * 2.f - 88.f;
++				const D2D1_RECT_F sq{x, r.top + 44.f, x + s, r.top + 44.f + s};
++				for (int k = 3; k >= 1; k--) p.stroke_round(sq, 18.f, rgba(0xFF6FB5, 0.08f), 8.f + k * 8.f);
++				p.fill_round(sq, 18.f, rgba(0xFF6FB5, 0.12f));
++				const f32 in = s * 0.26f;
++				p.stroke_round({sq.left + in, sq.top + in, sq.right - in, sq.bottom - in}, 4.f, rgba(0xFF8CC6), 9.f);
++				x += s + 40.f;
++				const f32 tw = r.right - pad - x;
++				p.text(c.kicker, x, y, tw, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);
++				y += 36.f;
++				y += p.text(c.title, x, y, tw, 90.f, 52.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true, false) + 8.f;
++				p.text(c.subtitle, x, y, tw, r.bottom - y - 20.f, 26.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9));
++			}
++			else
++			{
++				// Header: badge, kicker, title, subtitle
++				p.badge(x, y, 60.f);
++				p.text(c.kicker, x + 80.f, y + 16.f, cw - 80.f, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);
++				y += 84.f;
++				y += p.text(c.title, x, y, cw, 140.f, c.style == card::HELP ? 50.f : 54.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true) + 6.f;
++				if (!c.subtitle.empty()) y += p.text(c.subtitle, x, y, cw, 120.f, 26.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9)) + 18.f;
++				else y += 14.f;
++
++				// Rows: key chips and their meaning, in one or two columns
++				if (!c.rows.empty())
++				{
++					const int cols = std::max(1, c.columns);
++					const f32 gap = 34.f, colw = (cw - gap * (cols - 1)) / cols;
++					f32 key_w = 0.f;
++					for (const auto& rw : c.rows) key_w = std::max(key_w, p.text_width(rw.key, 19.f, DWRITE_FONT_WEIGHT_BOLD) + 19.f * 1.3f);
++					key_w = std::min(key_w, colw * 0.45f);
++					const int per_col = (static_cast<int>(c.rows.size()) + cols - 1) / cols;
++					f32 col_bottom = y;
++					for (int ci = 0; ci < cols; ci++)
++					{
++						f32 yy = y;
++						const f32 xx = x + ci * (colw + gap);
++						for (int k = ci * per_col; k < std::min<int>((ci + 1) * per_col, static_cast<int>(c.rows.size())); k++)
++						{
++							p.chip(c.rows[k].key, xx, yy, 19.f, key_w);
++							const f32 th = p.text(c.rows[k].text, xx + key_w + 18.f, yy + 1.f, colw - key_w - 18.f, 90.f, 24.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xF3F4F7));
++							yy += std::max(th, 19.f * 1.75f) + 16.f;
++						}
++						col_bottom = std::max(col_bottom, yy);
++					}
++					y = col_bottom + 4.f;
++				}
++
++				// Progress at the bottom, tip under it
++				f32 bottom = r.bottom - 40.f;
++				if (!c.tip.empty())
++				{
++					const f32 tip_y = bottom - 36.f;
++					p.fill_round({x, tip_y - 6.f, x + cw, tip_y + 40.f}, 14.f, rgba(0xFFFFFF, 0.04f));
++					const f32 cwid = p.chip(L"TIP", x + 10.f, tip_y + 1.f, 15.f);
++					p.text(c.tip, x + 10.f + cwid + 14.f, tip_y + 3.f, cw - cwid - 34.f, 40.f, 21.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9), false, false);
++					bottom = tip_y - 30.f;
++				}
++				if (c.progress != -1)
++				{
++					const f32 by = bottom - 16.f;
++					if (!c.progress_label.empty()) p.text(c.progress_label, x, by - 42.f, cw * 0.78f, 40.f, 22.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB7BDC9), false, false);
++					if (c.progress >= 0) p.text(std::to_wstring(c.progress) + L"%", x, by - 46.f, cw, 44.f, 30.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true, false, DWRITE_TEXT_ALIGNMENT_TRAILING);
++					p.progress({x, by, x + cw, by + 16.f}, c.progress, c.phase);
++				}
++			}
++		}
++
++		const HRESULT hr = rt->EndDraw();
++		rel(rt);
++		bool ok = SUCCEEDED(hr);
++		if (ok)
++		{
++			out.resize(static_cast<usz>(w) * h * 4);
++			ok = SUCCEEDED(bmp->CopyPixels(nullptr, w * 4, static_cast<UINT>(out.size()), out.data()));
++		}
++		rel(bmp);
++		return ok;
++	}
++
++	// PNG of premultiplied BGRA pixels (developer tools and the headset simulator)
++	inline bool save_png(const std::string& path, const u8* bgra, u32 w, u32 h, bool premultiplied = true)
++	{
++		auto& f = fac();
++		if (!f.wic) return false;
++		std::vector<u8> px(bgra, bgra + static_cast<usz>(w) * h * 4);
++		if (premultiplied)
++			for (usz i = 0; i + 3 < px.size(); i += 4)
++				if (const u8 al = px[i + 3]; al && al < 255)
++					for (int k = 0; k < 3; k++) px[i + k] = static_cast<u8>(std::min(255, px[i + k] * 255 / al));
++		IWICStream* st = nullptr;
++		IWICBitmapEncoder* enc = nullptr;
++		IWICBitmapFrameEncode* frame = nullptr;
++		bool ok = SUCCEEDED(f.wic->CreateStream(&st)) && SUCCEEDED(st->InitializeFromFilename(wide(path).c_str(), GENERIC_WRITE)) &&
++			SUCCEEDED(f.wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) && SUCCEEDED(enc->Initialize(st, WICBitmapEncoderNoCache)) &&
++			SUCCEEDED(enc->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(w, h));
++		WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
++		ok = ok && SUCCEEDED(frame->SetPixelFormat(&fmt));
++		ok = ok && SUCCEEDED(frame->WritePixels(h, w * 4, w * h * 4, px.data())) && SUCCEEDED(frame->Commit()) && SUCCEEDED(enc->Commit());
++		rel(frame);
++		rel(enc);
++		rel(st);
++		return ok;
 +	}
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp

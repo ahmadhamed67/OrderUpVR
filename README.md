@@ -37,6 +37,9 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | Menus as a menu board in a diner around you | New in 0.9.0, being tested |
 | The game's own male or female chef as your body (picked automatically from the game), working lobby mirror | 0.10.0, automatic chef and hands that fit the controllers in 0.11.0 |
 | Cutscenes on the diner's big screen, restaurant-wide walls, world scale measured per restaurant, steady HUD | New in 0.11.0, being tested |
+| Wide view (the game draws the restaurant around you), tickets and pause menu placed in the room, new headset cards, full-length mirror | New in 0.12.0, checked in the headset simulator |
+
+What is still flat and the plan: [docs/VR_AUDIT.md](docs/VR_AUDIT.md). Developers can test without a headset with the simulator (`tools/Sim.ps1`).
 
 ## Controls (0.9.0)
 

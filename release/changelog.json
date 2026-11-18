@@ -1,5 +1,28 @@
 [
   {
+    "version": "0.12.0",
+    "date": "2026-11-18",
+    "simple": [
+      "New look in the headset: loading, controls and hints are frosted-glass cards, and the diner has a neon sign.",
+      "The mirror is full length, from your shoes to over your head, with the counter moved out of the way.",
+      "Wide view: the game now draws the restaurant around you, not just what its camera faces. Customers and the street outside stay when you look around.",
+      "The order tickets no longer follow your head. They hang in the kitchen at a comfortable distance.",
+      "The blue strip at the top of your view is gone (it was the ticket rail's background stuck to your head).",
+      "The pause menu (Resume, Options, Quit) floats in front of you and you can point at it.",
+      "You can walk further in the kitchen.",
+      "New setting: Wide view (on by default)."
+    ],
+    "notes": [
+      "Headset cards are drawn with Direct2D: frosted glass, warm glows, the VR badge, a gradient progress bar, key chips; the diner sign is neon. rpcs3.exe --ouvr-cards <folder> renders them all to PNG.",
+      "HUD: the game draws its HUD with a blurred scene copy still bound in texture slot 1; the mod only checks the first texture now, so the HUD is placed in the room. The HUD plane is at the HUD distance (1.5 m by default) at its natural size, a little enlarged.",
+      "Wide view: the camera field-of-view property records (type 0x00344d60, value at +0x0c, camera object at +0x04 with the same value at +0x64) are found in the heap and widened up to 80 degrees tall while you are inside the game; restored for cutscenes, menus and when switched off. The HUD and the pointer keep the natural size.",
+      "The scene's target is the one most 3D draws go to (Burger Face draws a small shadow mask first). The shadow map (no colour target) is no longer bent as HUD.",
+      "Pointing at the HUD: the hand or laser meets the HUD plane first along the ticket rail, or anywhere while the pause menu is open.",
+      "Walls: 1st to 99th percentile of where the restaurant's things are, at least 2 m each way.",
+      "Developer: headset simulator (ORDERUP_VR_SIM, tools/Sim.ps1) that renders the game for a virtual head and saves each eye's picture, draw logs and memory peek/find/poke. See docs/VR_AUDIT.md for what is still flat and the plan."
+    ]
+  },
+  {
     "version": "0.11.0",
     "date": "2026-11-18",
     "simple": [
