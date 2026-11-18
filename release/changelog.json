@@ -1,5 +1,27 @@
 [
   {
+    "version": "0.10.1",
+    "date": "2026-11-18",
+    "simple": [
+      "Fixed a crash when entering the second restaurant.",
+      "The fast food restaurant is in 3D around you again, instead of a small square far away.",
+      "Pressing grip now closes your chef's fingers properly (no more twisting wrist).",
+      "Looking down, you see your chef's jacket instead of a ring around your waist.",
+      "You can walk and turn around the lobby with the sticks.",
+      "The mirror now hangs on the diner wall above the counter, a little farther away.",
+      "The launcher asks before updating, and shows what's new in plain words."
+    ],
+    "notes": [
+      "Crash fix: the camera research (which briefly changes game memory to find the camera) was the likely cause of the crash in the second restaurant's opening scene. Its job is done, so it no longer runs during play.",
+      "Fast food restaurant: the game draws the 3D scene there twice (first depth only, then in colour). The mod took the depth-only pass as the scene, so the scene's picture was shrunk onto a far panel with the blue void inside. The scene is now only taken from draws with a colour target, which also lets the empty background turn into the calm dark room.",
+      "Grip: the male chef's hands are bigger than the female chef's, and his palm was treated as fingers, so the whole hand bent at the wrist. Fingers are now found from each chef's own fingertip reach; grip curls only the fingers.",
+      "First person: your eyes now sit just in front of the chef's belly and only the head and hat above the shoulders are cut away, so looking down shows the jacket, arms and legs.",
+      "Lobby: left stick walks, right stick turns (snap or smooth, as set), the diner's walls and counters keep you inside. To move or resize the menu board, hold both GRIPs and use the sticks.",
+      "Mirror: a chrome-framed diner mirror on the left wall above the counter; the diner is narrower so it is about 3 m away.",
+      "Launcher: updates are no longer installed automatically. When one is ready, the launcher shows its version with Update now and Later, and What's new opens a plain-language list of the changes."
+    ]
+  },
+  {
     "version": "0.10.0",
     "date": "2026-11-18",
     "notes": [

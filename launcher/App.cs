@@ -217,6 +217,8 @@ namespace OrderUpVR
             var layer = Get<Grid>("DialogLayer");
             Get<TextBlock>("DialogTitle").Text = title;
             Get<TextBlock>("DialogText").Text = text;
+            Get<TextBlock>("DialogMoreLink").Visibility = Visibility.Collapsed;
+            Get<ScrollViewer>("DialogMoreScroll").Visibility = Visibility.Collapsed;
             var check = Get<CheckBox>("DialogCheck");
             check.Visibility = checkText == null ? Visibility.Collapsed : Visibility.Visible;
             var ct = new TextBlock(); ct.Text = checkText; ct.TextWrapping = TextWrapping.Wrap; ct.MaxWidth = 370;
@@ -811,13 +813,60 @@ namespace OrderUpVR
         {
             manifest = m; busy = false; SetProgress(-1);
             RenderChangelog(); RefreshAll();
-            if (m.launcher != null && Core.IsNewer(m.launcher.version, Core.LauncherVersion)) { UpdateLauncher(m.launcher); return; }
-            if (UpdateAvailable) DownloadMod(m);
+            bool launcherNewer = m.launcher != null && Core.IsNewer(m.launcher.version, Core.LauncherVersion);
+            if (!ModInstalled) { if (launcherNewer) UpdateLauncher(m.launcher); else DownloadMod(m); return; }   // first install: no question
+            if (launcherNewer || UpdateAvailable)
+            {
+                SetStatus("Update " + m.version + " available", 2, "Press Update now when you're ready.");
+                if (userAsked || !updatePromptShown) { updatePromptShown = true; ShowUpdatePrompt(m, launcherNewer); }
+            }
             else
             {
                 SetStatus("Ready to play", 0, "You have the latest version (" + s.InstalledVersion + ").");
                 if (userAsked) ShowToast("You have the latest version.", true);
             }
+        }
+
+        bool updatePromptShown;
+
+        // Asks before updating, with the changes in plain words behind "What's new"
+        void ShowUpdatePrompt(Manifest m, bool launcherNewer)
+        {
+            ShowDialog("Update available",
+                "Order Up VR " + m.version + " is ready (you have " + (string.IsNullOrEmpty(s.InstalledVersion) ? "an older version" : s.InstalledVersion) + "). Updating takes about a minute.",
+                null, false,
+                Btn("Update now", delegate { if (launcherNewer) UpdateLauncher(m.launcher); else DownloadMod(m); }),
+                Btn("Later", null));
+            var more = Get<StackPanel>("DialogMore");
+            more.Children.Clear();
+            if (m.changelog != null)
+                foreach (ChangelogEntry e in m.changelog)
+                {
+                    if (!string.IsNullOrEmpty(s.InstalledVersion) && !Core.IsNewer(e.version, s.InstalledVersion)) continue;
+                    var head = new TextBlock(); head.Text = "Version " + e.version; head.FontWeight = FontWeights.SemiBold; head.Foreground = Brushes.White; head.Margin = new Thickness(0, 6, 0, 4);
+                    more.Children.Add(head);
+                    List<string> lines = e.simple != null && e.simple.Count > 0 ? e.simple : e.notes;
+                    if (lines == null) continue;
+                    foreach (string l in lines)
+                    {
+                        var t = new TextBlock(); t.Text = "•  " + l; t.TextWrapping = TextWrapping.Wrap; t.Foreground = DimBrush; t.FontSize = 13; t.Margin = new Thickness(0, 0, 0, 5);
+                        more.Children.Add(t);
+                    }
+                }
+            var link = Get<TextBlock>("DialogMoreLink");
+            var scroll = Get<ScrollViewer>("DialogMoreScroll");
+            link.Text = "What's new  ▾";
+            link.Visibility = more.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            link.MouseLeftButtonUp -= ToggleWhatsNew;
+            link.MouseLeftButtonUp += ToggleWhatsNew;
+        }
+
+        void ToggleWhatsNew(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            var scroll = Get<ScrollViewer>("DialogMoreScroll");
+            bool open = scroll.Visibility != Visibility.Visible;
+            scroll.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            Get<TextBlock>("DialogMoreLink").Text = open ? "What's new  ▴" : "What's new  ▾";
         }
 
         void DownloadMod(Manifest m)

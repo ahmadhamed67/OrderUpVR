@@ -24,6 +24,7 @@ namespace OrderUpVR
         public string version { get; set; }
         public string date { get; set; }
         public List<string> notes { get; set; }
+        public List<string> simple { get; set; }   // the same changes in plain words, for the update prompt
     }
 
     public class LauncherInfo
