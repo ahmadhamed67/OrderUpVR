@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..2b7077a85
+index 000000000..2efe0834a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,4745 @@
+@@ -0,0 +1,5178 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -517,6 +517,8 @@ index 000000000..2b7077a85
 +#include "Emu/system_progress.hpp"
 +#include "Utilities/File.h"
 +#include "Emu/Memory/vm.h"
++#include "Crypto/unself.h"
++#include "Emu/VFS.h"
 +
 +#include <zlib.h>
 +
@@ -650,6 +652,8 @@ index 000000000..2b7077a85
 +			const vec3 k = a * (1.f / std::fabs(s));
 +			return v * c + cross(k, v) * s + k * (dot(k, v) * (1.f - c));
 +		}
++
++#include "OrderUpVR_chef.inl"
 +
 +		struct mat4 { f32 m[16]{}; };
 +
@@ -2018,6 +2022,21 @@ index 000000000..2b7077a85
 +			u32 bw = 0, bh = 0;
 +			u32 ew = 512, eh = 512;          // the room's images (same size as the body's)
 +			vec3 pattern_size{1.f, 1.f, 1.f}; // room boxes: their size, for floor and wall patterns
++			// The chef (the game's own model) and the mirror
++			ID3D11VertexShader* cvs = nullptr;
++			ID3D11PixelShader* cps = nullptr;
++			ID3D11InputLayout* cil = nullptr;
++			ID3D11Buffer* ccb = nullptr;
++			ID3D11Buffer* cvb = nullptr;
++			ID3D11Buffer* cib = nullptr;
++			ID3D11Texture2D* ctex = nullptr;
++			ID3D11ShaderResourceView* csrv = nullptr;
++			ID3D11SamplerState* csmp = nullptr;
++			u32 cidx = 0, cnv = 0;
++			bool chef_gpu = false;
++			ID3D11DepthStencilState* ds_mask = nullptr;
++			ID3D11DepthStencilState* ds_reset = nullptr;
++			ID3D11DepthStencilState* ds_inside = nullptr;
 +			ID3D11Texture2D* depth[2]{};
 +			ID3D11DepthStencilView* dsv[2]{};
 +			std::map<ID3D11Texture2D*, ID3D11RenderTargetView*> rtv;
@@ -2027,6 +2046,36 @@ index 000000000..2b7077a85
 +		gfx_t g_gfx; // headset thread only
 +
 +		struct cb_data { f32 mvp[16]; f32 model[16]; f32 color[4]; f32 params[4]; };
++		struct chef_cb { f32 vp[16]; f32 eye[4]; f32 clip[4]; f32 tint[4]; f32 pad[4]; };
++
++		constexpr const char* chef_shader = R"(
++cbuffer C : register(b0) { float4x4 vp; float4 eye; float4 clipsph; float4 tint; float4 pad; };
++Texture2D tex : register(t0);
++SamplerState smp : register(s0);
++struct VI { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD0; };
++struct VO { float4 pos : SV_Position; float3 n : NORMAL; float2 uv : TEXCOORD0; float3 wp : TEXCOORD1; };
++VO vs_main(VI i)
++{
++	VO o;
++	o.pos = mul(float4(i.p, 1), vp);
++	o.n = i.n;
++	o.uv = i.uv;
++	o.wp = i.p;
++	return o;
++}
++float4 ps_main(VO i) : SV_Target
++{
++	// First person: your own face and nose are cut away around your eyes
++	if (clipsph.w > 0 && distance(i.wp, clipsph.xyz) < clipsph.w) discard;
++	float3 n = normalize(i.n);
++	float3 tv = eye.xyz - i.wp;
++	// Only surfaces that face the viewer (never the inside of the body)
++	if (dot(n, tv) < -0.05 * length(tv)) discard;
++	float3 c = tex.Sample(smp, i.uv).rgb;
++	float l = 0.58 + 0.42 * saturate(dot(n, normalize(float3(0.3, 0.9, 0.25)))) + 0.10 * saturate(dot(n, normalize(float3(-0.4, 0.2, -0.7))));
++	return float4(c * l * tint.rgb, 1);
++}
++)";
 +
 +		constexpr const char* gfx_shader = R"(
 +cbuffer C : register(b0) { float4x4 mvp; float4x4 model; float4 color; float4 params; };
@@ -2036,12 +2085,14 @@ index 000000000..2b7077a85
 +{
 +	VO o;
 +	o.pos = mul(float4(i.p, 1), mvp);
++	if (params.x > 4.5) o.pos.z = o.pos.w * 0.99999;   // mirror: reset depth to far behind the glass
 +	o.n = mul(i.n, (float3x3)model);
 +	o.lp = i.p;
 +	return o;
 +}
 +float4 ps_main(VO i) : SV_Target
 +{
++	if (params.x > 4.5) return float4(color.rgb, 1);
 +	if (params.x > 1.5)
 +	{
 +		// The restaurant room: params.x = 2 checker floor, 3 wall tiles, 4 lamp glow; params.yzw = box size (m)
@@ -2167,6 +2218,63 @@ index 000000000..2b7077a85
 +			dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
 +			ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&dd, &g.ds_off));
 +
++			// Mirror: the glass marks the stencil, its depth is reset to far, then the reflection draws only there
++			{
++				D3D11_DEPTH_STENCIL_DESC sd{};
++				sd.DepthEnable = TRUE;
++				sd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
++				sd.DepthFunc = D3D11_COMPARISON_LESS;
++				sd.StencilEnable = TRUE;
++				sd.StencilReadMask = sd.StencilWriteMask = 0xff;
++				sd.FrontFace = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_REPLACE, D3D11_COMPARISON_ALWAYS};
++				sd.BackFace = sd.FrontFace;
++				ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&sd, &g.ds_mask));
++				sd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
++				sd.DepthFunc = D3D11_COMPARISON_ALWAYS;
++				sd.FrontFace = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_EQUAL};
++				sd.BackFace = sd.FrontFace;
++				ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&sd, &g.ds_reset));
++				sd.DepthFunc = D3D11_COMPARISON_LESS;
++				ok = ok && SUCCEEDED(dev->CreateDepthStencilState(&sd, &g.ds_inside));
++			}
++
++			// The chef: textured, with your own head cut away in first person
++			{
++				ID3DBlob* cv = nullptr;
++				ID3DBlob* cp = nullptr;
++				ID3DBlob* ce = nullptr;
++				const usz cl = std::strlen(chef_shader);
++				if (SUCCEEDED(compile(chef_shader, cl, "orderupvr_chef", nullptr, nullptr, "vs_main", "vs_4_0", 0, 0, &cv, &ce)) &&
++					SUCCEEDED(compile(chef_shader, cl, "orderupvr_chef", nullptr, nullptr, "ps_main", "ps_4_0", 0, 0, &cp, &ce)))
++				{
++					const D3D11_INPUT_ELEMENT_DESC cl_layout[] =
++					{
++						{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
++						{"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
++						{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
++					};
++					bool cok = SUCCEEDED(dev->CreateVertexShader(cv->GetBufferPointer(), cv->GetBufferSize(), nullptr, &g.cvs)) &&
++						SUCCEEDED(dev->CreatePixelShader(cp->GetBufferPointer(), cp->GetBufferSize(), nullptr, &g.cps)) &&
++						SUCCEEDED(dev->CreateInputLayout(cl_layout, 3, cv->GetBufferPointer(), cv->GetBufferSize(), &g.cil));
++					D3D11_BUFFER_DESC ccd{};
++					ccd.ByteWidth = sizeof(chef_cb);
++					ccd.Usage = D3D11_USAGE_DEFAULT;
++					ccd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++					cok = cok && SUCCEEDED(dev->CreateBuffer(&ccd, nullptr, &g.ccb));
++					D3D11_SAMPLER_DESC smp{};
++					smp.Filter = D3D11_FILTER_ANISOTROPIC;
++					smp.MaxAnisotropy = 4;
++					smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
++					smp.MaxLOD = D3D11_FLOAT32_MAX;
++					cok = cok && SUCCEEDED(dev->CreateSamplerState(&smp, &g.csmp));
++					if (!cok) vr_log("Chef: could not create the chef's graphics resources");
++				}
++				else vr_log("Chef: shader compile failed: %s", ce ? static_cast<const char*>(ce->GetBufferPointer()) : "?");
++				if (cv) cv->Release();
++				if (cp) cp->Release();
++				if (ce) ce->Release();
++			}
++
 +			// Unit sphere
 +			{
 +				std::vector<gvert> v;
@@ -2270,10 +2378,13 @@ index 000000000..2b7077a85
 +			return ok;
 +		}
 +
++		void chef_shutdown();
++
 +		void gfx_destroy()
 +		{
 +			auto& g = g_gfx;
 +			const auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
++			chef_shutdown();
 +			for (auto& [tex, view] : g.rtv) view->Release();
 +			g.rtv.clear();
 +			for (int e = 0; e < 2; e++)
@@ -2285,6 +2396,8 @@ index 000000000..2b7077a85
 +			}
 +			for (gmesh* m : {&g.sphere, &g.cyl, &g.box}) { rel(m->vb); rel(m->ib); }
 +			rel(g.vs); rel(g.ps); rel(g.il); rel(g.cb); rel(g.rs); rel(g.ds_on); rel(g.ds_off);
++			rel(g.cvs); rel(g.cps); rel(g.cil); rel(g.ccb); rel(g.cvb); rel(g.cib); rel(g.csrv); rel(g.ctex); rel(g.csmp);
++			rel(g.ds_mask); rel(g.ds_reset); rel(g.ds_inside);
 +			g = {};
 +		}
 +
@@ -2703,6 +2816,238 @@ index 000000000..2b7077a85
 +			g.pattern_size = {1.f, 1.f, 1.f};
 +		}
 +
++		// ------------------------------------------------- the chef: the game's own model as your body
++		struct chef_runtime
++		{
++			std::thread th;
++			std::atomic<int> state{0};   // 0 nothing, 1 loading, 2 ready, 3 failed
++			int which = -1;              // 0 male, 1 female
++			chef::model m;
++			f32 scale = 1.f;
++			vec3 eye_w{};
++			bool posed = false;
++		};
++		chef_runtime g_chef;
++
++		void chef_shutdown()
++		{
++			if (g_chef.th.joinable()) g_chef.th.join();
++			g_chef.which = -1;
++			g_chef.state = 0;
++			g_chef.posed = false;
++		}
++
++		// The game's USRDIR (disc games: /dev_bdvd; folder games are mounted there too)
++		std::string game_usrdir()
++		{
++			std::string d = vfs::get("/dev_bdvd/PS3_GAME/USRDIR/");
++			if (!d.empty() && fs::is_file(d + "Chef.wad")) return d;
++			std::string boot = Emu.GetBoot();
++			for (int up = 0; up < 4 && !boot.empty(); up++)
++			{
++				const usz cut = boot.find_last_of("/\\");
++				if (cut == std::string::npos) break;
++				boot.resize(cut);
++				for (const char* sub : {"/", "/USRDIR/", "/PS3_GAME/USRDIR/"})
++					if (fs::is_file(boot + sub + "Chef.wad")) return boot + sub;
++			}
++			return {};
++		}
++
++		void chef_release_gpu()
++		{
++			auto& g = g_gfx;
++			for (auto** p : {reinterpret_cast<IUnknown**>(&g.cvb), reinterpret_cast<IUnknown**>(&g.cib), reinterpret_cast<IUnknown**>(&g.csrv), reinterpret_cast<IUnknown**>(&g.ctex)})
++				if (*p) { (*p)->Release(); *p = nullptr; }
++			g.chef_gpu = false;
++		}
++
++		struct chef_gpu_vertex { f32 p[3]; f32 n[3]; f32 uv[2]; };
++
++		// Once per headset frame: load (in the background), upload, and pose the chef to your head and hands.
++		void chef_tick(xr_state& xr)
++		{
++			auto& c = g_chef;
++			auto& g = g_gfx;
++			c.posed = false;
++			const int want = !xr.comfort.body ? -1 : xr.comfort.female ? 1 : 0;
++			if (want < 0 || !g.cvs || c.state == 1) return;
++			if (want != c.which)
++			{
++				if (c.th.joinable()) c.th.join();
++				chef_release_gpu();
++				c.which = want;
++				c.state = 1;
++				const std::string dir = game_usrdir();
++				c.th = std::thread([dir, want]
++				{
++					auto& cc = g_chef;
++					const u64 t0 = GetTickCount64();
++					const bool ok = !dir.empty() && chef::load(cc.m, dir, want == 1);
++					vr_log("Chef: %s the %s chef from the game files%s%s (%zu vertices, %zu triangles, texture %ux%u, %llu ms)", ok ? "rebuilt" : "could not rebuild",
++						want ? "female" : "male", dir.empty() ? ": game folder not found" : "", ok ? "" : (": " + cc.m.error).c_str(), cc.m.v.size(), cc.m.idx.size() / 3,
++						cc.m.tw, cc.m.th, static_cast<unsigned long long>(GetTickCount64() - t0));
++					cc.state = ok ? 2 : 3;
++				});
++				return;
++			}
++			if (c.state != 2) return;
++			const auto& m = c.m;
++			if (!g.chef_gpu)
++			{
++				auto* dev = xr.device;
++				D3D11_BUFFER_DESC bd{};
++				bd.ByteWidth = static_cast<UINT>(m.idx.size() * 4);
++				bd.Usage = D3D11_USAGE_IMMUTABLE;
++				bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
++				D3D11_SUBRESOURCE_DATA sd{m.idx.data()};
++				bool ok = SUCCEEDED(dev->CreateBuffer(&bd, &sd, &g.cib));
++				bd.ByteWidth = static_cast<UINT>(m.v.size() * sizeof(chef_gpu_vertex));
++				bd.Usage = D3D11_USAGE_DYNAMIC;
++				bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++				bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++				ok = ok && SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &g.cvb));
++				static const u8 white[4] = {255, 255, 255, 255};
++				const bool have_tex = !m.rgba.empty();
++				D3D11_TEXTURE2D_DESC td{};
++				td.Width = have_tex ? m.tw : 1;
++				td.Height = have_tex ? m.th : 1;
++				td.MipLevels = have_tex ? 0 : 1;
++				td.ArraySize = 1;
++				td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++				td.SampleDesc.Count = 1;
++				td.Usage = D3D11_USAGE_DEFAULT;
++				td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (have_tex ? D3D11_BIND_RENDER_TARGET : 0);
++				td.MiscFlags = have_tex ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
++				ok = ok && SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g.ctex));
++				if (ok) xr.context->UpdateSubresource(g.ctex, 0, nullptr, have_tex ? m.rgba.data() : white, (have_tex ? m.tw : 1) * 4, 0);
++				ok = ok && SUCCEEDED(dev->CreateShaderResourceView(g.ctex, nullptr, &g.csrv));
++				if (ok && have_tex) xr.context->GenerateMips(g.csrv);
++				if (!ok) { vr_log("Chef: could not upload the chef to the GPU"); chef_release_gpu(); c.state = 3; return; }
++				g.cidx = static_cast<u32>(m.idx.size());
++				g.cnv = static_cast<u32>(m.v.size());
++				g.chef_gpu = true;
++			}
++
++			// Pose: the chef's eyes are yours; its arms reach for your controllers
++			chef::pose_in in;
++			in.head = xr.last_head;
++			in.head_q = xr.views_valid ? xr.views[0].pose.orientation : XrQuaternionf{0, 0, 0, 1};
++			in.body_yaw = xr.body_yaw;
++			in.floor_y = xr.floor_y;
++			in.scale = std::clamp((xr.last_head.y - xr.floor_y) / std::max(m.eye_y, 0.5f), 0.6f, 1.3f);
++			for (int sd = 0; sd < 2; sd++)
++			{
++				in.hand_valid[sd] = xr.hand_valid[sd];
++				in.hand[sd] = xr.hand_pose[sd];
++				in.grip[sd] = xr.hand_grip[sd];
++				in.trig[sd] = xr.hand_trig[sd];
++			}
++			chef::rigid T[chef::P_COUNT];
++			vec3 root;
++			XrQuaternionf rq;
++			chef::solve(m, in, T, root, rq);
++			static std::vector<vec3> P, N;
++			chef::skin(m, T, root, rq, in.scale, P, N);
++			D3D11_MAPPED_SUBRESOURCE ms{};
++			if (FAILED(xr.context->Map(g.cvb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
++			auto* out = static_cast<chef_gpu_vertex*>(ms.pData);
++			for (usz i = 0; i < m.v.size(); i++)
++				out[i] = {{P[i].x, P[i].y, P[i].z}, {N[i].x, N[i].y, N[i].z}, {m.v[i].u, m.v[i].v}};
++			xr.context->Unmap(g.cvb, 0);
++			c.scale = in.scale;
++			c.eye_w = in.head;
++			c.posed = true;
++		}
++
++		// Draws the posed chef. clip_r > 0 cuts away a sphere around your eyes (first person).
++		void chef_draw(xr_state& xr, const mat4& vp, vec3 eye, f32 clip_r)
++		{
++			auto& g = g_gfx;
++			auto& c = g_chef;
++			if (!g.chef_gpu || !c.posed) return;
++			auto* ctx = xr.context;
++			chef_cb cb{};
++			std::memcpy(cb.vp, vp.m, sizeof(cb.vp));
++			cb.eye[0] = eye.x; cb.eye[1] = eye.y; cb.eye[2] = eye.z;
++			cb.clip[0] = c.eye_w.x; cb.clip[1] = c.eye_w.y; cb.clip[2] = c.eye_w.z; cb.clip[3] = clip_r;
++			cb.tint[0] = cb.tint[1] = cb.tint[2] = cb.tint[3] = 1.f;
++			ctx->UpdateSubresource(g.ccb, 0, nullptr, &cb, 0, 0);
++			ctx->IASetInputLayout(g.cil);
++			ctx->VSSetShader(g.cvs, nullptr, 0);
++			ctx->PSSetShader(g.cps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.ccb);
++			ctx->PSSetConstantBuffers(0, 1, &g.ccb);
++			ctx->PSSetShaderResources(0, 1, &g.csrv);
++			ctx->PSSetSamplers(0, 1, &g.csmp);
++			const UINT stride = sizeof(chef_gpu_vertex), offset = 0;
++			ctx->IASetVertexBuffers(0, 1, &g.cvb, &stride, &offset);
++			ctx->IASetIndexBuffer(g.cib, DXGI_FORMAT_R32_UINT, 0);
++			ctx->DrawIndexed(g.cidx, 0, 0);
++			// back to the plain shapes pipeline
++			ID3D11ShaderResourceView* none = nullptr;
++			ctx->PSSetShaderResources(0, 1, &none);
++			ctx->IASetInputLayout(g.il);
++			ctx->VSSetShader(g.vs, nullptr, 0);
++			ctx->PSSetShader(g.ps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.cb);
++			ctx->PSSetConstantBuffers(0, 1, &g.cb);
++		}
++
++		// A standing mirror in the diner, to the front left, turned towards you: see your chef move.
++		void draw_mirror(xr_state& xr, int e)
++		{
++			auto& g = g_gfx;
++			if (!g.chef_gpu || !g_chef.posed || !g.ds_mask) return;
++			auto* ctx = xr.context;
++			const vec3 normal_s{std::sin(xr.screen_yaw), 0.f, std::cos(xr.screen_yaw)};
++			const vec3 F = normal_s * -1.f, Rt{std::cos(xr.screen_yaw), 0.f, -std::sin(xr.screen_yaw)}, up{0.f, 1.f, 0.f};
++			const f32 floor = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.65f;
++			vec3 spot = xr.screen_center + normal_s * xr.screen_distance;
++			spot.y = floor;
++			vec3 C = spot + F * 0.9f - Rt * 1.35f;
++			C.y = floor + 1.05f;
++			vec3 N = spot - C;
++			N.y = 0.f;
++			N = normalize(N);
++			const vec3 Mr = normalize(cross(up, N));
++			const f32 mw = 1.1f, mh = 1.95f;
++			const mat4 glass = m_cols(Mr * mw, up * mh, N * 0.004f, C);
++			const mat4 vp_saved = g.vp;
++			g.pattern_size = {1.f, 1.f, 1.f};
++			ctx->OMSetDepthStencilState(g.ds_mask, 1);
++			gfx_draw(xr, g.box, glass, {0.10f, 0.11f, 0.12f}, 4.f);
++			ctx->OMSetDepthStencilState(g.ds_reset, 1);
++			gfx_draw(xr, g.box, glass, {0.14f, 0.15f, 0.17f}, 5.f);
++			// The reflection: the room and your chef, mirrored about the glass
++			mat4 R = ident();
++			const f32 n3[3] = {N.x, N.y, N.z};
++			const f32 cn = 2.f * dot(C, N);
++			for (int i = 0; i < 3; i++)
++			{
++				for (int j = 0; j < 3; j++) R.m[i * 4 + j] = (i == j ? 1.f : 0.f) - 2.f * n3[i] * n3[j];
++				R.m[i * 4 + 3] = cn * n3[i];
++			}
++			g.vp = mmul(vp_saved, R);
++			ctx->OMSetDepthStencilState(g.ds_inside, 1);
++			draw_room(xr);
++			const vec3 eye = to_vec(xr.views[e].pose.position);
++			chef_draw(xr, g.vp, eye - N * (2.f * dot(eye - C, N)), 0.f);
++			g.vp = vp_saved;
++			ctx->OMSetDepthStencilState(g.ds_on, 0);
++			// Wooden frame and feet
++			const vec3 wood{0.36f, 0.22f, 0.13f};
++			const f32 t = 0.07f;
++			const auto bx = [&](vec3 c0, vec3 size) { g.pattern_size = size; gfx_draw(xr, g.box, m_cols(Mr * size.x, up * size.y, N * size.z, c0), wood, 0.f); };
++			bx(C + up * (mh * 0.5f + t * 0.5f), {mw + 2.f * t, t, 0.06f});
++			bx(C - up * (mh * 0.5f + t * 0.5f), {mw + 2.f * t, t, 0.06f});
++			bx(C - Mr * (mw * 0.5f + t * 0.5f), {t, mh, 0.06f});
++			bx(C + Mr * (mw * 0.5f + t * 0.5f), {t, mh, 0.06f});
++			bx(C - N * 0.03f, {mw + 2.f * t, mh + 2.f * t, 0.02f});
++			bx(vec3{C.x, floor + 0.02f, C.z} - N * 0.15f, {mw * 0.8f, 0.04f, 0.4f});
++			g.pattern_size = {1.f, 1.f, 1.f};
++		}
++
 +		// Draws the room (env) and the body with hands for both eyes. Returns false if nothing could be drawn.
 +		bool gfx_render(xr_state& xr, bool want_env, bool want_body)
 +		{
@@ -2710,6 +3055,7 @@ index 000000000..2b7077a85
 +			if (!g.tried) gfx_init(xr);
 +			if (!g.ok || !xr.views_valid) return false;
 +			auto* ctx = xr.context;
++			if (want_body) chef_tick(xr);
 +
 +			ctx->IASetInputLayout(g.il);
 +			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -2732,7 +3078,7 @@ index 000000000..2b7077a85
 +							const D3D11_VIEWPORT vp{0.f, 0.f, static_cast<f32>(g.ew), static_cast<f32>(g.eh), 0.f, 1.f};
 +							ctx->RSSetViewports(1, &vp);
 +							ctx->OMSetRenderTargets(1, &rtv, g.dsv[e]);
-+							ctx->ClearDepthStencilView(g.dsv[e], D3D11_CLEAR_DEPTH, 1.f, 0);
++							ctx->ClearDepthStencilView(g.dsv[e], D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.f, 0);
 +							ctx->OMSetDepthStencilState(g.ds_off, 0);
 +							g.vp = view_proj(xr.views[e], 0.05f, 200.f, true);
 +							gfx_draw(xr, g.sphere, m_cols({50, 0, 0}, {0, 50, 0}, {0, 0, 50}, {0, 0, 0}), {0, 0, 0}, 1.f);
@@ -2742,6 +3088,7 @@ index 000000000..2b7077a85
 +								ctx->OMSetDepthStencilState(g.ds_on, 0);
 +								g.vp = view_proj(xr.views[e], 0.05f, 200.f, false);
 +								draw_room(xr);
++								draw_mirror(xr, e);
 +							}
 +						}
 +						release(g.env_sc[e]);
@@ -2762,12 +3109,20 @@ index 000000000..2b7077a85
 +							ctx->ClearDepthStencilView(g.dsv[e], D3D11_CLEAR_DEPTH, 1.f, 0);
 +							ctx->OMSetDepthStencilState(g.ds_on, 0);
 +							g.vp = view_proj(xr.views[e], 0.03f, 100.f, false);
-+							draw_body(xr);
-+							for (int hnd = 0; hnd < 2; hnd++)
++							if (g.chef_gpu && g_chef.posed)
 +							{
-+								if (!xr.hand_valid[hnd]) continue;
-+								const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
-+								draw_hand(xr, h);
++								// Your body is the game's own chef; your face is cut away so it never blocks your view
++								chef_draw(xr, g.vp, to_vec(xr.views[e].pose.position), 0.16f * g_chef.scale);
++							}
++							else
++							{
++								draw_body(xr);
++								for (int hnd = 0; hnd < 2; hnd++)
++								{
++									if (!xr.hand_valid[hnd]) continue;
++									const hand_geo h = make_hand(xr.hand_pose[hnd], hnd, xr.hand_grip[hnd], xr.hand_trig[hnd]);
++									draw_hand(xr, h);
++								}
 +							}
 +						}
 +						release(g.body_sc[e]);
@@ -2805,8 +3160,8 @@ index 000000000..2b7077a85
 +			const auto num = [&](const char* k, f32 def, f32 lo, f32 hi) { const std::string v = get(k, ""); return v.empty() ? def : std::clamp(static_cast<f32>(std::atof(v.c_str())), lo, hi); };
 +			auto& c = xr.comfort;
 +			const auto old = c;
-+			c.body = get("chefbody", "off") != "off";
-+			c.female = get("chefbody", "off") == "female";
++			c.body = get("chef", "male") != "off";
++			c.female = get("chef", "male") == "female";
 +			c.seated = get("playmode", "standing") == "seated";
 +			c.smooth_turn = get("turn", "snap") == "smooth";
 +			c.vignette = get("vignette", "on") != "off";
@@ -5253,12 +5608,90 @@ index 000000000..2b7077a85
 +}
 +
 +#endif
++
++#include "Emu/Cell/SPUDisAsm.h"
++
++namespace ouvr
++{
++	// Developer tools, run from the command line; never used during play.
++	int dev_tool(int argc, char** argv)
++	{
++		const std::string cmd = argv[1];
++		if (cmd == "--ouvr-spu-disasm" && argc >= 4)
++		{
++			std::FILE* in = std::fopen(argv[2], "rb");
++			if (!in) return 2;
++			std::vector<u8> data(0x40000);
++			const usz n = std::fread(data.data(), 1, data.size(), in);
++			std::fclose(in);
++			const u32 start = argc > 4 ? static_cast<u32>(std::strtoul(argv[4], nullptr, 0)) : 0;
++			const u32 len = argc > 5 ? static_cast<u32>(std::strtoul(argv[5], nullptr, 0)) : static_cast<u32>(n);
++			std::FILE* out = std::fopen(argv[3], "w");
++			if (!out) return 3;
++			SPUDisAsm dis(cpu_disasm_mode::normal, data.data(), 0);
++			for (u32 pc = start & ~3u; pc < start + len && pc + 4 <= n; pc += 4)
++			{
++				dis.disasm(pc);
++				std::fprintf(out, "%05x: %08x  %s\n", pc, static_cast<u32>(data[pc] << 24 | data[pc + 1] << 16 | data[pc + 2] << 8 | data[pc + 3]), dis.last_opcode.c_str());
++			}
++			std::fclose(out);
++			return 0;
++		}
++		if (cmd == "--ouvr-chef-test" && argc >= 4)
++		{
++			// Rebuilds both chefs from a game's USRDIR and writes them as OBJ (rest pose and a reaching pose)
++			for (int fem = 0; fem < 2; fem++)
++			{
++				chef::model m;
++				const u64 t0 = GetTickCount64();
++				const bool ok = chef::load(m, argv[2], fem != 0);
++				std::printf("%s chef: %s, %zu vertices, %zu triangles, texture %ux%u, %llu ms %s\n", fem ? "female" : "male", ok ? "ok" : "FAILED", m.v.size(), m.idx.size() / 3, m.tw, m.th,
++					static_cast<unsigned long long>(GetTickCount64() - t0), m.error.c_str());
++				if (!ok) continue;
++				for (int posed = 0; posed < 2; posed++)
++				{
++					chef::pose_in in;
++					in.scale = 1.f;
++					in.head = {0.f, m.eye_y, m.face_z + 0.03f};
++					in.body_yaw = 3.14159265f;    // facing +z, like the T pose
++					if (posed)
++					{
++						for (int sd = 0; sd < 2; sd++)
++						{
++							in.hand_valid[sd] = true;
++							in.hand[sd].position = {sd == 0 ? 0.25f : -0.25f, m.eye_y - 0.35f, m.face_z + 0.45f};
++							in.hand[sd].orientation = yaw_q(3.14159265f);   // pointing forward (+z)
++							in.grip[sd] = sd == 0 ? 1.f : 0.f;
++						}
++					}
++					chef::rigid T[chef::P_COUNT];
++					vec3 root; XrQuaternionf rq;
++					chef::solve(m, in, T, root, rq);
++					std::vector<vec3> P, N;
++					chef::skin(m, T, root, rq, in.scale, P, N);
++					std::FILE* f = std::fopen(fmt::format("%s_%s_%s.obj", argv[3], fem ? "female" : "male", posed ? "posed" : "rest").c_str(), "w");
++					if (!f) continue;
++					for (usz i = 0; i < P.size(); i++) std::fprintf(f, "v %f %f %f\nvt %f %f\n", P[i].x, P[i].y, P[i].z, m.v[i].u, m.v[i].v);
++					for (usz i = 0; i + 2 < m.idx.size(); i += 3) std::fprintf(f, "f %u/%u %u/%u %u/%u\n", m.idx[i] + 1, m.idx[i] + 1, m.idx[i + 1] + 1, m.idx[i + 1] + 1, m.idx[i + 2] + 1, m.idx[i + 2] + 1);
++					std::fclose(f);
++				}
++				// parts histogram
++				int hist[chef::P_COUNT]{};
++				for (const auto& x : m.v) hist[x.part[0]]++;
++				for (int k = 0; k < chef::P_COUNT; k++) std::printf(" part %d: %d", k, hist[k]);
++				std::printf("\n");
++			}
++			return 0;
++		}
++		return 1;
++	}
++}
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..ea1c4829d
+index 000000000..a5c106a4a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,96 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -5352,6 +5785,652 @@ index 000000000..ea1c4829d
 +
 +	// rows = the renderer's 4x4 viewport (scale/offset) matrix, row-major; it becomes rows * x.
 +	void stereo_apply(void* rows, const f32 x[16]);
++	// Developer tools (not used in play): --ouvr-spu-disasm <in> <out> [start] [len]
++	int dev_tool(int argc, char** argv);
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_chef.inl b/rpcs3/Emu/Io/OrderUpVR_chef.inl
+new file mode 100644
+index 000000000..436f607d6
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_chef.inl
+@@ -0,0 +1,638 @@
++// Order Up VR: the game's own chef models, rebuilt at start-up from the player's own game files.
++//
++// The chefs live in USRDIR/Chef.wad (nested, zlib-compressed WADs; files named by CRC32 of their path, without the
++// final inversion). Their triangle lists use Sony's Edge compressed index format, which the game decodes on the SPUs.
++// We run the game's own decoder (from USRDIR/spurs/spu_codef.ppu.sprx, decrypted with RPCS3's own code) in a small
++// SPU interpreter, so nothing of the game is shipped with the mod.
++// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, after the vec3 helpers.
++
++namespace chef
++{
++	enum class sop : u8 { UNK, A, AH, AHI, AI, AND, ANDBI, ANDHI, ANDI, BI, BR, BRHZ, BRNZ, BRSL, BRZ, CEQ, CEQI, CGT, CGTH, CGTHI, CGTI, CLGT, CLGTI, CNTB, CWD, FSMB, FSMBI, HBR, HBRR, IL, ILA, ILH, LQD, LQR, LQX, MPY, MPYHH, MPYI, OR, ORHI, ORI, ROT, ROTH, ROTHM, ROTHMI, ROTM, ROTMAH, ROTMI, ROTQBY, ROTQBYI, ROTQMBYI, SELB, SF, SFH, SFHI, SFI, SHL, SHLHI, SHLI, SHLQBYI, SHUFB, STQD, STQX };
++	struct sop_entry { u8 magn; u16 value; sop op; };
++	// From RPCS3's SPUOpcodes.h (only what Edge's index decompressor executes)
++	constexpr sop_entry sop_list[] = {{0, 0x40, sop::SF}, {0, 0x41, sop::OR}, {0, 0x48, sop::SFH}, {0, 0x58, sop::ROT}, {0, 0x59, sop::ROTM}, {0, 0x5b, sop::SHL}, {0, 0x5c, sop::ROTH}, {0, 0x5d, sop::ROTHM}, {0, 0x5e, sop::ROTMAH}, {0, 0x79, sop::ROTMI}, {0, 0x7b, sop::SHLI}, {0, 0x7d, sop::ROTHMI}, {0, 0x7f, sop::SHLHI}, {0, 0xc0, sop::A}, {0, 0xc1, sop::AND}, {0, 0xc8, sop::AH}, {0, 0x144, sop::STQX}, {0, 0x1a8, sop::BI}, {0, 0x1ac, sop::HBR}, {0, 0x1b6, sop::FSMB}, {0, 0x1c4, sop::LQX}, {0, 0x1dc, sop::ROTQBY}, {0, 0x1f6, sop::CWD}, {0, 0x1fc, sop::ROTQBYI}, {0, 0x1fd, sop::ROTQMBYI}, {0, 0x1ff, sop::SHLQBYI}, {0, 0x240, sop::CGT}, {0, 0x248, sop::CGTH}, {0, 0x2b4, sop::CNTB}, {0, 0x2c0, sop::CLGT}, {0, 0x3c0, sop::CEQ}, {0, 0x3c4, sop::MPY}, {0, 0x3c6, sop::MPYHH}, {2, 0x40, sop::BRZ}, {2, 0x42, sop::BRNZ}, {2, 0x44, sop::BRHZ}, {2, 0x64, sop::BR}, {2, 0x65, sop::FSMBI}, {2, 0x66, sop::BRSL}, {2, 0x67, sop::LQR}, {2, 0x81, sop::IL}, {2, 0x83, sop::ILH}, {3, 0x4, sop::ORI}, {3, 0x5, sop::ORHI}, {3, 0xc, sop::SFI}, {3, 0xd, sop::SFHI}, {3, 0x14, sop::ANDI}, {3, 0x15, sop::ANDHI}, {3, 0x16, sop::ANDBI}, {3, 0x1c, sop::AI}, {3, 0x1d, sop::AHI}, {3, 0x24, sop::STQD}, {3, 0x34, sop::LQD}, {3, 0x4c, sop::CGTI}, {3, 0x4d, sop::CGTHI}, {3, 0x5c, sop::CLGTI}, {3, 0x74, sop::MPYI}, {3, 0x7c, sop::CEQI}, {4, 0x9, sop::HBRR}, {4, 0x21, sop::ILA}, {7, 0x8, sop::SELB}, {7, 0xb, sop::SHUFB}};
++
++	inline s32 sxb(u32 v, int bits) { v &= (1u << bits) - 1; return (v >> (bits - 1)) ? static_cast<s32>(v) - (1 << bits) : static_cast<s32>(v); }
++	inline u32 rd32be(const u8* p) { return u32{p[0]} << 24 | u32{p[1]} << 16 | u32{p[2]} << 8 | p[3]; }
++	inline u16 rd16be(const u8* p) { return static_cast<u16>(p[0] << 8 | p[1]); }
++	inline u32 rd32le(const u8* p) { return u32{p[3]} << 24 | u32{p[2]} << 16 | u32{p[1]} << 8 | p[0]; }
++	inline f32 rdf32be(const u8* p) { return std::bit_cast<f32>(rd32be(p)); }
++	inline u32 crc_name(const std::string& s) { return static_cast<u32>(crc32(0, reinterpret_cast<const Bytef*>(s.data()), static_cast<uInt>(s.size()))) ^ 0xffffffffu; }
++	inline usz pad16(usz n) { return (n + 15) & ~usz{15}; }
++
++	// ---------------------------------------------------------------- SPU interpreter
++	struct spu_vm
++	{
++		std::vector<u8> ls = std::vector<u8>(0x40000);
++		u8 r[128][16]{};
++		u32 pc = 0;
++		std::array<sop, 2048> table{};
++		u64 steps = 0;
++
++		spu_vm()
++		{
++			for (const auto& e : sop_list)
++				for (u32 i = 0; i < (1u << e.magn); i++) table[(static_cast<u32>(e.value) << e.magn) | i] = e.op;
++		}
++		u32 w(int reg, int i) const { return rd32be(r[reg] + i * 4); }
++		u16 h(int reg, int i) const { return rd16be(r[reg] + i * 2); }
++		static void sw(u8* d, int i, u32 v) { d[i * 4] = static_cast<u8>(v >> 24); d[i * 4 + 1] = static_cast<u8>(v >> 16); d[i * 4 + 2] = static_cast<u8>(v >> 8); d[i * 4 + 3] = static_cast<u8>(v); }
++		static void sh(u8* d, int i, u32 v) { d[i * 2] = static_cast<u8>(v >> 8); d[i * 2 + 1] = static_cast<u8>(v); }
++		u32 w0(int reg) const { return w(reg, 0); }
++
++		template <typename F> void words(int rt, int ra, int rb, F f) { u8 o[16]; for (int i = 0; i < 4; i++) sw(o, i, f(w(ra, i), w(rb, i))); std::memcpy(r[rt], o, 16); }
++		template <typename F> void halfs(int rt, int ra, int rb, F f) { u8 o[16]; for (int i = 0; i < 8; i++) sh(o, i, f(h(ra, i), h(rb, i))); std::memcpy(r[rt], o, 16); }
++		template <typename F> void wordsi(int rt, int ra, F f) { u8 o[16]; for (int i = 0; i < 4; i++) sw(o, i, f(w(ra, i))); std::memcpy(r[rt], o, 16); }
++		template <typename F> void halfsi(int rt, int ra, F f) { u8 o[16]; for (int i = 0; i < 8; i++) sh(o, i, f(h(ra, i))); std::memcpy(r[rt], o, 16); }
++		void splat_w(int rt, u32 v) { for (int i = 0; i < 4; i++) sw(r[rt], i, v); }
++
++		// Runs from start until pc reaches stop_pc. False on an instruction the decoder never uses or a runaway loop.
++		bool run(u32 start, u32 stop_pc)
++		{
++			pc = start;
++			while (pc != stop_pc)
++			{
++				if (++steps > 50'000'000) return false;
++				const u32 i = rd32be(ls.data() + pc);
++				const int rt = i & 0x7f, ra = (i >> 7) & 0x7f, rb = (i >> 14) & 0x7f, rt4 = (i >> 21) & 0x7f, rc = i & 0x7f;
++				const s32 i10 = sxb(i >> 14, 10), i16 = sxb(i >> 7, 16), i7 = sxb(i >> 14, 7);
++				u32 npc = (pc + 4) & 0x3fffc;
++				const auto lsq = [&](u32 a) -> u8* { return ls.data() + (a & 0x3fff0); };
++				const u32 br_t = (pc + static_cast<u32>(i16 << 2)) & 0x3fffc;
++				switch (table[i >> 21])
++				{
++				case sop::LQD: std::memcpy(r[rt], lsq(w0(ra) + static_cast<u32>(i10 << 4)), 16); break;
++				case sop::STQD: std::memcpy(lsq(w0(ra) + static_cast<u32>(i10 << 4)), r[rt], 16); break;
++				case sop::LQX: std::memcpy(r[rt], lsq(w0(ra) + w0(rb)), 16); break;
++				case sop::STQX: std::memcpy(lsq(w0(ra) + w0(rb)), r[rt], 16); break;
++				case sop::LQR: std::memcpy(r[rt], lsq(pc + static_cast<u32>(i16 << 2)), 16); break;
++				case sop::IL: splat_w(rt, static_cast<u32>(i16)); break;
++				case sop::ILH: for (int k = 0; k < 8; k++) sh(r[rt], k, (i >> 7) & 0xffff); break;
++				case sop::ILA: splat_w(rt, (i >> 7) & 0x3ffff); break;
++				case sop::FSMBI: for (int k = 0; k < 16; k++) r[rt][k] = (((i >> 7) & 0xffff) >> (15 - k)) & 1 ? 0xff : 0; break;
++				case sop::FSMB: { const u32 m = w0(ra) & 0xffff; for (int k = 0; k < 16; k++) r[rt][k] = (m >> (15 - k)) & 1 ? 0xff : 0; break; }
++				case sop::A: words(rt, ra, rb, [](u32 a, u32 b) { return a + b; }); break;
++				case sop::AH: halfs(rt, ra, rb, [](u32 a, u32 b) { return a + b; }); break;
++				case sop::SF: words(rt, ra, rb, [](u32 a, u32 b) { return b - a; }); break;
++				case sop::SFH: halfs(rt, ra, rb, [](u32 a, u32 b) { return b - a; }); break;
++				case sop::AI: wordsi(rt, ra, [&](u32 a) { return a + static_cast<u32>(i10); }); break;
++				case sop::AHI: halfsi(rt, ra, [&](u32 a) { return a + static_cast<u32>(i10); }); break;
++				case sop::SFI: wordsi(rt, ra, [&](u32 a) { return static_cast<u32>(i10) - a; }); break;
++				case sop::SFHI: halfsi(rt, ra, [&](u32 a) { return static_cast<u32>(i10) - a; }); break;
++				case sop::AND: { u8 o[16]; for (int k = 0; k < 16; k++) o[k] = r[ra][k] & r[rb][k]; std::memcpy(r[rt], o, 16); break; }
++				case sop::OR: { u8 o[16]; for (int k = 0; k < 16; k++) o[k] = r[ra][k] | r[rb][k]; std::memcpy(r[rt], o, 16); break; }
++				case sop::ANDI: wordsi(rt, ra, [&](u32 a) { return a & static_cast<u32>(i10); }); break;
++				case sop::ANDHI: halfsi(rt, ra, [&](u32 a) { return a & static_cast<u32>(i10); }); break;
++				case sop::ANDBI: { const u8 m = static_cast<u8>((i >> 14) & 0xff); for (int k = 0; k < 16; k++) r[rt][k] = r[ra][k] & m; break; }
++				case sop::ORI: wordsi(rt, ra, [&](u32 a) { return a | static_cast<u32>(i10); }); break;
++				case sop::ORHI: halfsi(rt, ra, [&](u32 a) { return a | static_cast<u32>(i10); }); break;
++				case sop::MPY: words(rt, ra, rb, [](u32 a, u32 b) { return static_cast<u32>(static_cast<s32>(static_cast<s16>(a)) * static_cast<s16>(b)); }); break;
++				case sop::MPYHH: words(rt, ra, rb, [](u32 a, u32 b) { return static_cast<u32>(static_cast<s32>(static_cast<s16>(a >> 16)) * static_cast<s16>(b >> 16)); }); break;
++				case sop::MPYI: wordsi(rt, ra, [&](u32 a) { return static_cast<u32>(static_cast<s32>(static_cast<s16>(a)) * i10); }); break;
++				case sop::SHL: words(rt, ra, rb, [](u32 a, u32 b) { const u32 n = b & 0x3f; return n < 32 ? a << n : 0u; }); break;
++				case sop::SHLI: { const u32 n = (i >> 14) & 0x3f; wordsi(rt, ra, [&](u32 a) { return n < 32 ? a << n : 0u; }); break; }
++				case sop::SHLHI: { const u32 n = (i >> 14) & 0x1f; halfsi(rt, ra, [&](u32 a) { return n < 16 ? a << n : 0u; }); break; }
++				case sop::ROT: words(rt, ra, rb, [](u32 a, u32 b) { const u32 n = b & 31; return n ? (a << n) | (a >> (32 - n)) : a; }); break;
++				case sop::ROTH: halfs(rt, ra, rb, [](u32 a, u32 b) { const u32 n = b & 15; return n ? ((a << n) | (a >> (16 - n))) & 0xffff : a; }); break;
++				case sop::ROTM: words(rt, ra, rb, [](u32 a, u32 b) { const u32 n = (0u - b) & 0x3f; return n < 32 ? a >> n : 0u; }); break;
++				case sop::ROTMI: { const u32 n = static_cast<u32>(-i7) & 0x3f; wordsi(rt, ra, [&](u32 a) { return n < 32 ? a >> n : 0u; }); break; }
++				case sop::ROTHM: halfs(rt, ra, rb, [](u32 a, u32 b) { const u32 n = (0u - b) & 0x1f; return n < 16 ? a >> n : 0u; }); break;
++				case sop::ROTHMI: { const u32 n = static_cast<u32>(-i7) & 0x1f; halfsi(rt, ra, [&](u32 a) { return n < 16 ? a >> n : 0u; }); break; }
++				case sop::ROTMAH: halfs(rt, ra, rb, [](u32 a, u32 b) { const u32 n = std::min((0u - b) & 0x1f, 15u); return static_cast<u32>(static_cast<s32>(static_cast<s16>(a)) >> n); }); break;
++				case sop::ROTQBYI: { const u32 n = (i >> 14) & 15; u8 o[16]; for (u32 k = 0; k < 16; k++) o[k] = r[ra][(k + n) & 15]; std::memcpy(r[rt], o, 16); break; }
++				case sop::ROTQBY: { const u32 n = w0(rb) & 15; u8 o[16]; for (u32 k = 0; k < 16; k++) o[k] = r[ra][(k + n) & 15]; std::memcpy(r[rt], o, 16); break; }
++				case sop::ROTQMBYI: { const u32 n = static_cast<u32>(-i7) & 0x1f; u8 o[16]; for (u32 k = 0; k < 16; k++) o[k] = k >= n ? r[ra][k - n] : 0; std::memcpy(r[rt], o, 16); break; }
++				case sop::SHLQBYI: { const u32 n = (i >> 14) & 0x1f; u8 o[16]; for (u32 k = 0; k < 16; k++) o[k] = k + n < 16 ? r[ra][k + n] : 0; std::memcpy(r[rt], o, 16); break; }
++				case sop::SHUFB:
++				{
++					u8 o[16];
++					for (int k = 0; k < 16; k++)
++					{
++						const u8 x = r[rc][k];
++						if (x & 0x80) o[k] = (x & 0xc0) == 0x80 ? 0x00 : (x & 0xe0) == 0xc0 ? 0xff : 0x80;
++						else { const u32 idx = x & 0x1f; o[k] = idx < 16 ? r[ra][idx] : r[rb][idx - 16]; }
++					}
++					std::memcpy(r[rt4], o, 16);
++					break;
++				}
++				case sop::SELB: { u8 o[16]; for (int k = 0; k < 16; k++) o[k] = static_cast<u8>((r[rc][k] & r[rb][k]) | (~r[rc][k] & r[ra][k])); std::memcpy(r[rt4], o, 16); break; }
++				case sop::CEQ: words(rt, ra, rb, [](u32 a, u32 b) { return a == b ? ~0u : 0u; }); break;
++				case sop::CEQI: wordsi(rt, ra, [&](u32 a) { return a == static_cast<u32>(i10) ? ~0u : 0u; }); break;
++				case sop::CGT: words(rt, ra, rb, [](u32 a, u32 b) { return static_cast<s32>(a) > static_cast<s32>(b) ? ~0u : 0u; }); break;
++				case sop::CGTI: wordsi(rt, ra, [&](u32 a) { return static_cast<s32>(a) > i10 ? ~0u : 0u; }); break;
++				case sop::CGTH: halfs(rt, ra, rb, [](u32 a, u32 b) { return static_cast<s16>(a) > static_cast<s16>(b) ? 0xffffu : 0u; }); break;
++				case sop::CGTHI: halfsi(rt, ra, [&](u32 a) { return static_cast<s16>(a) > i10 ? 0xffffu : 0u; }); break;
++				case sop::CLGT: words(rt, ra, rb, [](u32 a, u32 b) { return a > b ? ~0u : 0u; }); break;
++				case sop::CLGTI: wordsi(rt, ra, [&](u32 a) { return a > static_cast<u32>(i10) ? ~0u : 0u; }); break;
++				case sop::CNTB: for (int k = 0; k < 16; k++) r[rt][k] = static_cast<u8>(std::popcount(r[ra][k])); break;
++				case sop::CWD:
++				{
++					const u32 t = (w0(ra) + static_cast<u32>(i7)) & 0xc;
++					for (int k = 0; k < 16; k++) r[rt][k] = static_cast<u8>(0x10 + k);
++					for (u32 k = 0; k < 4; k++) r[rt][t + k] = static_cast<u8>(k);
++					break;
++				}
++				case sop::BR: npc = br_t; break;
++				case sop::BRSL: std::memset(r[rt], 0, 16); sw(r[rt], 0, (pc + 4) & 0x3fffc); npc = br_t; break;
++				case sop::BRZ: if (w0(rt) == 0) npc = br_t; break;
++				case sop::BRNZ: if (w0(rt) != 0) npc = br_t; break;
++				case sop::BRHZ: if ((w0(rt) & 0xffff) == 0) npc = br_t; break;
++				case sop::BI: npc = w0(ra) & 0x3fffc; break;
++				case sop::HBR: case sop::HBRR: break;
++				default: return false;
++				}
++				pc = npc;
++			}
++			return true;
++		}
++	};
++
++	// Runs the game's Edge index decompressor (job code loaded at LS 0) on one segment's compressed index stream.
++	bool edge_decompress(const std::vector<u8>& job, const u8* cfg16, const u8* stream, usz stream_size, u32 num_indexes, std::vector<u16>& out)
++	{
++		spu_vm vm;
++		if (job.size() > 0x3c000) return false;
++		std::memcpy(vm.ls.data(), job.data(), job.size());
++		constexpr u32 ls_in = 0x20000, ls_ctx = 0x30000;
++		if (stream_size > 0xff00) return false;
++		std::memcpy(vm.ls.data() + ls_in, stream, stream_size);
++		std::memcpy(vm.ls.data() + ls_ctx, cfg16, 16);
++		vm.ls[ls_ctx + 0x190] = static_cast<u8>(num_indexes >> 8);
++		vm.ls[ls_ctx + 0x191] = static_cast<u8>(num_indexes);
++		spu_vm::sw(vm.ls.data() + ls_ctx + 0x17c, 0, 0x2ff00);
++		spu_vm::sw(vm.r[1], 0, 0x3e000);   // stack
++		spu_vm::sw(vm.r[0], 0, 0x3fff0);   // return address: stop here
++		spu_vm::sw(vm.r[3], 0, ls_ctx);
++		spu_vm::sw(vm.r[4], 0, ls_in);
++		if (!vm.run(0x6e60, 0x3fff0)) { if (std::getenv("OUVR_CHEF_DEBUG")) std::fprintf(stderr, "edge: stopped at %05x (%08x) after %llu steps\n", vm.pc, rd32be(vm.ls.data() + vm.pc), static_cast<unsigned long long>(vm.steps)); return false; }
++		const u32 at = rd32be(vm.ls.data() + ls_ctx + 0x50);
++		if (at + num_indexes * 2 > vm.ls.size()) return false;
++		out.resize(num_indexes);
++		for (u32 k = 0; k < num_indexes; k++) out[k] = rd16be(vm.ls.data() + at + k * 2);
++		return true;
++	}
++
++	// ---------------------------------------------------------------- Chef.wad
++	struct wad_entry { u32 off = 0, size = 0; };
++	struct wad_reader
++	{
++		fs::file f;
++		std::unordered_map<u32, wad_entry> table;   // outer files
++
++		static void parse_table(const u8* b, usz len, std::unordered_map<u32, wad_entry>& out, u32& table_size, u32& compressed)
++		{
++			out.clear();
++			if (len < 0x30 || std::memcmp(b, "0DAW", 4) != 0) return;
++			const u32 n = rd32le(b + 8);
++			table_size = rd32le(b + 12);
++			compressed = rd32le(b + 20);
++			if (0x30 + usz{n} * 16 > len) return;
++			const u8* hs = b + 0x30;
++			const u8* ls = b + 0x30 + usz{n} * 8;
++			for (u32 i = 0; i < n; i++)
++			{
++				const u32 hash = rd32le(hs + i * 8), idx = rd32le(hs + i * 8 + 4);
++				if (idx < n) out[hash] = {rd32le(ls + idx * 8), rd32le(ls + idx * 8 + 4)};
++			}
++		}
++
++		bool open(const std::string& path)
++		{
++			if (!f.open(path)) return false;
++			std::vector<u8> head(0x30);
++			if (f.read(head.data(), head.size()) != head.size() || std::memcmp(head.data(), "0DAW", 4) != 0) return false;
++			const u32 tsize = rd32le(head.data() + 12);
++			std::vector<u8> t(tsize);
++			f.seek(0);
++			if (f.read(t.data(), t.size()) != t.size()) return false;
++			u32 ts = 0, comp = 0;
++			parse_table(t.data(), t.size(), table, ts, comp);
++			return !table.empty();
++		}
++
++		// A nested WAD's file table only (cheap: reads its header)
++		bool nested_table(u32 hash, std::unordered_map<u32, wad_entry>& out)
++		{
++			const auto it = table.find(hash);
++			if (it == table.end()) return false;
++			std::vector<u8> head(0x30);
++			f.seek(it->second.off);
++			if (f.read(head.data(), head.size()) != head.size() || std::memcmp(head.data(), "0DAW", 4) != 0) return false;
++			const u32 tsize = rd32le(head.data() + 12);
++			if (tsize > it->second.size) return false;
++			std::vector<u8> t(tsize);
++			f.seek(it->second.off);
++			if (f.read(t.data(), t.size()) != t.size()) return false;
++			u32 ts = 0, comp = 0;
++			parse_table(t.data(), t.size(), out, ts, comp);
++			return true;
++		}
++
++		// One file from inside a nested WAD
++		bool nested_file(u32 wad_hash, u32 file_hash, std::vector<u8>& out)
++		{
++			const auto it = table.find(wad_hash);
++			if (it == table.end()) return false;
++			std::vector<u8> b(it->second.size);
++			f.seek(it->second.off);
++			if (f.read(b.data(), b.size()) != b.size()) return false;
++			std::unordered_map<u32, wad_entry> inner;
++			u32 tsize = 0, comp = 0;
++			parse_table(b.data(), b.size(), inner, tsize, comp);
++			const auto fe = inner.find(file_hash);
++			if (fe == inner.end() || fe->second.off < tsize) return false;
++			std::vector<u8> body;
++			if (comp)
++			{
++				uLongf len = rd32le(b.data() + 24);
++				body.resize(len);
++				if (uncompress(body.data(), &len, b.data() + tsize, static_cast<uLong>(b.size() - tsize)) != Z_OK) return false;
++				body.resize(len);
++			}
++			else body.assign(b.begin() + tsize, b.end());
++			const usz start = fe->second.off - tsize;
++			if (start + fe->second.size > body.size()) return false;
++			out.assign(body.begin() + start, body.begin() + start + fe->second.size);
++			return true;
++		}
++
++		// Finds which nested WAD holds a file
++		u32 find_file(u32 file_hash, std::initializer_list<u32> likely)
++		{
++			std::unordered_map<u32, wad_entry> inner;
++			for (u32 w : likely) if (nested_table(w, inner) && inner.count(file_hash)) return w;
++			for (const auto& [w, e] : table)
++			{
++				if (e.size < 0x30) continue;
++				if (nested_table(w, inner) && inner.count(file_hash)) return w;
++			}
++			return 0;
++		}
++	};
++
++	// ---------------------------------------------------------------- The chef mesh
++	enum part : u8
++	{
++		P_BODY, P_HEAD, P_LEG_L, P_LEG_R,
++		P_UA_L, P_FA_L, P_HAND_L, P_FING_L,   // left arm (the chef's left = +x in the model)
++		P_UA_R, P_FA_R, P_HAND_R, P_FING_R,
++		P_COUNT
++	};
++
++	struct vtx { vec3 p, n; f32 u, v; u8 part[4]; f32 w[4]; };
++
++	struct model
++	{
++		bool ok = false;
++		bool female = false;
++		std::vector<vtx> v;
++		std::vector<u32> idx;
++		std::vector<u8> rgba;              // 1024x1024 body texture
++		u32 tw = 0, th = 0;
++		f32 arm_y = 0.83f, arm_z = 0.09f, arm_tip = 0.96f, eye_y = 1.45f, face_z = 0.29f, top_y = 1.9f;
++		vec3 shoulder[2]{}, elbow[2]{}, wrist[2]{}, knuckle[2]{}, neck{};   // [0] left (+x), [1] right (-x)
++		std::string error;
++	};
++
++	// DXT1 (BC1) 1024x1024 -> RGBA8
++	void decode_dxt1(const u8* d, u32 w, u32 h, std::vector<u8>& out)
++	{
++		out.assign(usz{w} * h * 4, 255);
++		usz p = 0;
++		for (u32 by = 0; by < h; by += 4)
++			for (u32 bx = 0; bx < w; bx += 4, p += 8)
++			{
++				const u32 c0 = d[p] | d[p + 1] << 8, c1 = d[p + 2] | d[p + 3] << 8;
++				const u32 bits = rd32le(d + p + 4);
++				u8 pal[4][3];
++				const auto ex = [](u32 c, u8* o) { o[0] = static_cast<u8>(((c >> 11) & 31) * 255 / 31); o[1] = static_cast<u8>(((c >> 5) & 63) * 255 / 63); o[2] = static_cast<u8>((c & 31) * 255 / 31); };
++				ex(c0, pal[0]); ex(c1, pal[1]);
++				for (int k = 0; k < 3; k++)
++				{
++					if (c0 > c1) { pal[2][k] = static_cast<u8>((2 * pal[0][k] + pal[1][k]) / 3); pal[3][k] = static_cast<u8>((pal[0][k] + 2 * pal[1][k]) / 3); }
++					else { pal[2][k] = static_cast<u8>((pal[0][k] + pal[1][k]) / 2); pal[3][k] = 0; }
++				}
++				for (u32 i = 0; i < 16; i++)
++				{
++					const u32 sel = (bits >> (2 * i)) & 3;
++					u8* o = &out[((by + i / 4) * w + bx + i % 4) * 4];
++					o[0] = pal[sel][0]; o[1] = pal[sel][1]; o[2] = pal[sel][2]; o[3] = 255;
++				}
++			}
++	}
++
++	// Builds the mesh from a model blob (Edge segments) using the game's own decoder
++	bool build_mesh(model& m, const std::vector<u8>& B, const std::vector<u8>& job)
++	{
++		m.v.clear(); m.idx.clear();
++		for (usz s = 0; s + 0x40 < B.size(); s += 4)
++		{
++			if (B[s] != 0x83 || B[s + 6] != 0x33) continue;
++			const u32 nv = rd16be(&B[s + 8]), ni = rd16be(&B[s + 10]);
++			if (nv < 100 || nv > 4000 || ni % 3 || ni == 0 || ni > 20000) continue;   // the textured parts; tiny decals use other textures
++			const u32 isz = rd16be(&B[s + 20]);
++			const u32 tris = ni / 3;
++			std::vector<u16> ix;
++			usz st = 0;
++			for (usz o = s + 16; o + 8 < B.size() && o < s + 0x20000; o += 16)
++			{
++				const u32 n = rd16be(&B[o]), X = rd16be(&B[o + 4]), bits = B[o + 6];
++				if (bits > 16 || X == 0 || X > 4096) continue;
++				const usz tot = 8 + X + (tris * 2 + 7) / 8 + (usz{n} * bits + 7) / 8;
++				if (pad16(tot) != isz || n > ni) continue;
++				if (o + isz > B.size()) break;
++				std::vector<u16> cand;
++				if (!edge_decompress(job, &B[s], &B[o], isz, ni, cand)) continue;
++				u16 mx = 0;
++				for (u16 c : cand) mx = std::max(mx, c);
++				if (mx + 1u != nv) continue;
++				ix = std::move(cand);
++				st = o;
++				break;
++			}
++			if (ix.empty()) continue;
++			const usz po = st + isz;
++			const usz sec = po + pad16(usz{nv} * 12), rsx = sec + pad16(usz{nv} * 24);
++			if (rsx + usz{nv} * 24 > B.size()) continue;
++			// Skin weights: (weight, bone) x 4 per vertex, weights add up to 255
++			usz wo = 0;
++			const usz wstart = rsx + pad16(usz{nv} * 24);
++			for (usz o = wstart; o + usz{nv} * 8 <= B.size() && o < wstart + 0x1000; o += 16)
++			{
++				bool good = true;
++				for (u32 k = 0; k < nv && good; k++) good = B[o + k * 8] + B[o + k * 8 + 2] + B[o + k * 8 + 4] + B[o + k * 8 + 6] == 255;
++				if (good) { wo = o; break; }
++			}
++			if (!wo) continue;
++			const u32 base = static_cast<u32>(m.v.size());
++			std::vector<u8> lbone(nv * 4);
++			for (u32 k = 0; k < nv; k++)
++			{
++				vtx x{};
++				x.p = {rdf32be(&B[po + k * 12]), rdf32be(&B[po + k * 12 + 4]), rdf32be(&B[po + k * 12 + 8])};
++				x.n = normalize(vec3{rdf32be(&B[sec + k * 24]), rdf32be(&B[sec + k * 24 + 4]), rdf32be(&B[sec + k * 24 + 8])});
++				x.u = rdf32be(&B[rsx + k * 24 + 16]);
++				x.v = rdf32be(&B[rsx + k * 24 + 20]);
++				for (int j = 0; j < 4; j++) { x.w[j] = B[wo + k * 8 + j * 2] / 255.f; lbone[k * 4 + j] = B[wo + k * 8 + j * 2 + 1]; }
++				m.v.push_back(x);
++			}
++			// Classify this segment's local bones by where their vertices are
++			std::map<u8, std::pair<vec3, f32>> acc;
++			for (u32 k = 0; k < nv; k++)
++				for (int j = 0; j < 4; j++)
++				{
++					const f32 wt = m.v[base + k].w[j];
++					if (wt <= 0.f) continue;
++					auto& a = acc[lbone[k * 4 + j]];
++					a.first = a.first + m.v[base + k].p * wt;
++					a.second += wt;
++				}
++			std::map<u8, u8> cls;
++			for (const auto& [b, a] : acc)
++			{
++				const vec3 c = a.first * (1.f / std::max(a.second, 1e-6f));
++				const f32 ax = std::fabs(c.x);
++				const int side = c.x >= 0.f ? 0 : 1;
++				u8 pc = P_BODY;
++				if (std::fabs(c.y - 0.83f) < 0.14f && ax > 0.17f)
++				{
++					if (ax < 0.34f) pc = side ? P_UA_R : P_UA_L;
++					else if (ax < 0.56f) pc = side ? P_FA_R : P_FA_L;
++					else if (ax < 0.86f) pc = side ? P_HAND_R : P_HAND_L;
++					else pc = side ? P_FING_R : P_FING_L;
++				}
++				else if (c.y > 1.05f) pc = P_HEAD;
++				else if (c.y < 0.33f && ax > 0.05f) pc = side ? P_LEG_R : P_LEG_L;
++				cls[b] = pc;
++			}
++			for (u32 k = 0; k < nv; k++)
++				for (int j = 0; j < 4; j++) m.v[base + k].part[j] = cls.count(lbone[k * 4 + j]) ? cls[lbone[k * 4 + j]] : P_BODY;
++			// Triangles, wound so their front faces point outwards (along the stored normals)
++			for (u32 t = 0; t + 2 < ix.size(); t += 3)
++			{
++				u32 a = base + ix[t], b = base + ix[t + 1], c = base + ix[t + 2];
++				const vec3 fn = cross(m.v[b].p - m.v[a].p, m.v[c].p - m.v[a].p);
++				if (dot(fn, m.v[a].n + m.v[b].n + m.v[c].n) < 0.f) std::swap(b, c);
++				m.idx.insert(m.idx.end(), {a, b, c});
++			}
++		}
++		if (m.v.empty()) { m.error = "no chef geometry decoded"; return false; }
++
++		// Proportions and joints from the T pose
++		f32 ymax = 0.f, armsum = 0.f, zsum = 0.f, tip = 0.f;
++		int armn = 0;
++		for (const auto& x : m.v)
++		{
++			ymax = std::max(ymax, x.p.y);
++			if (std::fabs(x.p.x) > 0.5f && std::fabs(x.p.y - 0.83f) < 0.2f) { armsum += x.p.y; zsum += x.p.z; armn++; tip = std::max(tip, std::fabs(x.p.x)); }
++		}
++		m.top_y = ymax;
++		if (armn) { m.arm_y = armsum / armn; m.arm_z = zsum / armn; }
++		m.arm_tip = tip > 0.6f ? tip : 0.96f;
++		f32 fz = 0.f;
++		for (const auto& x : m.v)
++			if (std::fabs(x.p.y - m.eye_y) < 0.08f && std::fabs(x.p.x) < 0.08f) fz = std::max(fz, x.p.z);
++		m.face_z = fz > 0.1f ? fz : 0.29f;
++		const f32 k = m.arm_tip / 0.96f;
++		for (int sd = 0; sd < 2; sd++)
++		{
++			const f32 sx = sd == 0 ? 1.f : -1.f;
++			m.shoulder[sd] = {sx * 0.20f * k, m.arm_y, m.arm_z};
++			m.elbow[sd] = {sx * 0.45f * k, m.arm_y, m.arm_z};
++			m.wrist[sd] = {sx * 0.67f * k, m.arm_y, m.arm_z};
++			m.knuckle[sd] = {sx * 0.86f * k, m.arm_y, m.arm_z};
++		}
++		m.neck = {0.f, m.arm_y + 0.30f, 0.f};
++		m.ok = true;
++		return true;
++	}
++
++	// Everything needed from the game's files: Chef.wad and the SPU job with the Edge decoder.
++	bool load(model& m, const std::string& usrdir, bool female)
++	{
++		m = {};
++		m.female = female;
++		// The SPU job (Edge geometry) from the game's own SPRX, decrypted with RPCS3's code
++		std::vector<u8> job;
++		{
++			fs::file sprx(usrdir + "spurs/spu_codef.ppu.sprx");
++			if (!sprx) { m.error = "spu_codef.ppu.sprx not found"; return false; }
++			fs::file elf = decrypt_self(sprx);
++			if (!elf) { m.error = "could not decrypt spu_codef.ppu.sprx"; return false; }
++			std::vector<u8> e = elf.to_vector<u8>();
++			if (e.size() < 0x40 || std::memcmp(e.data(), "\x7f" "ELF", 4) != 0) { m.error = "spu_codef: not an ELF"; return false; }
++			// ELF64 big-endian: first program header gives the job image
++			const u64 phoff = u64{rd32be(&e[0x20])} << 32 | rd32be(&e[0x24]);
++			if (phoff + 56 > e.size()) { m.error = "spu_codef: bad program header"; return false; }
++			const u64 off = u64{rd32be(&e[phoff + 8])} << 32 | rd32be(&e[phoff + 12]);
++			const u64 fsz = u64{rd32be(&e[phoff + 32])} << 32 | rd32be(&e[phoff + 36]);
++			if (off + fsz > e.size() || fsz < 0x7000) { m.error = "spu_codef: bad segment"; return false; }
++			job.assign(e.begin() + off + 0x100, e.begin() + off + fsz);   // the job image starts 0x100 into the segment
++			// The decoder entry we call must be the one this mod was built against
++			if (job.size() < 0x6e64 || rd32be(&job[0x6e60]) != 0x34064185) { m.error = "spu_codef: unexpected Edge version"; return false; }
++		}
++		wad_reader w;
++		if (!w.open(usrdir + "Chef.wad")) { m.error = "Chef.wad not readable"; return false; }
++		// Model files and the body texture (texture files are named images/imgdat/<hash>.imgdat.ps3)
++		const u32 model_file = female ? 0xb4162e7e : 0xc3572b34;
++		const u32 tex_file = crc_name(fmt::format("images/imgdat/%08x.imgdat.ps3", female ? 0xa486983bu : 0xd9e02c46u));
++		const u32 mw = w.find_file(model_file, female ? std::initializer_list<u32>{0x3dc1261e, 0x6ce6f2f7} : std::initializer_list<u32>{0xdfaab736});
++		std::vector<u8> blob, tex;
++		if (!mw || !w.nested_file(mw, model_file, blob)) { m.error = "chef model not found"; return false; }
++		const u32 tw = w.find_file(tex_file, female ? std::initializer_list<u32>{0xf4b0efb0, 0x2a2adcb1} : std::initializer_list<u32>{0x311c75b9, 0x2a2adcb1});
++		if (tw && w.nested_file(tw, tex_file, tex) && tex.size() == 1024 * 1024 / 2)
++		{
++			decode_dxt1(tex.data(), 1024, 1024, m.rgba);
++			m.tw = m.th = 1024;
++		}
++		if (std::getenv("OUVR_CHEF_DEBUG"))
++		{
++			int segs = 0;
++			for (usz s = 0; s + 0x40 < blob.size(); s += 4) if (blob[s] == 0x83 && blob[s + 6] == 0x33) segs++;
++			std::fprintf(stderr, "model wad %08x, blob %zu bytes, first %08x, %d segment headers; job %zu bytes\n", mw, blob.size(), blob.size() >= 4 ? rd32be(blob.data()) : 0, segs, job.size());
++		}
++		return build_mesh(m, blob, job);
++	}
++
++	// ---------------------------------------------------------------- Posing
++	// The chef's pose: everything in world space (metres).
++	struct pose_in
++	{
++		vec3 head;                 // eye centre
++		XrQuaternionf head_q{0, 0, 0, 1};
++		f32 body_yaw = 0.f;        // the body faces (-sin, 0, -cos)
++		f32 floor_y = 0.f;
++		f32 scale = 1.f;
++		bool hand_valid[2]{};
++		XrPosef hand[2]{};         // controller grip poses: [0] left, [1] right
++		f32 grip[2]{}, trig[2]{};
++	};
++
++	struct rigid { vec3 c0, c1; XrQuaternionf q{0, 0, 0, 1}; vec3 stretch_dir; f32 stretch = 1.f; };
++
++	XrQuaternionf q_from_to(vec3 a, vec3 b)
++	{
++		a = normalize(a); b = normalize(b);
++		const f32 d = dot(a, b);
++		if (d < -0.9999f) { const vec3 ax = normalize(std::fabs(a.x) < 0.9f ? cross(a, {1, 0, 0}) : cross(a, {0, 1, 0})); return {ax.x, ax.y, ax.z, 0.f}; }
++		const vec3 c = cross(a, b);
++		return qnorm({c.x, c.y, c.z, 1.f + d});
++	}
++
++	// Rotation that maps the frame (f0, n0) onto (f1, n1)
++	XrQuaternionf q_frames(vec3 f0, vec3 n0, vec3 f1, vec3 n1)
++	{
++		const XrQuaternionf q1 = q_from_to(f0, f1);
++		const vec3 n0r = rotate(q1, n0);
++		// twist about f1 so n0r lines up with n1 (projected)
++		const vec3 a = normalize(n0r - f1 * dot(n0r, f1)), b = normalize(n1 - f1 * dot(n1, f1));
++		const f32 ang = std::atan2(dot(cross(a, b), f1), dot(a, b));
++		const XrQuaternionf tw{f1.x * std::sin(ang * 0.5f), f1.y * std::sin(ang * 0.5f), f1.z * std::sin(ang * 0.5f), std::cos(ang * 0.5f)};
++		return qnorm(qmul(tw, q1));
++	}
++
++	// Per-part transforms: world = c1 + q * stretch(R_root * s * (p - c0))
++	void solve(const model& m, const pose_in& in, rigid out[P_COUNT], vec3& root, XrQuaternionf& rq)
++	{
++		const f32 s = in.scale;
++		rq = yaw_q(in.body_yaw + 3.14159265f);   // model +z -> where the body faces
++		const vec3 eye_m{0.f, m.eye_y, m.face_z + 0.03f};
++		root = in.head - rotate(rq, eye_m * s);
++		const auto W = [&](vec3 p) { return root + rotate(rq, p * s); };
++		for (int i = 0; i < P_COUNT; i++) out[i] = {{0, 0, 0}, root, rq, {0, 1, 0}, 1.f};
++		// Head turns with yours, about the neck
++		{
++			const XrQuaternionf rel = qnorm(qmul(in.head_q, qconj(yaw_q(in.body_yaw))));
++			out[P_HEAD] = {m.neck, W(m.neck), qnorm(qmul(rel, rq)), {0, 1, 0}, 1.f};
++		}
++		for (int sd = 0; sd < 2; sd++)
++		{
++			const int UA = sd ? P_UA_R : P_UA_L, FA = sd ? P_FA_R : P_FA_L, HD = sd ? P_HAND_R : P_HAND_L, FG = sd ? P_FING_R : P_FING_L;
++			const vec3 S = W(m.shoulder[sd]);
++			const vec3 Er = W(m.elbow[sd]), Wr = W(m.wrist[sd]);
++			const f32 L1 = s * std::sqrt(dot(m.elbow[sd] - m.shoulder[sd], m.elbow[sd] - m.shoulder[sd]));
++			const f32 L2 = s * std::sqrt(dot(m.wrist[sd] - m.elbow[sd], m.wrist[sd] - m.elbow[sd]));
++			const vec3 out_dir = normalize(Wr - S);                  // T-pose arm direction (outwards)
++			if (!in.hand_valid[sd])
++			{
++				// Arms hang down
++				const vec3 down{0.f, -1.f, 0.f};
++				const XrQuaternionf q = q_from_to(out_dir, normalize(down * 0.95f + out_dir * 0.3f));
++				out[UA] = {m.shoulder[sd], S, qnorm(qmul(q, rq)), out_dir, 1.f};
++				const vec3 E = S + rotate(q, Er - S);
++				out[FA] = {m.elbow[sd], E, qnorm(qmul(q, rq)), out_dir, 1.f};
++				const vec3 Wt = S + rotate(q, Wr - S);
++				out[HD] = {m.wrist[sd], Wt, qnorm(qmul(q, rq)), out_dir, 1.f};
++				out[FG] = out[HD];
++				out[FG].c0 = m.wrist[sd];
++				continue;
++			}
++			const XrPosef& hp = in.hand[sd];
++			const vec3 fc = rotate(hp.orientation, {0.f, 0.f, -1.f});          // controller forward = fingers
++			const vec3 palm = rotate(hp.orientation, {sd == 0 ? 1.f : -1.f, 0.f, 0.f});   // palms face inwards
++			const vec3 Wt = to_vec(hp.position) - fc * (0.11f * s);   // your controller sits in the chef's palm
++			// Two-bone arm: elbow down and out
++			vec3 d = Wt - S;
++			f32 dl = std::sqrt(dot(d, d));
++			if (dl < 1e-4f) { d = out_dir; dl = 1e-4f; }
++			const vec3 dir = d * (1.f / dl);
++			f32 k = 1.f, a = 0.f, hgt = 0.f;
++			if (dl >= (L1 + L2) * 0.999f) { k = dl / (L1 + L2); a = L1 * k; }   // reach further than the chef: the arm stretches
++			else
++			{
++				a = (L1 * L1 - L2 * L2 + dl * dl) / (2.f * dl);
++				hgt = std::sqrt(std::max(L1 * L1 - a * a, 0.f));
++			}
++			vec3 pole = rotate(rq, vec3{sd == 0 ? 0.5f : -0.5f, -1.f, -0.2f});
++			pole = normalize(pole - dir * dot(pole, dir));
++			const vec3 E = S + dir * a + pole * hgt;
++			const vec3 ua_dir = normalize(E - S), fa_dir = normalize(Wt - E);
++			const vec3 ua0 = normalize(Er - S), fa0 = normalize(Wr - Er);
++			out[UA] = {m.shoulder[sd], S, qnorm(qmul(q_from_to(ua0, ua_dir), rq)), ua0, std::sqrt(dot(E - S, E - S)) / std::max(L1, 1e-4f)};
++			out[FA] = {m.elbow[sd], E, qnorm(qmul(q_from_to(fa0, fa_dir), rq)), fa0, std::sqrt(dot(Wt - E, Wt - E)) / std::max(L2, 1e-4f)};
++			// Hand: the chef's fingers point out of the T pose (outwards), palms down
++			const vec3 f0 = out_dir, n0 = rotate(rq, vec3{0.f, -1.f, 0.f});
++			const XrQuaternionf qh = q_frames(f0, n0, fc, palm);
++			out[HD] = {m.wrist[sd], Wt, qnorm(qmul(qh, rq)), {0, 1, 0}, 1.f};
++			// Fingers curl towards the palm with GRIP
++			const f32 curl = std::clamp(in.grip[sd], 0.f, 1.f) * 1.3f;
++			const vec3 axis = normalize(cross(fc, palm));
++			const XrQuaternionf qc{axis.x * std::sin(curl * 0.5f), axis.y * std::sin(curl * 0.5f), axis.z * std::sin(curl * 0.5f), std::cos(curl * 0.5f)};
++			const vec3 K = Wt + rotate(qnorm(qmul(qh, rq)), (m.knuckle[sd] - m.wrist[sd]) * s);
++			out[FG] = {m.knuckle[sd], K, qnorm(qmul(qc, qmul(qh, rq))), {0, 1, 0}, 1.f};
++		}
++	}
++
++	// Skins the model into world positions and normals; mirror = reflect about a plane after posing.
++	void skin(const model& m, const rigid T[P_COUNT], const vec3& root, const XrQuaternionf& rq, f32 s, std::vector<vec3>& pos, std::vector<vec3>& nrm)
++	{
++		pos.resize(m.v.size());
++		nrm.resize(m.v.size());
++		for (usz i = 0; i < m.v.size(); i++)
++		{
++			const vtx& x = m.v[i];
++			vec3 p{}, n{};
++			for (int j = 0; j < 4; j++)
++			{
++				if (x.w[j] <= 0.f) continue;
++				const rigid& t = T[x.part[j]];
++				// T pose offset from this part's pivot, turned into the body's facing, scaled
++				const XrQuaternionf rootq = rq;
++				vec3 o = rotate(rootq, (x.p - t.c0) * s);
++				if (t.stretch != 1.f)
++				{
++					const vec3 sd = t.stretch_dir;   // the bone's rest direction, already in the body's facing
++					o = o + sd * (dot(o, sd) * (t.stretch - 1.f));
++				}
++				// q holds (part rotation * root); undo the root since o is already in the body's facing
++				const XrQuaternionf partq = qnorm(qmul(t.q, qconj(rootq)));
++				p = p + (t.c1 + rotate(partq, o)) * x.w[j];
++				n = n + rotate(t.q, x.n) * x.w[j];
++			}
++			pos[i] = p;
++			nrm[i] = normalize(n);
++		}
++		(void)root;
++	}
 +}
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 index 51fc9092b..5b7f5b51a 100644
@@ -5585,3 +6664,24 @@ index 36ba6b15e..571709b21 100644
      <ClCompile Include="Emu\Cell\Modules\cellGifDec.cpp" />
      <ClCompile Include="Emu\Cell\Modules\cellHttp.cpp" />
      <ClCompile Include="Emu\Cell\Modules\cellHttpUtil.cpp" />
+diff --git a/rpcs3/rpcs3.cpp b/rpcs3/rpcs3.cpp
+index 78154f639..9d99a25cc 100644
+--- a/rpcs3/rpcs3.cpp
++++ b/rpcs3/rpcs3.cpp
+@@ -28,6 +28,7 @@
+ #include "util/console.h"
+ #include "util/asm.hpp"
+ #include "Crypto/decrypt_binaries.h"
++#include "Emu/Io/OrderUpVR.h"
+ #ifdef _WIN32
+ #include "module_verifier.hpp"
+ #include "util/dyn_lib.hpp"
+@@ -562,6 +563,8 @@ void run_platform_sanity_checks()
+ 
+ int run_rpcs3(int argc, char** argv)
+ {
++	if (argc > 2 && std::string_view(argv[1]).starts_with("--ouvr-")) return ouvr::dev_tool(argc, argv);
++
+ #ifdef _WIN32
+ 	ULONG64 intro_cycles{};
+ 	QueryThreadCycleTime(GetCurrentThread(), &intro_cycles);

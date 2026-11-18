@@ -505,7 +505,7 @@ namespace OrderUpVR
         // VR comfort and body choices: key, label, hint, then value/display pairs (the first is the default)
         static readonly string[][] VrOptions =
         {
-            new[] { "chefbody", "Your body", "Hands only until the game's own chef models are in; the simple body is a placeholder", "off", "Hands only", "male", "Simple body (placeholder)" },
+            new[] { "chef", "Your chef", "The game's own chef is your body (rebuilt from your copy of the game). Quick Play uses the male chef", "male", "Male chef", "female", "Female chef", "off", "Hands only" },
             new[] { "playmode", "Play position", "Standing: legs stand and step when you walk", "standing", "Standing", "seated", "Seated" },
             new[] { "turn", "Turning", "Right stick left/right inside the game", "snap", "Snap turn", "smooth", "Smooth turn" },
             new[] { "snapangle", "Snap turn angle", "How far one snap turns you", "45", "45 degrees", "30", "30 degrees", "60", "60 degrees", "90", "90 degrees", "15", "15 degrees" },

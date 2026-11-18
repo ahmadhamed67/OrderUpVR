@@ -35,6 +35,7 @@ Early test build. See the [changelog](release/changelog.json) and the [releases 
 | Comfort settings (snap/smooth turn, angles, speeds, vignette, seated/standing, HUD distance) | New in 0.8.0, in the launcher's Settings |
 | Kitchen fixed in your room; turn your head to change station | New in 0.9.0, being tested |
 | Menus as a menu board in a diner around you | New in 0.9.0, being tested |
+| The game's own male or female chef as your body, mirror in the lobby | New in 0.10.0, being tested |
 
 ## Controls (0.9.0)
 

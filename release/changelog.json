@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.10.0",
+    "date": "2026-11-18",
+    "notes": [
+      "Your body is now the game's own chef: the real male or female chef from Order Up!!, with the game's textures, rebuilt at start-up from your own copy of the game (nothing of the game is shipped with the mod). Choose in Settings > VR comfort and body > Your chef; Quick Play uses the male chef by default.",
+      "The chef's arms reach for your controllers, the chef's hands are your hands and close their fingers when you press GRIP, and the head turns with yours. Your own face is cut away so it never blocks your view. The button shapes on the hands are gone.",
+      "A standing mirror in the diner lobby, to your front left: look at yourself as the chef, wave, and move around.",
+      "How it works: the game stores its characters for the PS3's SPU processors (Sony Edge compressed geometry). The mod runs the game's own SPU decoder in a small interpreter to rebuild the model, so it matches the game exactly."
+    ]
+  },
+  {
     "version": "0.9.1",
     "date": "2026-11-17",
     "notes": [

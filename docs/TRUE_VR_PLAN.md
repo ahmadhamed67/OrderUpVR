@@ -158,3 +158,41 @@ A press that does nothing marks the end of the row on that side.
 - Chef models: Models/Characters/PC_MaleChef and PC_FemaleChef with mesh parts (base, limbs, hat, eyes, nose,
   chin, eyebrows) and skeletal animations (idle, walk, run, chop, mix, ...); the script function IsMaleChef tells
   which chef the profile uses.
+
+## Chef models: where they are and what is still unknown
+
+- Female chef: nested WAD 0x3dc1261e in Chef.wad (40 files, 910 KB). Male chef: in 0x6ce6f2f7 / 0xdfaab736.
+  Inner file names are hashed differently from the outer table (path CRCs do not match); files are identified by
+  content.
+- `pc_femalechef.csl` (script): parts femalechef_base, _limbs, _hat, _eyes, _eyebrows, _nose, _chin.
+  `assets_pc_femalechef.csl`: 14 animations (neutral, idle, idle_alt, fidget, gesture, walk, run, chop, mix,
+  addIngredients, acknowledge) and their footstep/sound events.
+- 0xb4162e7e (256 KB): a serialized scene. 0x240-byte material records (shader hash, six texture hashes, colour,
+  alpha cutoff 0.04), then large float arrays within +-1 (normals/tangents/rotations). No plain index lists.
+- Files starting 0x00001b5b/0x00001b5c: serialized animation graph objects. Files padded with 0xAB: keyed
+  animation tracks (u32 key + xyz, quaternions).
+- Graphics WADs (gfx_*) hold DXT textures only (e.g. gfx_fortified_chef_intro 0x1b65e354, 149 files).
+- The program has a "geom-jobchain" (SPURS): geometry is decoded/skinned on the SPUs at draw time, so the mesh is
+  stored in an SPU-oriented layout; no archive of the 120 contains plain 16-bit index runs.
+- The player chef is drawn by the game only in the Fortified Chef cutscenes (worldmapmenu.csl, IsMaleChef ->
+  Challenger_PCMale/PCFemale, Fortified_PCMale/PCFemale), so a capture from the draw calls needs that scene.
+
+## The game's own chef as your body (0.10.0)
+
+Decoded from the game files (OrderUpVR_chef.inl; offline check: `rpcs3.exe --ouvr-chef-test <USRDIR> <out prefix>`):
+- Model files: female `b4162e7e` (nested WAD `3dc1261e`, also `6ce6f2f7`), male `c3572b34` (nested WAD `dfaab736`).
+  Body textures are 1024x1024 DXT1 files named `images/imgdat/<hash>.imgdat.ps3` (CRC32 without inversion):
+  female `a486983b`, male `d9e02c46` (found by searching the nested WAD tables).
+- Geometry is Edge: per segment a 16-byte SPU config (byte 0 0x83 = full vertex data, 0x81 = shadow copy with positions
+  only; byte 6 0x33 = compressed triangle list + skinning; u16 at +8 vertices, +10 indices, +20 compressed index size).
+  The compressed index stream (8-byte header: count of explicit indices, ?, flag-byte count, bit width) is decoded by
+  running the game's own SPU job (spurs/spu_codef.ppu.sprx, decrypted with RPCS3's decrypt_self; job image at segment
+  +0x100, wrapper entry LS 0x6e60, context: config at +0, index count at +0x190, IO end at +0x17c, output pointer
+  written to +0x50) in a 62-instruction SPU interpreter.
+- After the stream: positions (float3, padded to 16), normal+tangent (2 x float3), RSX block (RGBA float4 + UV float2),
+  then skin weights (4 x (weight byte, bone byte), weights sum 255).
+- Bones are per-segment local indices; the mod classifies them by where their vertices are in the T pose (arms are
+  horizontal at y ~0.83: shoulder < 0.34, forearm < 0.56, hand < 0.86, fingers beyond; head above 1.05; legs below
+  0.33). Pose: chef eyes at your eyes (scale = eye height / 1.45), two-bone arms (stretching when you reach further than
+  the chef can), hands matched to the controller grip frame (fingers forward, palms inward), fingers curl with GRIP.
+- Mirror: stencil mirror in the lobby room (glass marks the stencil, depth reset to far, room and chef reflected).
