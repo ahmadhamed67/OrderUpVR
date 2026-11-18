@@ -691,7 +691,7 @@ namespace OrderUpVR
                 Rows = new[] { new[] { "LOOK", "Turn your head toward the next station and the game goes there" }, new[] { "A / B", "Change station by hand" }, new[] { "REACH", "Your hand is the pointer: touch the food" } } },
             new HelpSlide { Glyph = "", Step = "MOVING", Title = "Walk and turn",
                 Lead = "Walk around for real, or use the sticks. Walls keep you inside the restaurant.",
-                Rows = new[] { new[] { "LEFT STICK", "Walk where you look" }, new[] { "RIGHT STICK", "Turn (snap or smooth, in Settings)" }, new[] { "STICK CLICK", "Bring everything back in front of you" } } },
+                Rows = new[] { new[] { "LEFT STICK", "Walk where you look" }, new[] { "RIGHT STICK", "Turn (snap or smooth, in Settings)" }, new[] { "STICK CLICK", "Recenter you in the kitchen, at the right height" } } },
             new HelpSlide { Glyph = "", Step = "COOKING", Title = "Cook with your hands",
                 Lead = "Do the moves for real: the game feels your hands like a PlayStation Move.",
                 Rows = new[] { new[] { "FLIP", "Hold GRIP and flick your wrist up" }, new[] { "EASY FLIP", "Or flick that hand's thumbstick up" }, new[] { "CUTSCENES", "Play on the diner's big screen, then you're back" } } },
@@ -1517,7 +1517,7 @@ namespace OrderUpVR
             bool minimized = false;
             foreach (var w in Native.WindowsOf(game.Id))
             {
-                if (w.Value.StartsWith("FPS:")) { gameTitle = w.Value; gameWnd = w.Key; minimized = Native.IsIconic(w.Key); }
+                if (w.Value.StartsWith("FPS:") || w.Value.Contains("BLES01470") || w.Value.Contains("Order Up")) { gameTitle = w.Value.StartsWith("FPS:") ? w.Value : "FPS: ? | " + w.Value; gameWnd = w.Key; minimized = Native.IsIconic(w.Key); }
                 else if (w.Value.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 || w.Value.IndexOf("fatal", StringComparison.OrdinalIgnoreCase) >= 0)
                 { errorTitle = w.Value; errorWnd = w.Key; }
                 else if (w.Value.Length > 0) Note("Window: " + w.Value);

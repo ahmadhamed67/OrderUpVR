@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..92f3d3437
+index 000000000..2e5b36028
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,6251 @@
+@@ -0,0 +1,6465 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -718,6 +718,18 @@ index 000000000..92f3d3437
 +			return true;
 +		}
 +
++		// The VR HUD layout. The game draws its HUD flat over the picture; the mod gives each part its own place:
++		// the order tickets on a rail above the counter, the order card (recipe steps) on a clipboard in your left
++		// hand, the station icons and assistants on a panel to your right. Each region of the game's screen (in
++		// normalized screen units, x right, y up) maps onto one panel (player frame, metres).
++		struct hud_region { f32 cx, cy, hx, hy; };
++		constexpr hud_region hud_regions[3] = {
++			{0.f, 0.8f, 1.f, 0.2f},          // 0 rail: the top strip (tickets)
++			{-0.65f, -0.09f, 0.35f, 0.71f},  // 1 clipboard: the left side (order card)
++			{0.75f, -0.2f, 0.25f, 0.8f},     // 2 side: the right side (stations, assistants)
++		};
++		struct hud_panel { bool on = false; vec3 P{}, A{}, B{}; f32 hw = 0.f, hh = 0.f; };
++
 +		// The headset side publishes where the eyes are; the renderer side reads it once per game frame.
 +		struct view_snapshot
 +		{
@@ -734,6 +746,7 @@ index 000000000..92f3d3437
 +			u64 input_tick = 0;  // last time you pressed something (camera moves right after that are yours, not a cutscene's)
 +			bool cinema = true;  // cutscenes and camera fly-throughs play on the big screen
 +			bool wide = true;    // widen the game's field of view inside the game (the game draws what is around you)
++			hud_panel panels[3]; // the VR HUD layout (player frame, metres)
 +			bool fixed_unit = false;   // the player set a world scale by hand: no automatic scale
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
@@ -758,6 +771,9 @@ index 000000000..92f3d3437
 +			bool bounds = false;      // where the restaurant's things are, around the anchor (levelled, game units)
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
 +			f32 floor_lev = 0.f;
++			u32 place_id = 0;
++			int hud_seen[4]{};         // HUD draws last frame in: rail, clipboard, side, dialog
++			f32 food_d = 0.f;          // where the doneness meters and pop-ups go (game units in front of the camera)
 +		};
 +		cam_info g_cam;         // guarded by g_state_mutex
 +
@@ -852,6 +868,9 @@ index 000000000..92f3d3437
 +			bool bounds = false;
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
 +			f32 floor_lev = 0.f;        // the floor's height below the anchor camera (levelled, game units)
++			hud_panel panels[3];
++			int hud_cnt[4]{}, hud_seen[4]{};
++			u32 place_id = 0;           // counts kitchens measured (the player is seated in each new one)
 +			// Developer: log every draw of one frame (simulator: create <sim folder>/drawlog)
 +			// The scene's own target is the one most 3D draws go to (some restaurants first draw a small shadow mask)
 +			std::vector<std::pair<u64, int>> n3_by_key;
@@ -863,6 +882,9 @@ index 000000000..92f3d3437
 +			bool wide_on = false, wide_pref = true;
 +			f32 hud_k = 1.f;     // natural / widened (tan of half the field of view): the HUD and pointer use the natural size
 +			u64 dominant_key = ~0ull;
++			// The current flat draw's vertices (from the renderer): count and bounding box of x, y
++			u32 hv_n = 0, hv_type = 0, hv_comps = 0;
++			f32 hv_x0 = 0.f, hv_y0 = 0.f, hv_x1 = 0.f, hv_y1 = 0.f, hv_z = 0.f, hv_w = 1.f;
 +			bool drawlog = false;
 +			int drawlog_n = 0;
 +			// Logs: every 30 s inside the game, one frame's draws grouped by how the mod placed them (log/orderup_draws.log)
@@ -1051,6 +1073,7 @@ index 000000000..92f3d3437
 +				bool room = true, look_switch = true, cinema = true, wide = true, lipsync = true;
 +			} comfort;
 +			u64 input_tick = 0;       // last button or trigger press (camera moves right after it are yours)
++			u32 seen_place_id = 0;    // the last kitchen the player was seated in
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
 +
 +			// Kitchen stations: turn your head to the next station and the game moves there
@@ -1636,7 +1659,8 @@ index 000000000..92f3d3437
 +				{L"X  Y", L"Square (pink) and Triangle"},
 +				{L"MENU", L"Pause the game"},
 +				{L"FLIP", L"Hold GRIP, flick your wrist up"},
-+				{L"LEFT STICK", L"Walk.  Click: recentre"},
++				{L"LEFT STICK", L"Walk"},
++				{L"STICK CLICK", L"Recenter you (and your height)"},
 +				{L"RIGHT STICK", L"Turn"},
 +				{L"LOOK", L"Turn your head to change station"},
 +				{L"BOTH GRIPS", L"Move or resize the menu board"},
@@ -1939,10 +1963,25 @@ index 000000000..92f3d3437
 +			xr.screen_yaw = std::atan2(-f.x, -f.z);
 +			xr.screen_placed = true;
 +
-+			// True VR: the game camera sits at the player's eyes, facing where they face
++			// True VR: the game camera sits where you stand, facing where you face. Seated: at your eyes. Standing: at
++			// its real height in this kitchen above your real floor (so the chef is as tall as the game's camera).
 +			xr.player_pos = xr.last_head;
-+			xr.player_pos.y += xr.lower;
 +			xr.player_yaw = xr.screen_yaw;
++			{
++				cam_info c;
++				{
++					std::lock_guard lock(g_state_mutex);
++					c = g_cam;
++				}
++				const f32 cam_h = -c.floor_lev * xr.unit;
++				if (!xr.comfort.seated && c.bounds && xr.floor_known && cam_h > 0.8f && cam_h < 2.6f)
++				{
++					xr.player_pos.y = xr.floor_y + cam_h;
++					vr_log("Recentred: standing, the game camera is %.2f m above your floor (your eyes are at %.2f m)", cam_h, xr.last_head.y - xr.floor_y);
++				}
++				else vr_log("Recentred: %s, the game camera is at your eyes", xr.comfort.seated ? "seated" : "standing (floor not measured yet)");
++			}
++			xr.player_pos.y += xr.lower;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
 +				xr.screen_center.x, xr.screen_center.y, xr.screen_center.z, xr.screen_yaw * 57.29578f, xr.screen_width, xr.screen_distance);
 +		}
@@ -3383,13 +3422,7 @@ index 000000000..92f3d3437
 +							ctx->OMSetDepthStencilState(g.ds_off, 0);
 +							g.vp = view_proj(xr.views[e], 0.05f, 200.f, true);
 +							gfx_draw(xr, g.sphere, m_cols({50, 0, 0}, {0, 50, 0}, {0, 0, 50}, {0, 0, 0}), {0, 0, 0}, 1.f);
-+							// Inside the game: a ceiling where the restaurant has none (seen only where the game draws nothing)
-+							if (xr.live3d)
-+							{
-+								ctx->OMSetDepthStencilState(g.ds_on, 0);
-+								g.vp = view_proj(xr.views[e], 0.05f, 200.f, false);
-+								draw_ceiling(xr);
-+							}
++
 +							// Menus and the big screen: the restaurant around you
 +							if (!xr.live3d && xr.screen_placed)
 +							{
@@ -3598,6 +3631,89 @@ index 000000000..92f3d3437
 +			n.off_since = 0;
 +			start(n.press_btn, true);
 +			vr_log("Stations: you looked %s, pressing %s", side > 0 ? "left" : "right", n.press_btn == 1 ? "Cross" : "Circle");
++		}
++
++		// Where the VR HUD panels are this frame (player frame, metres; the player frame is the game camera's place)
++		void layout_hud(xr_state& xr, hud_panel out[3])
++		{
++			const auto face = [](vec3 at, vec3 eye, hud_panel& pn)
++			{
++				const vec3 n = normalize(eye - at);
++				pn.A = normalize(cross(vec3{0.f, 1.f, 0.f}, n));
++				pn.B = cross(n, pn.A);
++				pn.P = at;
++			};
++			const vec3 eye{0.f, 0.f, 0.f};
++			// Ticket rail: above the counter, 1 m ahead and a little above your eyes, tilted towards you
++			out[0].on = true;
++			face({0.f, 0.30f, -1.0f}, eye + vec3{0.f, -0.15f, 0.f}, out[0]);
++			out[0].hw = 0.62f; out[0].hh = 0.62f * (0.4f * 9.f / 16.f) / 2.f * 1.6f;
++			// Order card: a clipboard just above your left hand, turned to your eyes (in the room when the hand is lost)
++			out[1].on = true;
++			const vec3 head_p = to_player(xr, xr.last_head);
++			if (xr.hand_valid[0])
++			{
++				const vec3 hand = to_player(xr, to_vec(xr.hand_pose[0].position));
++				face(hand + vec3{0.f, 0.11f, 0.f}, head_p, out[1]);
++			}
++			else face({-0.55f, -0.15f, -0.70f}, head_p, out[1]);
++			out[1].hw = 0.14f; out[1].hh = 0.14f * (1.42f * 9.f) / (0.7f * 16.f);
++			// Stations and assistants: a panel to your right
++			out[2].on = true;
++			face({0.62f, -0.05f, -0.72f}, head_p, out[2]);
++			out[2].hw = 0.13f; out[2].hh = 0.13f * (1.6f * 9.f) / (0.5f * 16.f);
++		}
++
++		// Pointing at a HUD panel: where the ray meets it, in the game's screen units (-1..1, y up)
++		bool hit_panel(const hud_panel& pn, const hud_region& rg, vec3 o, vec3 d, f32& nx, f32& ny, vec3& hitp)
++		{
++			const vec3 n = cross(pn.A, pn.B);
++			const f32 den = dot(d, n);
++			if (std::fabs(den) < 1e-4f) return false;
++			const f32 t = dot(pn.P - o, n) / den;
++			if (t <= 0.f || t > 4.f) return false;
++			hitp = o + d * t;
++			const f32 u = dot(hitp - pn.P, pn.A) / pn.hw, v = dot(hitp - pn.P, pn.B) / pn.hh;
++			if (std::fabs(u) > 1.f || std::fabs(v) > 1.f) return false;
++			nx = rg.cx + u * rg.hx;
++			ny = rg.cy + v * rg.hy;
++			return true;
++		}
++
++		// Live status for the launcher (log/orderup_status.txt, once a second): what the game and the headset are doing.
++		// Written even while the headset is off, so the launcher always knows the game is running.
++		void write_status(xr_state& xr)
++		{
++			{
++				static u64 last_status = 0, last_frames = 0;
++				const u64 now_st = GetTickCount64();
++				if (now_st - last_status >= 1000)
++				{
++					cam_info cs;
++					u64 frames = 0;
++					{
++						std::lock_guard lock(g_state_mutex);
++						cs = g_cam;
++						frames = g_frame_id;
++					}
++					const u64 last_frame = g_last_frame_tick.load();
++					const f32 fps = last_status ? (frames - last_frames) * 1000.f / (now_st - last_status) : 0.f;
++					last_frames = frames;
++					last_status = now_st;
++					const std::string tmp = fs::get_log_dir() + "orderup_status.tmp", dst = fs::get_log_dir() + "orderup_status.txt";
++					if (std::FILE* f = std::fopen(tmp.c_str(), "w"))
++					{
++						std::fprintf(f, "time=%llu\nsession=%d\ngame_frames=%llu\npicture_fps=%.1f\npicture_age_ms=%lld\nchannel=%s\nchoosing=%d\nmode=%s\nview=%s\nscene3d=%d\ncinema=%d\npaused=%d\npanel=%s\ncalibrated=%d\n",
++							static_cast<unsigned long long>(now_st), static_cast<int>(xr.session_state), static_cast<unsigned long long>(frames), fps,
++							last_frame ? static_cast<long long>(now_st - last_frame) : -1ll, xr.channel.c_str(), xr.chooser_active ? 1 : 0,
++							xr.chooser_active ? "none" : xr.mode3d ? "truevr" : "flat", xr.live3d ? "3d" : "screen", cs.valid ? 1 : 0, cs.cinema ? 1 : 0,
++							cs.n2 >= 15 ? 1 : 0, xr.panel_text.empty() ? "" : std::string(xr.panel_title.begin(), xr.panel_title.end()).c_str(), g_calib_tick.load() ? 1 : 0);
++						std::fclose(f);
++						MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
++					}
++				}
++			}
++
 +		}
 +
 +		void update_input(xr_state& xr, XrTime time, f32 dt)
@@ -3878,10 +3994,9 @@ index 000000000..92f3d3437
 +					bool have = false, on_hud = false;
 +					vec3 hud_q{};
 +					f32 nx = 0.f, ny = 0.f;
-+					// The HUD (order tickets along the top, the pause menu) floats on its own plane at its natural size:
-+					// pointing at it gives its own spot, whatever the game camera sees behind it
++					// The HUD panels (tickets rail, order card on your left hand, stations on your right, a dialog in
++					// front): pointing at one gives the game that spot on its screen. Otherwise the 3D scene below.
 +					{
-+						const f32 Dh = xr.comfort.hud_dist / xr.unit, hsx = cam.sx * cam.hud_k * 0.8f, hsy = cam.sy * cam.hud_k * 0.8f;
 +						vec3 ro = origin, rd = dir;
 +						if (!xr.pointing_laser && xr.hand_valid[hand])
 +						{
@@ -3889,19 +4004,26 @@ index 000000000..92f3d3437
 +							ro = xr.last_head;
 +							rd = normalize(hg.grab - xr.last_head);
 +						}
-+						const vec3 ho = level(cam.up_a, to_player(xr, ro) * (1.f / xr.unit), -1.f);
-+						const vec3 hd = level(cam.up_a, rotate(qconj(yaw_q(xr.player_yaw)), rd), -1.f);
-+						if (hd.z < -0.001f && (-Dh - ho.z) / hd.z > 0.f)
++						const vec3 po = to_player(xr, ro), pd = rotate(qconj(yaw_q(xr.player_yaw)), rd);
++						hud_panel pans[3];
++						layout_hud(xr, pans);
++						for (int k = 0; k < 3 && !have; k++)
 +						{
-+							const vec3 q = ho + hd * ((-Dh - ho.z) / hd.z);
-+							const f32 hx = (hsx * q.x - cam.cx * Dh) / Dh, hy = (hsy * q.y - cam.cy * Dh) / Dh;
-+							const bool paused = cam.n2 >= 15;
-+							if (std::fabs(hx) < 1.f && std::fabs(hy) < 1.f && (hy > 0.6f || paused))
++							if (!cam.hud_seen[k]) continue;
++							if (k == 1 && hand == 0) continue;   // the clipboard is in the left hand: touch it with the right
++							vec3 hp{};
++							if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); }
++						}
++						// A dialog (or the pause menu) in front: the old plane at the HUD distance
++						if (!have && cam.hud_seen[3])
++						{
++							const f32 Dh = xr.comfort.hud_dist / xr.unit, hsx = cam.sx * cam.hud_k * 0.8f, hsy = cam.sy * cam.hud_k * 0.8f;
++							const vec3 ho = level(cam.up_a, po * (1.f / xr.unit), -1.f), hd = level(cam.up_a, pd, -1.f);
++							if (hd.z < -0.001f && (-Dh - ho.z) / hd.z > 0.f)
 +							{
-+								nx = hx;
-+								ny = hy;
-+								have = on_hud = true;
-+								hud_q = q;
++								const vec3 q = ho + hd * ((-Dh - ho.z) / hd.z);
++								const f32 hx = (hsx * q.x - cam.cx * Dh) / Dh, hy = (hsy * q.y - cam.cy * Dh) / Dh;
++								if (std::fabs(hx) < 1.f && std::fabs(hy) < 1.f) { nx = hx; ny = hy; have = on_hud = true; hud_q = q; }
 +							}
 +						}
 +					}
@@ -4082,6 +4204,12 @@ index 000000000..92f3d3437
 +				out.select = get_bool(xr, xr.stick_click, xr.hand_path[1]);
 +
 +				update_stations(xr, cam, out, now_ms, grabbing);
++				// A new kitchen (or station area) was measured: seat the player in it at the right height
++				if (xr.live3d && cam.place_id != xr.seen_place_id)
++				{
++					xr.seen_place_id = cam.place_id;
++					if (cam.place_id) place_screen(xr);
++				}
 +			}
 +
 +			if ((xr.frames % 600) == 0)
@@ -4094,36 +4222,7 @@ index 000000000..92f3d3437
 +					xr.hand_grip[0], xr.hand_grip[1], xr.hand_trig[0], xr.hand_trig[1], xr.hand_valid[0], xr.hand_valid[1], xr.unit, g_chef.mouth);
 +			}
 +
-+			// Live status for the launcher (log/orderup_status.txt, once a second): what the game and the headset are doing
-+			{
-+				static u64 last_status = 0, last_frames = 0;
-+				const u64 now_st = GetTickCount64();
-+				if (now_st - last_status >= 1000)
-+				{
-+					cam_info cs;
-+					u64 frames = 0;
-+					{
-+						std::lock_guard lock(g_state_mutex);
-+						cs = g_cam;
-+						frames = g_frame_id;
-+					}
-+					const u64 last_frame = g_last_frame_tick.load();
-+					const f32 fps = last_status ? (frames - last_frames) * 1000.f / (now_st - last_status) : 0.f;
-+					last_frames = frames;
-+					last_status = now_st;
-+					const std::string tmp = fs::get_log_dir() + "orderup_status.tmp", dst = fs::get_log_dir() + "orderup_status.txt";
-+					if (std::FILE* f = std::fopen(tmp.c_str(), "w"))
-+					{
-+						std::fprintf(f, "time=%llu\nsession=%d\ngame_frames=%llu\npicture_fps=%.1f\npicture_age_ms=%lld\nchannel=%s\nchoosing=%d\nmode=%s\nview=%s\nscene3d=%d\ncinema=%d\npaused=%d\npanel=%s\ncalibrated=%d\n",
-+							static_cast<unsigned long long>(now_st), static_cast<int>(xr.session_state), static_cast<unsigned long long>(frames), fps,
-+							last_frame ? static_cast<long long>(now_st - last_frame) : -1ll, xr.channel.c_str(), xr.chooser_active ? 1 : 0,
-+							xr.chooser_active ? "none" : xr.mode3d ? "truevr" : "flat", xr.live3d ? "3d" : "screen", cs.valid ? 1 : 0, cs.cinema ? 1 : 0,
-+							cs.n2 >= 15 ? 1 : 0, xr.panel_text.empty() ? "" : std::string(xr.panel_title.begin(), xr.panel_title.end()).c_str(), g_calib_tick.load() ? 1 : 0);
-+						std::fclose(f);
-+						MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
-+					}
-+				}
-+			}
++			write_status(xr);
 +
 +			std::lock_guard lock(g_state_mutex);
 +			g_pointer = out;
@@ -4205,6 +4304,7 @@ index 000000000..92f3d3437
 +				g_views.input_tick = xr.input_tick;
 +				g_views.cinema = xr.comfort.cinema;
 +				g_views.wide = xr.comfort.wide;
++				layout_hud(xr, g_views.panels);
 +				g_views.fixed_unit = xr.fixed_unit;
 +			}
 +			const u64 now_tick = GetTickCount64();
@@ -4456,7 +4556,8 @@ index 000000000..92f3d3437
 +				const std::wstring sig = cc.signature();
 +				if (sig != xr.chooser_sig) { draw_card(xr, xr.chooser, xr.chooser_images, xr.chooser_bgra, xr.chooser_has, chooser_w, chooser_h, cc); xr.chooser_sig = sig; }
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
-+				xr.chooser_pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.5f, 0.2f) + vec3{0.f, 0.15f, 0.f};
++				xr.chooser_pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.5f, 0.2f);
++				xr.chooser_pos.y = xr.last_head.y - 0.05f;   // at eye level: no looking down
 +				xr.chooser_yaw = xr.screen_yaw;
 +				if (xr.chooser_has && frame_state.shouldRender)
 +				{
@@ -4472,11 +4573,12 @@ index 000000000..92f3d3437
 +				}
 +			}
 +
-+			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed)
++			if (frame_state.shouldRender && !message.empty() && xr.panel_has_image && xr.screen_placed && !xr.chooser_active)
 +			{
 +				// Floats just in front of the game screen, facing the player (below the start-up card while it shows).
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
-+				const vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f) - vec3{0.f, xr.chooser_active ? 1.0f : 0.f, 0.f};
++				vec3 pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.8f, 0.2f);
++				pos.y = xr.last_head.y - 0.08f;   // at eye level
 +				panel.space = xr.local_space;
 +				panel.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +				panel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -4785,6 +4887,7 @@ index 000000000..92f3d3437
 +					}
 +					else
 +					{
++						write_status(xr);
 +						std::this_thread::sleep_for(std::chrono::milliseconds(100));
 +					}
 +				}
@@ -5029,6 +5132,8 @@ index 000000000..92f3d3437
 +			s.input_tick = v.input_tick;
 +			s.cinema_pref = v.cinema;
 +			s.wide_pref = v.wide;
++			for (int k = 0; k < 3; k++) s.panels[k] = v.panels[k];
++			for (int k = 0; k < 4; k++) { s.hud_seen[k] = s.hud_cnt[k]; s.hud_cnt[k] = 0; }
 +			s.fixed_unit = v.fixed_unit;
 +			s.vms.clear();
 +			s.near_depths.clear();
@@ -5273,6 +5378,34 @@ index 000000000..92f3d3437
 +				s.bx0 * s.unit, s.bx1 * s.unit, s.bz0 * s.unit, s.bz1 * s.unit, s.things.size());
 +		}
 +
++		// Eye view of the anchor camera's space for a frame (the HUD panels live there, not in the moving room)
++		bool rv_base(u64 gen, mat4& out)
++		{
++			auto& s = g_rv;
++			const auto* r = rv_ring(gen);
++			if (!r) return false;
++			const vec3 up_here = s.anchored ? s.up_a : (s.have_up ? s.up : vec3{0.f, 1.f, 0.f});
++			out = mmul(mmul(eye_projection(r->tag.fov, s.cam.A, s.cam.B), r->E), level_mat(up_here));
++			return true;
++		}
++
++		// Maps one region of the game's screen onto a panel: clip (x, y, -, w) -> camera view (game units)
++		mat4 hud_panel_matrix(const hud_region& rg, const hud_panel& pn)
++		{
++			auto& s = g_rv;
++			const vec3 up_here = s.anchored ? s.up_a : (s.have_up ? s.up : vec3{0.f, 1.f, 0.f});
++			const f32 iu = 1.f / std::max(s.unit, 0.01f);
++			const vec3 P = level(up_here, pn.P * iu, -1.f), A = level(up_here, pn.A, -1.f), B = level(up_here, pn.B, -1.f);
++			const vec3 cx = A * (pn.hw * iu / rg.hx), cy = B * (pn.hh * iu / rg.hy);
++			const vec3 cw = P - cx * rg.cx - cy * rg.cy;
++			mat4 M;
++			M.m[0] = cx.x; M.m[1] = cy.x; M.m[3] = cw.x;
++			M.m[4] = cx.y; M.m[5] = cy.y; M.m[7] = cw.y;
++			M.m[8] = cx.z; M.m[9] = cy.z; M.m[11] = cw.z;
++			M.m[15] = 1.f;
++			return M;
++		}
++
 +		// A 3D draw with its own lens settings (the doneness meters, effects drawn with a separate camera): undo its
 +		// own projection, then view from the eye like the scene (same room placement)
 +		bool rv_build_own(u64 gen, f32 A, f32 B, f32 sx, f32 sy, f32 cx, f32 cy, mat4& out)
@@ -5460,7 +5593,7 @@ index 000000000..92f3d3437
 +						const vec3 lp = level(s.up_a, xform(s.D, t));
 +						if (dot(lp, lp) < 40.f * 40.f) s.things.push_back(lp);
 +					}
-+					if (s.things_frames == 6 || s.things_frames == 40) update_place();
++					if (s.things_frames == 6 || s.things_frames == 40) { update_place(); if (s.things_frames == 6) s.place_id++; }
 +				}
 +				// The HUD distance: the nearest things in the middle of the view, kept while at a station
 +				if (still && s.still >= 18 && !s.near_depths.empty())
@@ -5611,6 +5744,9 @@ index 000000000..92f3d3437
 +				g_cam.bounds = s.bounds && s.anchored;
 +				g_cam.bx0 = s.bx0; g_cam.bx1 = s.bx1; g_cam.bz0 = s.bz0; g_cam.bz1 = s.bz1;
 +				g_cam.floor_lev = s.floor_lev;
++				g_cam.place_id = s.place_id;
++				for (int k = 0; k < 4; k++) g_cam.hud_seen[k] = s.hud_seen[k];
++				g_cam.food_d = s.hud_depth > 0.f ? s.hud_depth / 0.92f : s.depth * 0.9f;
 +			}
 +
 +			s.tot3 += s.n3; s.tot2 += s.n2; s.tot2b += s.n2b; s.tot0 += s.n0; s.frames++;
@@ -6381,6 +6517,7 @@ index 000000000..92f3d3437
 +		if (!s.begun) rv_begin_frame();
 +		const u64 gen = s.gen.load();
 +
++		if (uses_mvp) s.hv_n = 0;   // vertex positions are only read for flat draws
 +		int kind = 0;
 +		bool perspective = false;
 +		f32 dA = 0.f, dB = 0.f, dsx = 0.f, dsy = 0.f, dcx = 0.f, dcy = 0.f;   // this draw's own projection
@@ -6536,14 +6673,24 @@ index 000000000..92f3d3437
 +					m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 +				if (l2 > 1e-8f) std::fprintf(s.drawlog_f, " A %.4f", -dot(r2, r3) / l2);
 +			}
++			if (!uses_mvp && consts)
++			{
++				std::fprintf(s.drawlog_f, " | verts %u type %u comps %u x %.3f..%.3f y %.3f..%.3f z %.3f w %.3f | c0 %.4f %.4f %.4f %.4f",
++					s.hv_n, s.hv_type, s.hv_comps, s.hv_x0, s.hv_x1, s.hv_y0, s.hv_y1, s.hv_z, s.hv_w, consts[0], consts[1], consts[2], consts[3]);
++				for (int ci = 5; ci <= 12; ci++) std::fprintf(s.drawlog_f, " c%d %.4f %.4f %.4f %.4f", ci, consts[ci * 4], consts[ci * 4 + 1], consts[ci * 4 + 2], consts[ci * 4 + 3]);
++			}
 +			std::fprintf(s.drawlog_f, "\n");
 +		}
 +		if (s.drawsum)
 +		{
 +			char k[200];
 +			const char* role = color_key == ~0ull ? "none" : color_key == s.scene_key ? "scene" : color_key == s.composite_this ? "comp" : s.is_screen(color_key) ? "screen" : "other";
-+			std::snprintf(k, sizeof(k), "kind %d mvp %d persp %d %ux%u %-6s tex0 %08llx sx %.2f sy %.2f A %.3f", kind, uses_mvp, perspective, surface_w, surface_h, role,
-+				tex_count ? static_cast<unsigned long long>(tex_keys[0] & 0xffffffffull) : 0ull, dsx, dsy, dA);
++			if (!uses_mvp && s.hv_n)
++				std::snprintf(k, sizeof(k), "kind %d flat %ux%u %-6s tex0 %08llx verts %u type %u comps %u x %.2f..%.2f y %.2f..%.2f", kind, surface_w, surface_h, role,
++					tex_count ? static_cast<unsigned long long>(tex_keys[0] & 0xffffffffull) : 0ull, s.hv_n, s.hv_type, s.hv_comps, s.hv_x0, s.hv_x1, s.hv_y0, s.hv_y1);
++			else
++				std::snprintf(k, sizeof(k), "kind %d mvp %d persp %d %ux%u %-6s tex0 %08llx sx %.2f sy %.2f A %.3f", kind, uses_mvp, perspective, surface_w, surface_h, role,
++					tex_count ? static_cast<unsigned long long>(tex_keys[0] & 0xffffffffull) : 0ull, dsx, dsy, dA);
 +			s.drawsum_map[k]++;
 +		}
 +		if (kind == 1) s.n3++;
@@ -6552,6 +6699,59 @@ index 000000000..92f3d3437
 +		else s.n0++;
 +
 +		if (!s.enabled || !kind || !s.cam.valid) return 0;
++		// The VR HUD layout: where on the game's screen this flat draw is decides where it goes
++		if (kind == 2 && s.hv_n && surface_w && surface_h)
++		{
++			f32 x0 = s.hv_x0, x1 = s.hv_x1, y0 = s.hv_y0, y1 = s.hv_y1;
++			bool known = true;
++			if (std::max({std::fabs(x0), std::fabs(x1), std::fabs(y0), std::fabs(y1)}) <= 1.05f) {}   // already -1..1, y up
++			else if (x0 >= -2.f && y0 >= -2.f && x1 <= surface_w + 2.f && y1 <= surface_h + 2.f)
++			{
++				// pixels, y down
++				const f32 a0 = x0 / surface_w * 2.f - 1.f, a1 = x1 / surface_w * 2.f - 1.f, b0 = 1.f - y1 / surface_h * 2.f, b1 = 1.f - y0 / surface_h * 2.f;
++				x0 = a0; x1 = a1; y0 = b0; y1 = b1;
++			}
++			else known = false;
++			if (known)
++			{
++				const f32 cxn = (x0 + x1) * 0.5f, cyn = (y0 + y1) * 0.5f, wn = x1 - x0, hn = y1 - y0;
++				int region = -1;
++				if (wn > 1.0f && hn > 0.8f) region = 3;                                   // a dialog (or the pause menu)
++				else if (cyn > 0.6f) region = 0;                                            // tickets along the top
++				else if (cxn < -0.3f && cyn < 0.62f && cyn > -0.8f) region = 1;             // the order card on the left
++				else if (cxn > 0.5f) region = 2;                                            // stations and assistants on the right
++				if (region >= 0) s.hud_cnt[region]++;
++				if (region >= 0 && region < 3 && s.panels[region].on && s.enabled && s.cam.valid)
++				{
++					mat4 base;
++					if (rv_base(content_gen, base))
++					{
++						const mat4 X = mmul(base, hud_panel_matrix(hud_regions[region], s.panels[region]));
++						std::memcpy(x, X.m, sizeof(f32) * 16);
++						return 7 + region;
++					}
++				}
++				if (region < 0 && s.enabled && s.cam.valid)
++				{
++					// Small things in the middle (doneness meters, "Perfect!", prompts): at the food, where the game
++					// shows them over the picture, so they sit on what they belong to
++					mat4 base;
++					const auto& c = s.cam;
++					const f32 D = std::max(s.hud_depth > 0.f ? s.hud_depth / 0.92f : s.depth * 0.9f, c.B / c.A * 1.2f);
++					if (rv_base(content_gen, base))
++					{
++						mat4 S2;
++						S2.m[0] = D / c.sx; S2.m[3] = D * c.cx / c.sx;
++						S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
++						S2.m[11] = -D;
++						S2.m[15] = 1.f;
++						const mat4 X = mmul(base, S2);
++						std::memcpy(x, X.m, sizeof(f32) * 16);
++						return 6;
++					}
++				}
++			}
++		}
 +		if (kind == 5)
 +		{
 +			mat4 own;
@@ -6563,6 +6763,19 @@ index 000000000..92f3d3437
 +		if (!rv_build(kind == 1, kind == 1 ? gen : content_gen, kind == 3)) return 0;
 +		std::memcpy(x, (kind == 1 ? s.X3 : kind == 3 ? s.X2b : s.X2).m, sizeof(f32) * 16);
 +		return kind;
++	}
++
++	void hud_vertices(const f32* p, u32 n, u32 type, u32 comps)
++	{
++		auto& s = g_rv;
++		s.hv_n = n; s.hv_type = type; s.hv_comps = comps;
++		if (!n) return;
++		s.hv_x0 = s.hv_x1 = p[0]; s.hv_y0 = s.hv_y1 = p[1]; s.hv_z = p[2]; s.hv_w = p[3];
++		for (u32 i = 1; i < n; i++)
++		{
++			s.hv_x0 = std::min(s.hv_x0, p[i * 4]); s.hv_x1 = std::max(s.hv_x1, p[i * 4]);
++			s.hv_y0 = std::min(s.hv_y0, p[i * 4 + 1]); s.hv_y1 = std::max(s.hv_y1, p[i * 4 + 1]);
++		}
 +	}
 +
 +	void note_calibration()
@@ -6634,6 +6847,7 @@ index 000000000..92f3d3437
 +	int stereo_draw_transform(const f32*, bool, u32, u32, u64, const u64*, u32, f32*) { return 0; }
 +	bool stereo_clear_color(u64, f32*) { return false; }
 +	void note_calibration() {}
++	void hud_vertices(const f32*, u32, u32, u32) {}
 +	u64 stereo_generation() { return 0; }
 +	void stereo_apply(void*, const f32*) {}
 +}
@@ -6761,10 +6975,10 @@ index 000000000..92f3d3437
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..a5c106a4a
+index 000000000..1f1d86043
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,98 @@
 +#pragma once
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -6844,6 +7058,8 @@ index 000000000..a5c106a4a
 +	// color_key / tex_keys: (location << 32) | offset of the colour target and of the textures the draw reads
 +	// (location 0 = local video memory, 1 = main memory). They tell the scene, the copy of it onto the screen
 +	// and the HUD apart.
++	// The next flat draw's first vertices (position attribute: x y z w each), for placing HUD elements
++	void hud_vertices(const f32* xyzw, u32 count, u32 type, u32 comps);
 +	int stereo_draw_transform(const f32* consts, bool uses_mvp, u32 surface_w, u32 surface_h, u64 color_key, const u64* tex_keys, u32 tex_count, f32 x[16]);
 +
 +	// Clear of a colour target: returns true and the colour to use when the mod replaces it (the empty space around
@@ -6863,10 +7079,10 @@ index 000000000..a5c106a4a
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_chef.inl b/rpcs3/Emu/Io/OrderUpVR_chef.inl
 new file mode 100644
-index 000000000..5b49c552f
+index 000000000..79821da99
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_chef.inl
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,837 @@
 +// Order Up VR: the game's own chef models, rebuilt at start-up from the player's own game files.
 +//
 +// The chefs live in USRDIR/Chef.wad (nested, zlib-compressed WADs; files named by CRC32 of their path, without the
@@ -7147,6 +7363,7 @@ index 000000000..5b49c552f
 +		P_UA_L, P_FA_L, P_HAND_L, P_FING_L,   // left arm (the chef's left = +x in the model)
 +		P_UA_R, P_FA_R, P_HAND_R, P_FING_R,
 +		P_THUMB_L, P_THUMB_R,
++		P_FOOT_L, P_FOOT_R,     // below the knee: shin and foot
 +		P_COUNT
 +	};
 +
@@ -7163,6 +7380,7 @@ index 000000000..5b49c552f
 +		f32 arm_y = 0.83f, arm_z = 0.09f, arm_tip = 0.96f, eye_y = 1.45f, face_z = 0.29f, top_y = 1.9f, belly_z = 0.3f;
 +		vec3 shoulder[2]{}, elbow[2]{}, wrist[2]{}, knuckle[2]{}, thumb[2]{}, neck{};   // [0] left (+x), [1] right (-x)
 +		f32 hand_scale = 1.f;              // the cartoon hands are shrunk towards a real hand's size, so they fit around the controller
++		f32 hip_y = 0.36f, knee_y = 0.17f; // leg joints (the chef's short legs)
 +		// The face: small parts drawn with their own pictures (transparent around the shape)
 +		// M_HEAD: the body picture's triangles on the head (hidden in first person, seen in the mirror)
 +		enum { M_BODY, M_EYES, M_MOUTH, M_BROWS, M_HEAD, M_COUNT };
@@ -7410,6 +7628,24 @@ index 000000000..5b49c552f
 +			if (x.p.y > 0.45f && x.p.y < 1.25f && std::fabs(x.p.x) < 0.25f) bz = std::max(bz, x.p.z);
 +		m.belly_z = bz > 0.1f ? bz : m.face_z;
 +		m.neck = {0.f, m.arm_y + 0.30f, 0.f};
++		// Knees: the part of each leg below the knee bends on its own
++		{
++			f32 lo = 1e9f, hi = -1e9f;
++			for (const auto& x : m.v)
++				if (x.part[0] == P_LEG_L || x.part[0] == P_LEG_R) { lo = std::min(lo, x.p.y); hi = std::max(hi, x.p.y); }
++			if (hi > lo)
++			{
++				m.hip_y = hi;
++				m.knee_y = lo + (hi - lo) * 0.5f;
++				for (auto& x : m.v)
++					if (x.p.y < m.knee_y)
++						for (int j = 0; j < 4; j++)
++						{
++							if (x.part[j] == P_LEG_L) x.part[j] = P_FOOT_L;
++							else if (x.part[j] == P_LEG_R) x.part[j] = P_FOOT_R;
++						}
++			}
++		}
 +		// Head triangles (all three corners on the head) go to their own range: hidden in first person
 +		{
 +			std::vector<u32> body, head;
@@ -7498,7 +7734,7 @@ index 000000000..5b49c552f
 +			const u32 sizes[3] = {64, 64, 256};
 +			for (int k = 0; k < 3; k++) if (picture(female ? names_f[k] : names_m[k], sizes[k], m.face_rgba[k])) m.face_size[k] = sizes[k];
 +			// Mouth: closed first, then more and more open. The female chef has one picture (her lips).
-+			const std::vector<u32> mouths = female ? std::vector<u32>{0xcdced3b7} : std::vector<u32>{0xd925937e, 0x8873fb45, 0xb3bc8a6a, 0xf4f6cdca};
++			const std::vector<u32> mouths = female ? std::vector<u32>{0xcdced3b7} : std::vector<u32>{0x01549426, 0x8873fb45, 0xb3bc8a6a, 0xf4f6cdca};
 +			for (u32 h : mouths)
 +			{
 +				std::vector<u8> px;
@@ -7568,17 +7804,22 @@ index 000000000..5b49c552f
 +			const XrQuaternionf rel = qnorm(qmul(in.head_q, qconj(yaw_q(in.body_yaw))));
 +			out[P_HEAD] = {m.neck, W(m.neck), qnorm(qmul(rel, rq)), {0, 1, 0}, 1.f};
 +		}
-+		// Feet step while you walk: each leg swings forward and back about its hip, in turn
++		// Walking: each thigh swings about its hip; the knee bends while the leg swings forward, lifting the foot
 +		for (int sd = 0; sd < 2; sd++)
 +		{
-+			const int LG = sd ? P_LEG_R : P_LEG_L;
-+			const vec3 hip{sd == 0 ? 0.12f : -0.12f, 0.36f, 0.f};
-+			const f32 ph = in.walk_phase + (sd ? 3.14159265f : 0.f);
-+			const f32 swing = std::sin(ph) * 0.55f * in.walk_amount;
-+			const f32 lift = std::max(0.f, std::cos(ph)) * 0.05f * in.walk_amount * s;
++			const int LG = sd ? P_LEG_R : P_LEG_L, FT = sd ? P_FOOT_R : P_FOOT_L;
++			const f32 hx = sd == 0 ? 0.12f : -0.12f;
++			const vec3 hip{hx, m.hip_y, 0.f}, knee{hx, m.knee_y, 0.f};
++			const f32 ph = in.walk_phase + (sd ? 3.14159265f : 0.f), amt = in.walk_amount;
++			const f32 thigh = std::sin(ph) * 0.50f * amt;                                  // forward (+) and back
++			const f32 bend = std::max(0.f, std::sin(ph + 1.1f)) * 1.0f * amt;              // knee flexes in the swing
 +			const vec3 axis = rotate(rq, vec3{1.f, 0.f, 0.f});
-+			const XrQuaternionf q{axis.x * std::sin(swing * 0.5f), axis.y * std::sin(swing * 0.5f), axis.z * std::sin(swing * 0.5f), std::cos(swing * 0.5f)};
-+			out[LG] = {hip, W(hip) + vec3{0.f, lift, 0.f}, qnorm(qmul(q, rq)), {0, 1, 0}, 1.f};
++			const auto turn = [&](f32 a) { return XrQuaternionf{axis.x * std::sin(a * 0.5f), axis.y * std::sin(a * 0.5f), axis.z * std::sin(a * 0.5f), std::cos(a * 0.5f)}; };
++			const XrQuaternionf qt = turn(-thigh), qs = turn(-thigh + bend);
++			const vec3 hip_w = W(hip);
++			const vec3 knee_w = hip_w + rotate(qt, rotate(rq, (knee - hip) * s));
++			out[LG] = {hip, hip_w, qnorm(qmul(qt, rq)), {0, 1, 0}, 1.f};
++			out[FT] = {knee, knee_w, qnorm(qmul(qs, rq)), {0, 1, 0}, 1.f};
 +		}
 +		for (int sd = 0; sd < 2; sd++)
 +		{
@@ -8169,8 +8410,22 @@ index 000000000..6bb2773ba
 +		return ok;
 +	}
 +}
+diff --git a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp
+index 53ef60aff..d75b5cfea 100644
+--- a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp
++++ b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp
+@@ -231,6 +231,9 @@ namespace rsx
+ 
+ 		void reset(rsx::primitive_type type);
+ 
++		// Order Up VR: the first range, without touching the iteration state
++		const draw_range_t* first_range() const { return draw_command_ranges.empty() ? nullptr : &draw_command_ranges.front(); }
++
+ 		void begin()
+ 		{
+ 			current_range_index = 0;
 diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
-index 51fc9092b..843602236 100644
+index 51fc9092b..83a63f552 100644
 --- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 +++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
 @@ -7,6 +7,7 @@
@@ -8231,7 +8486,7 @@ index 51fc9092b..843602236 100644
  void VKGSRender::load_program_env()
  {
  	if (!m_program)
-@@ -2042,7 +2065,37 @@ void VKGSRender::load_program_env()
+@@ -2042,7 +2065,85 @@ void VKGSRender::load_program_env()
  
  	const bool update_transform_constants = m_stale_constants.test(rsx::draw_state_t::group::transform_constants);
  	const bool update_fragment_constants = m_stale_constants.test(rsx::draw_state_t::group::fragment_constants);
@@ -8255,6 +8510,54 @@ index 51fc9092b..843602236 100644
 +			const auto& tex = REGS(m_ctx)->fragment_textures[i];
 +			if (tex.enabled()) tex_keys[tex_count++] = rsx::get_address(m_ctx, tex.offset(), tex.location());
 +		}
++		// Order Up VR: where a flat (HUD) draw lands, from its first vertices' position attribute, so each HUD element
++		// can be rebuilt in its own place in VR
++		if (!uses_mvp)
++		{
++			f32 pts[64 * 4];
++			u32 np = 0, comps = 0;
++			const auto& clause = REGS(m_ctx)->current_draw_clause;
++			const auto& info = REGS(m_ctx)->vertex_arrays_info[0];
++			comps = info.size();
++			u32 addr = 0;
++			if (comps && (REGS(m_ctx)->vertex_attrib_input_mask() & 1) && clause.command == rsx::draw_command::array && !clause.empty())
++			{
++				// Translate without throwing (rsx::get_address stops the emulator on an unmapped offset)
++				const u32 base_address = rsx::get_vertex_offset_from_base(REGS(m_ctx)->vertex_data_base_offset(), info.offset() & 0x7fffffff);
++				if ((info.offset() >> 31) == CELL_GCM_LOCATION_LOCAL) { if (base_address < RSX(m_ctx)->local_mem_size) addr = rsx::constants::local_mem_base + base_address; }
++				else if (const u32 ea = RSX(m_ctx)->iomap_table.get_addr(base_address); ea != umax) addr = ea;
++			}
++			const rsx::draw_range_t* first = clause.first_range();
++			if (addr && first)
++			{
++				const u32 stride = info.stride();
++				const auto& range = *first;
++				const u32 n = std::min<u32>(range.count, 64);
++				for (u32 v = 0; v < n && comps <= 4; v++)
++				{
++					const u32 a0 = addr + (range.first + v) * stride;
++					if (!vm::check_addr(a0, vm::page_readable, 16)) break;
++					const u8* src = vm::_ptr<u8>(a0);
++					for (u32 c = 0; c < 4; c++)
++					{
++						f32 val = c == 3 ? 1.f : 0.f;
++						if (c < comps)
++						{
++							switch (info.type())
++							{
++							case rsx::vertex_base_type::f: val = std::bit_cast<f32>(static_cast<u32>(src[c * 4] << 24 | src[c * 4 + 1] << 16 | src[c * 4 + 2] << 8 | src[c * 4 + 3])); break;
++							case rsx::vertex_base_type::s32k: val = static_cast<f32>(static_cast<s16>(src[c * 2] << 8 | src[c * 2 + 1])); break;
++							case rsx::vertex_base_type::s1: val = static_cast<s16>(src[c * 2] << 8 | src[c * 2 + 1]) / 32767.f; break;
++							default: val = 0.f; break;
++							}
++						}
++						pts[np * 4 + c] = val;
++					}
++					np++;
++				}
++			}
++			ouvr::hud_vertices(pts, np, static_cast<u32>(info.type()), comps);
++		}
 +		const u64 color_key = ouvr_color_target_address();
 +		vr_kind = ouvr::stereo_draw_transform(reinterpret_cast<const f32*>(REGS(m_ctx)->transform_constants.data()), uses_mvp,
 +			REGS(m_ctx)->surface_clip_width(), REGS(m_ctx)->surface_clip_height(), color_key, tex_keys, tex_count, vr_xform);
@@ -8270,7 +8573,7 @@ index 51fc9092b..843602236 100644
  	const bool update_fragment_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env);
  	const bool update_fragment_texture_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_texture_env);
  	const bool update_instruction_buffers = (m_interpreter_state.test(rsx::draw_state_t::group::programs) && is_interpreter);
-@@ -2057,6 +2110,7 @@ void VKGSRender::load_program_env()
+@@ -2057,6 +2158,7 @@ void VKGSRender::load_program_env()
  		auto buf = m_vertex_env_ring_info.map<char>(mem, 96);
  
  		RSX(m_ctx)->draw_processor()->fill_vertex_env(buf, RSX(m_ctx)->resolution_scaling_config.scale_factor());
@@ -8278,7 +8581,7 @@ index 51fc9092b..843602236 100644
  
  		m_vertex_env_ring_info.unmap();
  		m_vertex_env_dynamic_offset = mem;
-@@ -2283,6 +2337,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
+@@ -2283,6 +2385,13 @@ void VKGSRender::upload_transform_constants(const rsx::io_buffer& buffer)
  			? std::span<const u16>{}
  			: std::span<const u16>(m_vertex_prog->constant_ids);
  		RSX(m_ctx)->draw_processor()->fill_vertex_program_constants_data(buf, constant_ids);

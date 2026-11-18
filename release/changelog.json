@@ -1,5 +1,27 @@
 [
   {
+    "version": "0.13.3",
+    "channel": "beta",
+    "date": "2026-11-18",
+    "simple": [
+      "The game's HUD is rebuilt for VR: order tickets hang on a rail above the counter, the order card (recipe steps) is a clipboard in your left hand, stations and assistants are on a panel to your right, doneness meters and Perfect/Done pop-ups sit on the food, dialogs and the pause menu float in front of you. Point or touch them to use them.",
+      "Left stick click recenters you in the kitchen at the right height (standing: as tall as the game's camera; seated: at your eyes). Every new kitchen seats you automatically.",
+      "The pointer no longer jumps between the HUD and the kitchen.",
+      "The roof is gone.",
+      "The start-up cards are at eye level.",
+      "Walking has knees: the foot lifts as the leg swings.",
+      "Your chef's mouth is a closed line until you talk.",
+      "The launcher keeps knowing the game is running even with the headset off."
+    ],
+    "notes": [
+      "VR HUD layout: flat HUD draws are placed by where their vertices are on the game's screen (the renderer reads each flat draw's first vertices): the top strip goes to a rail panel 1 m ahead above eye level, the left side to a clipboard above the left controller, the right side to a panel on the right, small elements in the middle to the food's depth (so meters sit on the food), large ones (dialogs, pause menu) to the front panel. Pointing maps back through each panel. The draw summary log records each flat draw's position for checking.",
+      "Recenter: the game camera is placed at its height above the floor in this kitchen (from the scene) when standing, at your eyes when seated; done automatically once per new kitchen.",
+      "The 'paused' guess (15+ HUD draws) that made the pointer flip is gone; dialogs are recognised by their size.",
+      "Male chef's closed mouth is the line picture (01549426).",
+      "Status file is written while the headset is off too; the launcher also recognises the game window by its title."
+    ]
+  },
+  {
     "version": "0.13.2",
     "channel": "beta",
     "date": "2026-11-18",
