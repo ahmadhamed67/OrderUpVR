@@ -574,6 +574,7 @@ namespace OrderUpVR
             new[] { "You and the view", "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "on", "On", "off", "Off" },
             new[] { "You and the view", "huddist", "Order tickets distance", "How far the game's tickets and timers float (never inside the counter)", "1.5", "1.0", "Near", "1.5", "Normal", "2.0", "Far" },
             new[] { "You and the view", "cutscenes", "Cutscenes", "Big screen: cutscenes and camera fly-throughs play on the diner screen", "screen", "screen", "Big screen", "3d", "Inside the game" },
+            new[] { "You and the view", "lipsync", "Lip sync", "Your chef's mouth moves when you talk (your PC's default microphone; nothing is recorded)", "on", "on", "On", "off", "Off" },
             new[] { "In the kitchen", "kitchen", "Kitchen", "Room: the kitchen stays still around you, every station where it really is", "room", "room", "Room (true VR)", "follow", "Follows the camera" },
             new[] { "In the kitchen", "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there", "on", "on", "On", "off", "Off" },
             new[] { "In the kitchen", "wideview", "Wide view", "The game draws the whole restaurant around you, not just what its camera faces", "on", "on", "On", "off", "Off" },
@@ -1385,7 +1386,15 @@ namespace OrderUpVR
             catch { }
             try
             {
-                try { File.Delete(System.IO.Path.Combine(emu, @"log\orderup_vr.log")); } catch { }
+                // Keep the two previous sessions' logs (testing Stable and Experimental side by side)
+                foreach (string n in new[] { "orderup_vr", "orderup_draws" })
+                {
+                    string cur = System.IO.Path.Combine(emu, @"log\" + n + ".log"), p1 = System.IO.Path.Combine(emu, @"log\" + n + ".prev1.log"), p2 = System.IO.Path.Combine(emu, @"log\" + n + ".prev2.log");
+                    try { if (File.Exists(p1)) File.Copy(p1, p2, true); } catch { }
+                    try { if (File.Exists(cur)) File.Copy(cur, p1, true); } catch { }
+                    try { File.Delete(cur); } catch { }
+                }
+                try { File.Delete(System.IO.Path.Combine(emu, @"log\orderup_status.txt")); } catch { }
                 game = Process.Start(psi);
                 gameStart = DateTime.Now;
                 sawGameWindow = false; broughtToFront = false; minimizedForGame = false; lastNote = "";
@@ -1549,6 +1558,13 @@ namespace OrderUpVR
             // The game picture is up: this version is prepared on this PC.
             if (gameTitle != null && secs > 5 && s.PreparedVersion != s.InstalledVersion) { s.PreparedVersion = s.InstalledVersion; s.Save(); }
 
+            // The mod reports what it is doing once a second (log\orderup_status.txt)
+            var st = ReadModStatus();
+            if (st != null && gameTitle == null)
+            {
+                gameTitle = "FPS: " + (st.ContainsKey("picture_fps") ? st["picture_fps"] : "?");
+                foreach (var w in Native.WindowsOf(game.Id)) if (w.Value.Length > 0) { gameWnd = w.Key; break; }
+            }
             if (gameTitle != null)
             {
                 if (!sawGameWindow)
@@ -1559,8 +1575,10 @@ namespace OrderUpVR
                 }
                 if (!broughtToFront) { Native.ShowWindow(gameWnd, 9); Native.SetForegroundWindow(gameWnd); broughtToFront = true; }
                 string fps = gameTitle.Split('|')[0].Replace("FPS:", "").Trim();
-                liveGame = minimized ? "Window minimized. Restore it so the headset gets a picture." : "Running at " + fps + " FPS";
-                SetStatus(minimized ? "Restore the game window" : "Playing", minimized ? 2 : 0, liveVr);
+                string doing = st != null ? ModActivity(st) : null;
+                liveGame = minimized ? "Window minimized. Restore it so the headset gets a picture." : (doing ?? "Running") + " · " + fps + " FPS";
+                if (st != null && doing != null && doing != lastActivity) { Note("Game: " + doing); lastActivity = doing; }
+                SetStatus(minimized ? "Restore the game window" : "Playing" + (doing != null ? ": " + doing : ""), minimized ? 2 : 0, liveVr);
             }
             else
             {
@@ -1569,6 +1587,35 @@ namespace OrderUpVR
                 else SetStatus("Still no game window after " + secs + " s", 2, "Look for an RPCS3 window in the taskbar. If there is none, close the game and collect logs.");
             }
             RenderStatus();
+        }
+
+        string lastActivity;
+
+        // The mod's live status (written once a second while the game runs); null when missing or stale
+        Dictionary<string, string> ReadModStatus()
+        {
+            try
+            {
+                string p = System.IO.Path.Combine(Core.EmuDir(s), @"log\orderup_status.txt");
+                if (!File.Exists(p) || (DateTime.UtcNow - File.GetLastWriteTimeUtc(p)).TotalSeconds > 5) return null;
+                var d = new Dictionary<string, string>();
+                foreach (string line in File.ReadAllLines(p)) { int eq = line.IndexOf('='); if (eq > 0) d[line.Substring(0, eq)] = line.Substring(eq + 1); }
+                return d;
+            }
+            catch { return null; }
+        }
+
+        static string ModActivity(Dictionary<string, string> st)
+        {
+            Func<string, string> g = k => st.ContainsKey(k) ? st[k] : "";
+            if (g("panel").Length > 0) return g("panel");
+            if (g("choosing") == "1") return "choosing Flat screen or True VR in the headset";
+            string mode = g("mode") == "truevr" ? "True VR" : "Flat screen";
+            if (g("paused") == "1") return mode + ", paused";
+            if (g("cinema") == "1") return mode + ", cutscene on the big screen";
+            if (g("view") == "3d") return mode + ", inside the kitchen";
+            if (g("scene3d") == "1") return mode + ", in the restaurant";
+            return mode + ", menus";
         }
 
         // ------------------------------------------------------------------ logs
@@ -1589,7 +1636,9 @@ namespace OrderUpVR
                 string emu = Core.EmuDir(s);
                 string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
-                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"log\orderup_camdump.bin.z", @"config\orderupvr_state.txt" })
+                foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"log\orderup_camdump.bin.z", @"config\orderupvr_state.txt", "orderupvr_state.txt",
+                    @"log\orderup_draws.log", @"log\orderup_status.txt", @"log\orderup_vr.prev1.log", @"log\orderup_vr.prev2.log", @"log\orderup_draws.prev1.log",
+                    @"config\orderupvr_comfort.txt", @"config\orderupvr_channel.txt" })
                 {
                     string p = System.IO.Path.Combine(emu, rel);
                     try { if (File.Exists(p)) CopyTail(p, System.IO.Path.Combine(tmp, System.IO.Path.GetFileName(p)), 20L * 1048576); } catch { }
@@ -1614,7 +1663,9 @@ namespace OrderUpVR
                 catch { }
                 File.WriteAllText(System.IO.Path.Combine(tmp, "launcher_watch.txt"), watchLog.Length > 0 ? watchLog.ToString() : "(the game was not started from this launcher window)\r\n");
                 File.WriteAllText(System.IO.Path.Combine(tmp, "system.txt"), "Mod version: " + s.InstalledVersion + "\r\nLauncher: " + Core.LauncherVersion +
-                    "\r\nOpenXR runtime: " + (Core.ActiveOpenXrRuntime() ?? "none") + "\r\nWindows: " + Environment.OSVersion.VersionString + "\r\n");
+                    "\r\nChannel picked: " + Core.ChannelOf(s) + ", installed build: " + (s.InstalledChannel ?? "unknown") +
+                    "\r\nOpenXR runtime: " + (Core.ActiveOpenXrRuntime() ?? "none") + "\r\nWindows: " + Environment.OSVersion.VersionString +
+                    "\r\nVR settings: " + (s.Vr == null ? "defaults" : string.Join(", ", System.Linq.Enumerable.Select(s.Vr, kv => kv.Key + "=" + kv.Value))) + "\r\n");
                 string zip = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OrderUpVR_logs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".zip");
                 ZipFile.CreateFromDirectory(tmp, zip);
                 Directory.Delete(tmp, true);

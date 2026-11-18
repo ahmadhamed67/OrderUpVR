@@ -57,3 +57,17 @@ the game renders for it exactly as for a headset. `tools/Sim.ps1` drives it:
 
 The see-through background shows as magenta in the pictures. `rpcs3.exe --ouvr-cards <folder>` draws every
 headset card to PNG.
+
+## Next: real grabbing and placing (VR rebuild plan)
+
+The game plays with one pointer: point at an ingredient, hold the T button to pick it up, move the pointer to a station
+or the plate, release; motions (chop, flip, grate, pull lettuce apart) come from the Move's sensors. Today the chef's hand
+drives that single pointer (hands mode), so reaching for an item and holding GRIP picks it up. The rebuild:
+
+1. Find the game's own "item under the pointer" and "drop on station" calls in the EBOOT and the compiled scripts
+   (kitchen_ui.csl and friends) and call them with a 3D ray from each hand instead of a screen position, so both hands
+   can hold things at once.
+2. Draw the held item in the mod at the hand (the game's own model, like the chef), so it sits in your palm.
+3. Stations and plates get mod-drawn highlight volumes; releasing inside one calls the game's drop.
+4. A wrong drop shows a short message where you dropped it.
+5. The tickets become paper objects on the rail (read from the game's order list), touched to open their steps.

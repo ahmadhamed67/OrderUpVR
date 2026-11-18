@@ -504,10 +504,10 @@ index 0dfcf9cb7..c89550dac 100644
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..9d04ef4cc
+index 000000000..92f3d3437
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,6028 @@
+@@ -0,0 +1,6251 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -532,6 +532,7 @@ index 000000000..9d04ef4cc
 +#include <d3d11.h>
 +#include <dxgi1_2.h>
 +#include <d2d1.h>
++#include <mmsystem.h>
 +#include <dwrite.h>
 +#include <wincodec.h>
 +
@@ -557,6 +558,7 @@ index 000000000..9d04ef4cc
 +#include <thread>
 +
 +#pragma comment(lib, "d3d11.lib")
++#pragma comment(lib, "winmm.lib")
 +#pragma comment(lib, "d2d1.lib")
 +#pragma comment(lib, "dwrite.lib")
 +#pragma comment(lib, "windowscodecs.lib")
@@ -755,6 +757,7 @@ index 000000000..9d04ef4cc
 +			f32 auto_unit = 0.f;      // metres per game unit from the camera's height above the floor (0 = not known)
 +			bool bounds = false;      // where the restaurant's things are, around the anchor (levelled, game units)
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
++			f32 floor_lev = 0.f;
 +		};
 +		cam_info g_cam;         // guarded by g_state_mutex
 +
@@ -848,6 +851,7 @@ index 000000000..9d04ef4cc
 +			f32 auto_unit = 0.f;
 +			bool bounds = false;
 +			f32 bx0 = 0.f, bx1 = 0.f, bz0 = 0.f, bz1 = 0.f;
++			f32 floor_lev = 0.f;        // the floor's height below the anchor camera (levelled, game units)
 +			// Developer: log every draw of one frame (simulator: create <sim folder>/drawlog)
 +			// The scene's own target is the one most 3D draws go to (some restaurants first draw a small shadow mask)
 +			std::vector<std::pair<u64, int>> n3_by_key;
@@ -861,6 +865,10 @@ index 000000000..9d04ef4cc
 +			u64 dominant_key = ~0ull;
 +			bool drawlog = false;
 +			int drawlog_n = 0;
++			// Logs: every 30 s inside the game, one frame's draws grouped by how the mod placed them (log/orderup_draws.log)
++			bool drawsum = false;
++			u64 drawsum_tick = 0;
++			std::map<std::string, int> drawsum_map;
 +			std::FILE* drawlog_f = nullptr;
 +		};
 +		rsx_vr_state g_rv;
@@ -1040,7 +1048,7 @@ index 000000000..9d04ef4cc
 +				bool body = true, female = false, seated = false;
 +				bool smooth_turn = false, vignette = true;
 +				f32 snap_deg = 45.f, turn_speed = 120.f, move_speed = 1.4f, hud_dist = 1.5f;
-+				bool room = true, look_switch = true, cinema = true, wide = true;
++				bool room = true, look_switch = true, cinema = true, wide = true, lipsync = true;
 +			} comfort;
 +			u64 input_tick = 0;       // last button or trigger press (camera moves right after it are yours)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
@@ -1641,9 +1649,9 @@ index 000000000..9d04ef4cc
 +		{
 +			ui::card c;
 +			c.style = ui::card::HINT;
-+			c.kicker = L"ONE MORE THING";
++			c.kicker = L"CALIBRATE";
 +			c.title = L"Press X";
-+			c.subtitle = L"The game asks for the pink square. On your controller that's X, on the left hand.";
++			c.subtitle = L"Left hand";
 +			return c;
 +		}
 +
@@ -2072,8 +2080,11 @@ index 000000000..9d04ef4cc
 +			ID3D11Buffer* cib = nullptr;
 +			ID3D11Texture2D* ctex = nullptr;
 +			ID3D11ShaderResourceView* csrv = nullptr;
-+			ID3D11Texture2D* ftex[4]{};                 // face: eyes open, eyes closed, mouth, brows
-+			ID3D11ShaderResourceView* fsrv[4]{};
++			ID3D11Texture2D* ftex[3]{};                 // face: eyes open, eyes closed, brows/hair
++			ID3D11ShaderResourceView* fsrv[3]{};
++			ID3D11Texture2D* mtex[4]{};                 // mouth pictures, closed to wide open
++			ID3D11ShaderResourceView* msrv[4]{};
++			u32 mouth_n = 0;
 +			ID3D11SamplerState* csmp = nullptr;
 +			u32 cidx = 0, cnv = 0;
 +			bool chef_gpu = false;
@@ -2109,7 +2120,7 @@ index 000000000..9d04ef4cc
 +float4 ps_main(VO i) : SV_Target
 +{
 +	// First person: your own head (and hat) are cut away above the shoulders, so you see your jacket, arms and legs
-+	if (clipsph.w > 0 && length(i.wp.xz - clipsph.xz) < clipsph.w && i.wp.y > pad.x) discard;
++	if (clipsph.w > 0 && length(i.wp - clipsph.xyz) < clipsph.w) discard;   // only right at the headset
 +	float3 n = normalize(i.n);
 +	float3 tv = eye.xyz - i.wp;
 +	// Only surfaces that face the viewer (never the inside of the body)
@@ -2877,13 +2888,16 @@ index 000000000..9d04ef4cc
 +			f32 scale = 1.f;
 +			vec3 eye_w{};
 +			bool posed = false;
++			f32 mouth = 0.f;             // 0 closed .. 1 open (your voice)
 +		};
 +		chef_runtime g_chef;
 +
 +		void chef_detect_shutdown();
++		void mic_shutdown();
 +		void chef_shutdown()
 +		{
 +			chef_detect_shutdown();
++			mic_shutdown();
 +			if (g_chef.th.joinable()) g_chef.th.join();
 +			g_chef.which = -1;
 +			g_chef.state = 0;
@@ -2905,6 +2919,78 @@ index 000000000..9d04ef4cc
 +					if (fs::is_file(boot + sub + "Chef.wad")) return boot + sub;
 +			}
 +			return {};
++		}
++
++		// Lip sync: the PC's default microphone (your headset's, when it is the default). Only the loudness is used,
++		// nothing is recorded or stored.
++		struct mic_t
++		{
++			std::thread th;
++			std::atomic<bool> stop{false};
++			std::atomic<f32> level{0.f};    // 0..1
++			bool started = false;
++			f32 open = 0.f;
++		};
++		mic_t g_mic;
++
++		void mic_thread()
++		{
++			WAVEFORMATEX fmt{};
++			fmt.wFormatTag = WAVE_FORMAT_PCM; fmt.nChannels = 1; fmt.nSamplesPerSec = 16000; fmt.wBitsPerSample = 16;
++			fmt.nBlockAlign = 2; fmt.nAvgBytesPerSec = 32000;
++			HWAVEIN h = nullptr;
++			if (waveInOpen(&h, WAVE_MAPPER, &fmt, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) { vr_log("Lip sync: no microphone available"); return; }
++			constexpr int nbuf = 4, samples = 320;   // 20 ms each
++			std::vector<std::vector<s16>> data(nbuf, std::vector<s16>(samples));
++			WAVEHDR hdr[nbuf]{};
++			for (int i = 0; i < nbuf; i++)
++			{
++				hdr[i].lpData = reinterpret_cast<LPSTR>(data[i].data());
++				hdr[i].dwBufferLength = samples * 2;
++				waveInPrepareHeader(h, &hdr[i], sizeof(WAVEHDR));
++				waveInAddBuffer(h, &hdr[i], sizeof(WAVEHDR));
++			}
++			waveInStart(h);
++			vr_log("Lip sync: listening to the default microphone (loudness only)");
++			while (!g_mic.stop)
++			{
++				bool any = false;
++				for (int i = 0; i < nbuf; i++)
++				{
++					if (!(hdr[i].dwFlags & WHDR_DONE)) continue;
++					any = true;
++					f64 sum = 0;
++					const u32 n = hdr[i].dwBytesRecorded / 2;
++					for (u32 k = 0; k < n; k++) sum += static_cast<f64>(data[i][k]) * data[i][k];
++					const f64 rms = n ? std::sqrt(sum / n) / 32768.0 : 0.0;
++					const f64 db = 20.0 * std::log10(std::max(rms, 1e-6));
++					g_mic.level = static_cast<f32>(std::clamp((db + 46.0) / 26.0, 0.0, 1.0));   // about -46 dB silent .. -20 dB loud
++					hdr[i].dwFlags &= ~WHDR_DONE;
++					waveInAddBuffer(h, &hdr[i], sizeof(WAVEHDR));
++				}
++				if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(5));
++			}
++			waveInReset(h);
++			for (int i = 0; i < nbuf; i++) waveInUnprepareHeader(h, &hdr[i], sizeof(WAVEHDR));
++			waveInClose(h);
++		}
++
++		void mic_shutdown()
++		{
++			g_mic.stop = true;
++			if (g_mic.th.joinable()) g_mic.th.join();
++			g_mic.started = false;
++			g_mic.stop = false;
++		}
++
++		// How open the chef's mouth is right now: quick to open, a little slower to close
++		f32 mic_mouth(xr_state& xr)
++		{
++			if (!xr.comfort.lipsync) { if (g_mic.started) mic_shutdown(); g_mic.open = 0.f; return 0.f; }
++			if (!g_mic.started) { g_mic.started = true; g_mic.th = std::thread(mic_thread); }
++			const f32 target = g_mic.level.load();
++			g_mic.open += (target - g_mic.open) * (target > g_mic.open ? 0.6f : 0.25f);
++			return g_mic.open;
 +		}
 +
 +		// Which chef the game uses: the game puts the chef's body texture into video memory when it is about to draw
@@ -2986,11 +3072,17 @@ index 000000000..9d04ef4cc
 +			auto& g = g_gfx;
 +			for (auto** p : {reinterpret_cast<IUnknown**>(&g.cvb), reinterpret_cast<IUnknown**>(&g.cib), reinterpret_cast<IUnknown**>(&g.csrv), reinterpret_cast<IUnknown**>(&g.ctex)})
 +				if (*p) { (*p)->Release(); *p = nullptr; }
-+			for (int k = 0; k < 4; k++)
++			for (int k = 0; k < 3; k++)
 +			{
 +				if (g.fsrv[k]) { g.fsrv[k]->Release(); g.fsrv[k] = nullptr; }
 +				if (g.ftex[k]) { g.ftex[k]->Release(); g.ftex[k] = nullptr; }
 +			}
++			for (int k = 0; k < 4; k++)
++			{
++				if (g.msrv[k]) { g.msrv[k]->Release(); g.msrv[k] = nullptr; }
++				if (g.mtex[k]) { g.mtex[k]->Release(); g.mtex[k] = nullptr; }
++			}
++			g.mouth_n = 0;
 +			g.chef_gpu = false;
 +		}
 +
@@ -3057,16 +3149,18 @@ index 000000000..9d04ef4cc
 +				ok = ok && SUCCEEDED(dev->CreateShaderResourceView(g.ctex, nullptr, &g.csrv));
 +				if (ok && have_tex) xr.context->GenerateMips(g.csrv);
 +				// The face's pictures
-+				for (int k = 0; k < 4 && ok; k++)
++				const auto picture = [&](const std::vector<u8>& px, u32 size, ID3D11Texture2D*& t, ID3D11ShaderResourceView*& v)
 +				{
-+					if (!m.face_size[k]) continue;
++					if (!size || px.size() < usz{size} * size * 4) return;
 +					D3D11_TEXTURE2D_DESC fd{};
-+					fd.Width = fd.Height = m.face_size[k];
++					fd.Width = fd.Height = size;
 +					fd.MipLevels = 1; fd.ArraySize = 1; fd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; fd.SampleDesc.Count = 1;
 +					fd.Usage = D3D11_USAGE_IMMUTABLE; fd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-+					D3D11_SUBRESOURCE_DATA fsd{m.face_rgba[k].data(), m.face_size[k] * 4, 0};
-+					if (SUCCEEDED(dev->CreateTexture2D(&fd, &fsd, &g.ftex[k]))) dev->CreateShaderResourceView(g.ftex[k], nullptr, &g.fsrv[k]);
-+				}
++					D3D11_SUBRESOURCE_DATA fsd{px.data(), size * 4, 0};
++					if (SUCCEEDED(dev->CreateTexture2D(&fd, &fsd, &t))) dev->CreateShaderResourceView(t, nullptr, &v);
++				};
++				for (int k = 0; k < 3 && ok; k++) picture(m.face_rgba[k], m.face_size[k], g.ftex[k], g.fsrv[k]);
++				for (usz k = 0; k < m.mouth_rgba.size() && k < 4 && ok; k++) { picture(m.mouth_rgba[k], m.mouth_size, g.mtex[k], g.msrv[k]); if (g.msrv[k]) g.mouth_n = static_cast<u32>(k + 1); }
 +				if (!ok) { vr_log("Chef: could not upload the chef to the GPU"); chef_release_gpu(); c.state = 3; return; }
 +				g.cidx = static_cast<u32>(m.idx.size());
 +				g.cnv = static_cast<u32>(m.v.size());
@@ -3095,6 +3189,20 @@ index 000000000..9d04ef4cc
 +			chef::solve(m, in, T, root, rq);
 +			static std::vector<vec3> P, N;
 +			chef::skin(m, T, root, rq, in.scale, P, N);
++			c.mouth = mic_mouth(xr);
++			if (m.mouth_rgba.size() == 1 && c.mouth > 0.02f && m.mouth_v1 > m.mouth_v0)
++			{
++				// One mouth picture (the female chef's lips): open by stretching it up and down
++				vec3 mc{};
++				for (u32 i = m.mouth_v0; i < m.mouth_v1; i++) mc = mc + P[i];
++				mc = mc * (1.f / (m.mouth_v1 - m.mouth_v0));
++				const vec3 up = rotate(T[chef::P_HEAD].q, vec3{0.f, 1.f, 0.f});
++				for (u32 i = m.mouth_v0; i < m.mouth_v1; i++)
++				{
++					const vec3 d = P[i] - mc;
++					P[i] = P[i] + up * (dot(d, up) * 1.6f * c.mouth);
++				}
++			}
 +			D3D11_MAPPED_SUBRESOURCE ms{};
 +			if (FAILED(xr.context->Map(g.cvb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
 +			auto* out = static_cast<chef_gpu_vertex*>(ms.pData);
@@ -3132,17 +3240,27 @@ index 000000000..9d04ef4cc
 +			ctx->IASetIndexBuffer(g.cib, DXGI_FORMAT_R32_UINT, 0);
 +			const auto& m = c.m;
 +			ctx->DrawIndexed(m.range_count[chef::model::M_BODY], m.range_start[chef::model::M_BODY], 0);
-+			// The face: eyes (blinking now and then), mouth, brows and hair, each with its own picture
-+			const u64 now = GetTickCount64();
-+			const bool blink = (now % 4300) < 140;
-+			const int pics[3] = {chef::model::M_EYES, chef::model::M_MOUTH, chef::model::M_BROWS};
-+			for (int k = 0; k < 3; k++)
++			// First person (clip_r > 0): your own head and face are not drawn, so nothing covers your eyes.
++			// In the mirror: the head, and the face with eyes that blink, brows, and a mouth that moves when you talk.
++			if (clip_r <= 0.f)
 +			{
-+				const int mat = pics[k];
-+				const int slot = k == 0 ? (blink && g.fsrv[1] ? 1 : 0) : k + 1;
-+				if (!m.range_count[mat] || !g.fsrv[slot]) continue;
-+				ctx->PSSetShaderResources(0, 1, &g.fsrv[slot]);
-+				ctx->DrawIndexed(m.range_count[mat], m.range_start[mat], 0);
++				ctx->DrawIndexed(m.range_count[chef::model::M_HEAD], m.range_start[chef::model::M_HEAD], 0);
++				const u64 now = GetTickCount64();
++				const bool blink = (now % 4300) < 140;
++				const auto face = [&](int mat, ID3D11ShaderResourceView* v)
++				{
++					if (!m.range_count[mat] || !v) return;
++					ctx->PSSetShaderResources(0, 1, &v);
++					ctx->DrawIndexed(m.range_count[mat], m.range_start[mat], 0);
++				};
++				face(chef::model::M_EYES, blink && g.fsrv[1] ? g.fsrv[1] : g.fsrv[0]);
++				face(chef::model::M_BROWS, g.fsrv[2]);
++				if (g.mouth_n)
++				{
++					const f32 o = c.mouth;
++					u32 k = o < 0.12f ? 0 : o < 0.4f ? 1 : o < 0.7f ? 2 : 3;
++					face(chef::model::M_MOUTH, g.msrv[std::min(k, g.mouth_n - 1)]);
++				}
 +			}
 +			// back to the plain shapes pipeline
 +			ID3D11ShaderResourceView* none = nullptr;
@@ -3205,6 +3323,32 @@ index 000000000..9d04ef4cc
 +			g.pattern_size = {1.f, 1.f, 1.f};
 +		}
 +
++		// A ceiling over restaurants that were built without one (their sets end where the game camera cannot see):
++		// dark warm panels with soft lights, 3 m above the floor, over the whole restaurant
++		void draw_ceiling(xr_state& xr)
++		{
++			cam_info c;
++			{
++				std::lock_guard lock(g_state_mutex);
++				c = g_cam;
++			}
++			if (!c.bounds || !c.room) return;
++			auto& g = g_gfx;
++			const f32 u = xr.unit, extra = 4.f / u;
++			const f32 x0 = c.bx0 - extra, x1 = c.bx1 + extra, z0 = c.bz0 - extra, z1 = c.bz1 + extra;
++			const f32 y = c.floor_lev + 3.0f / u;
++			const XrQuaternionf py = yaw_q(xr.player_yaw);
++			const vec3 R = rotate(py, {1.f, 0.f, 0.f}), Z = rotate(py, {0.f, 0.f, 1.f}), Up{0.f, 1.f, 0.f};
++			const auto local = [&](f32 lx, f32 ly, f32 lz) { return from_player(xr, vec3{lx, ly, lz} * u); };
++			g.pattern_size = {1.f, 1.f, 1.f};
++			gfx_draw(xr, g.box, m_cols(R * ((x1 - x0) * u), Up * 0.1f, Z * ((z1 - z0) * u), local((x0 + x1) * 0.5f, y, (z0 + z1) * 0.5f) + Up * 0.05f), {0.34f, 0.31f, 0.27f}, 0.f);
++			// light panels every 2.5 m
++			const f32 step = 2.5f / u;
++			for (f32 lx = x0 + step * 0.5f; lx < x1; lx += step)
++				for (f32 lz = z0 + step * 0.5f; lz < z1; lz += step)
++					gfx_draw(xr, g.box, m_cols(R * 0.7f, Up * 0.02f, Z * 0.7f, local(lx, y, lz) - Up * 0.01f), {1.f, 0.90f, 0.72f}, 4.f);
++		}
++
 +		// Draws the room (env) and the body with hands for both eyes. Returns false if nothing could be drawn.
 +		bool gfx_render(xr_state& xr, bool want_env, bool want_body)
 +		{
@@ -3239,6 +3383,13 @@ index 000000000..9d04ef4cc
 +							ctx->OMSetDepthStencilState(g.ds_off, 0);
 +							g.vp = view_proj(xr.views[e], 0.05f, 200.f, true);
 +							gfx_draw(xr, g.sphere, m_cols({50, 0, 0}, {0, 50, 0}, {0, 0, 50}, {0, 0, 0}), {0, 0, 0}, 1.f);
++							// Inside the game: a ceiling where the restaurant has none (seen only where the game draws nothing)
++							if (xr.live3d)
++							{
++								ctx->OMSetDepthStencilState(g.ds_on, 0);
++								g.vp = view_proj(xr.views[e], 0.05f, 200.f, false);
++								draw_ceiling(xr);
++							}
 +							// Menus and the big screen: the restaurant around you
 +							if (!xr.live3d && xr.screen_placed)
 +							{
@@ -3269,7 +3420,7 @@ index 000000000..9d04ef4cc
 +							if (g.chef_gpu && g_chef.posed)
 +							{
 +								// Your body is the game's own chef; your face is cut away so it never blocks your view
-+								chef_draw(xr, g.vp, to_vec(xr.views[e].pose.position), 0.55f * g_chef.scale);
++								chef_draw(xr, g.vp, to_vec(xr.views[e].pose.position), 0.07f);
 +							}
 +							else
 +							{
@@ -3317,6 +3468,7 @@ index 000000000..9d04ef4cc
 +			c.body = get("chef", "auto") != "off";
 +			c.cinema = get("cutscenes", "screen") != "3d";
 +			c.wide = get("wideview", "on") != "off";
++			c.lipsync = get("lipsync", "on") != "off";
 +			c.seated = get("playmode", "standing") == "seated";
 +			c.smooth_turn = get("turn", "snap") == "smooth";
 +			c.vignette = get("vignette", "on") != "off";
@@ -3754,7 +3906,9 @@ index 000000000..9d04ef4cc
 +						}
 +					}
 +					if (have) {}
-+					else if (!xr.pointing_laser && cam.depth * xr.unit < 2.2f && xr.hand_valid[hand])
++					// Hands: always your hand (it used to switch to the laser when the scene was far away, which made
++					// reaching for food impossible in big restaurants)
++					else if (!xr.pointing_laser && xr.hand_valid[hand])
 +					{
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
 +						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f));
@@ -3932,9 +4086,43 @@ index 000000000..9d04ef4cc
 +
 +			if ((xr.frames % 600) == 0)
 +			{
-+				vr_log("status: state=%d frame=%llu pointer active=%d on_screen=%d (%.2f, %.2f) T=%.2f hand=%s game_frame=%llu",
++				vr_log("status: state=%d frame=%llu pointer active=%d on_screen=%d (%.2f, %.2f) T=%.2f move=%d hand=%s game_frame=%llu; view %s, mode %s, pointing %s, "
++					"grip %.2f/%.2f trigger %.2f/%.2f, hands %d/%d, unit %.3f m, mouth %.2f",
 +					static_cast<int>(xr.session_state), static_cast<unsigned long long>(xr.frames), out.active, out.on_screen, out.x, out.y,
-+					out.trigger, xr.active_hand ? "right" : "left", static_cast<unsigned long long>(xr.shown_frame_id));
++					out.trigger, out.move, xr.active_hand ? "right" : "left", static_cast<unsigned long long>(xr.shown_frame_id),
++					xr.live3d ? "3d" : "screen", xr.chooser_active ? "choosing" : xr.mode3d ? "true VR" : "flat", xr.pointing_laser ? "laser" : "hands",
++					xr.hand_grip[0], xr.hand_grip[1], xr.hand_trig[0], xr.hand_trig[1], xr.hand_valid[0], xr.hand_valid[1], xr.unit, g_chef.mouth);
++			}
++
++			// Live status for the launcher (log/orderup_status.txt, once a second): what the game and the headset are doing
++			{
++				static u64 last_status = 0, last_frames = 0;
++				const u64 now_st = GetTickCount64();
++				if (now_st - last_status >= 1000)
++				{
++					cam_info cs;
++					u64 frames = 0;
++					{
++						std::lock_guard lock(g_state_mutex);
++						cs = g_cam;
++						frames = g_frame_id;
++					}
++					const u64 last_frame = g_last_frame_tick.load();
++					const f32 fps = last_status ? (frames - last_frames) * 1000.f / (now_st - last_status) : 0.f;
++					last_frames = frames;
++					last_status = now_st;
++					const std::string tmp = fs::get_log_dir() + "orderup_status.tmp", dst = fs::get_log_dir() + "orderup_status.txt";
++					if (std::FILE* f = std::fopen(tmp.c_str(), "w"))
++					{
++						std::fprintf(f, "time=%llu\nsession=%d\ngame_frames=%llu\npicture_fps=%.1f\npicture_age_ms=%lld\nchannel=%s\nchoosing=%d\nmode=%s\nview=%s\nscene3d=%d\ncinema=%d\npaused=%d\npanel=%s\ncalibrated=%d\n",
++							static_cast<unsigned long long>(now_st), static_cast<int>(xr.session_state), static_cast<unsigned long long>(frames), fps,
++							last_frame ? static_cast<long long>(now_st - last_frame) : -1ll, xr.channel.c_str(), xr.chooser_active ? 1 : 0,
++							xr.chooser_active ? "none" : xr.mode3d ? "truevr" : "flat", xr.live3d ? "3d" : "screen", cs.valid ? 1 : 0, cs.cinema ? 1 : 0,
++							cs.n2 >= 15 ? 1 : 0, xr.panel_text.empty() ? "" : std::string(xr.panel_title.begin(), xr.panel_title.end()).c_str(), g_calib_tick.load() ? 1 : 0);
++						std::fclose(f);
++						MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
++					}
++				}
 +			}
 +
 +			std::lock_guard lock(g_state_mutex);
@@ -4228,16 +4416,26 @@ index 000000000..9d04ef4cc
 +			}
 +
 +			// Start-up "press Square" helper, until the game has calibrated the controller once this session
-+			if (g_calib_tick.load() == 0 && xr.first_live && now_tick - xr.first_live < 180000 && message.empty() && xr.screen_placed)
++			// Shown for a few seconds when the game first asks to calibrate, right in front of you
++			if (g_calib_tick.load() == 0 && xr.first_live && now_tick - xr.first_live < 6000 && message.empty() && xr.screen_placed && !xr.chooser_active)
 +			{
 +				if (!xr.calib_hint_drawn) { draw_calib_hint(xr); xr.calib_hint_drawn = true; }
 +				if (xr.calib_has && frame_state.shouldRender)
 +				{
 +					const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
 +					const f32 sh = xr.sc_w ? xr.screen_width * xr.sc_h / xr.sc_w : xr.screen_width * 9.f / 16.f;
-+					const vec3 pos = xr.live3d ? from_player(xr, {0.f, -0.45f, -1.0f})
-+						: xr.screen_center + normal * 0.4f - vec3{0.f, sh * 0.5f + 0.12f, 0.f};
-+					const f32 yaw = xr.live3d ? xr.player_yaw : xr.screen_yaw;
++					(void)sh; (void)normal;
++					// placed once, where you look when it appears (it does not follow your head)
++					static vec3 pos{};
++					static f32 yaw = 0.f;
++					static u64 placed_for = 0;
++					if (placed_for != xr.first_live)
++					{
++						placed_for = xr.first_live;
++						const vec3 fwd = normalize(vec3{xr.last_forward.x, 0.f, xr.last_forward.z});
++						pos = xr.last_head + fwd * 1.1f - vec3{0.f, 0.12f, 0.f};
++						yaw = std::atan2(-fwd.x, -fwd.z);
++					}
 +					calib.space = xr.local_space;
 +					calib.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 +					calib.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -4245,7 +4443,7 @@ index 000000000..9d04ef4cc
 +					calib.subImage.imageRect.extent = {1024, 300};
 +					calib.pose.position = {pos.x, pos.y, pos.z};
 +					calib.pose.orientation = yaw_q(yaw);
-+					calib.size = {1.0f, 1.0f * 300.f / 1024.f};
++					calib.size = {0.8f, 0.8f * 300.f / 1024.f};
 +					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);
 +				}
 +			}
@@ -4836,6 +5034,8 @@ index 000000000..9d04ef4cc
 +			s.near_depths.clear();
 +			s.n3_by_key.clear();
 +			if (s.drawlog_f) { std::fclose(s.drawlog_f); s.drawlog_f = nullptr; s.drawlog = false; }
++			s.drawsum = false;
++			if (s.want3d && GetTickCount64() - s.drawsum_tick > 30000) { s.drawsum = true; s.drawsum_tick = GetTickCount64(); s.drawsum_map.clear(); }
 +			{
 +				static const std::string sim = []{ const char* e = std::getenv("ORDERUP_VR_SIM"); return std::string(e ? e : ""); }();
 +				if (!sim.empty() && fs::is_file(sim + "/drawlog"))
@@ -5052,6 +5252,7 @@ index 000000000..9d04ef4cc
 +			for (const auto& t : s.things) { xs.push_back(t.x); ys.push_back(t.y); zs.push_back(t.z); }
 +			const auto pct = [](std::vector<f32> v, f32 p) { auto it = v.begin() + static_cast<std::ptrdiff_t>((v.size() - 1) * p); std::nth_element(v.begin(), it, v.end()); return *it; };
 +			const f32 cam_h = -pct(ys, 0.05f);
++			s.floor_lev = -cam_h;
 +			if (!s.fixed_unit && cam_h > 2.5f && cam_h < 14.f)
 +			{
 +				const f32 u = std::clamp(1.62f / cam_h, 0.17f, 0.42f);
@@ -5409,6 +5610,7 @@ index 000000000..9d04ef4cc
 +				g_cam.auto_unit = s.auto_unit;
 +				g_cam.bounds = s.bounds && s.anchored;
 +				g_cam.bx0 = s.bx0; g_cam.bx1 = s.bx1; g_cam.bz0 = s.bz0; g_cam.bz1 = s.bz1;
++				g_cam.floor_lev = s.floor_lev;
 +			}
 +
 +			s.tot3 += s.n3; s.tot2 += s.n2; s.tot2b += s.n2b; s.tot0 += s.n0; s.frames++;
@@ -5437,6 +5639,19 @@ index 000000000..9d04ef4cc
 +				for (auto& h : s.lat_hist) h = 0;
 +			}
 +
++			if (s.drawsum && !s.drawsum_map.empty())
++			{
++				const std::string path = fs::get_log_dir() + "orderup_draws.log";
++				if (fs::stat_t st{}; !fs::get_stat(path, st) || st.size < 4 * 1024 * 1024)
++					if (std::FILE* f = std::fopen(path.c_str(), "a"))
++					{
++						SYSTEMTIME t; GetLocalTime(&t);
++						std::fprintf(f, "[%02d:%02d:%02d] frame: scene %llx, camera sx %.3f sy %.3f A %.4f, HUD k %.2f, cinema %d, wide %d, 3D %d, HUD %d, own-lens %d, untouched %d\n",
++							t.wHour, t.wMinute, t.wSecond, static_cast<unsigned long long>(s.scene_key), s.cam.sx, s.cam.sy, s.cam.A, s.hud_k, s.cinema, s.wide_on, s.n3, s.n2, s.n5, s.n0);
++						for (const auto& [k, n] : s.drawsum_map) std::fprintf(f, "  %4d x %s\n", n, k.c_str());
++						std::fclose(f);
++					}
++			}
 +			s.begun = false;
 +			if (s.n3 > 0) s.eye_flip++;   // the game may show one picture twice: switch eyes per new picture
 +			s.gen++;
@@ -6323,6 +6538,14 @@ index 000000000..9d04ef4cc
 +			}
 +			std::fprintf(s.drawlog_f, "\n");
 +		}
++		if (s.drawsum)
++		{
++			char k[200];
++			const char* role = color_key == ~0ull ? "none" : color_key == s.scene_key ? "scene" : color_key == s.composite_this ? "comp" : s.is_screen(color_key) ? "screen" : "other";
++			std::snprintf(k, sizeof(k), "kind %d mvp %d persp %d %ux%u %-6s tex0 %08llx sx %.2f sy %.2f A %.3f", kind, uses_mvp, perspective, surface_w, surface_h, role,
++				tex_count ? static_cast<unsigned long long>(tex_keys[0] & 0xffffffffull) : 0ull, dsx, dsy, dA);
++			s.drawsum_map[k]++;
++		}
 +		if (kind == 1) s.n3++;
 +		else if (kind == 2) s.n2++;
 +		else if (kind == 3) s.n2b++;
@@ -6518,7 +6741,7 @@ index 000000000..9d04ef4cc
 +				// face: material ranges and pictures
 +				for (int k = 0; k < chef::model::M_COUNT; k++) std::printf(" range %d: %u tris", k, m.range_count[k] / 3);
 +				std::printf("\n");
-+				for (int k = 0; k < 4; k++)
++				for (int k = 0; k < 3; k++)
 +					if (m.face_size[k])
 +					{
 +						std::vector<u8> bgra(m.face_rgba[k]);
@@ -6640,10 +6863,10 @@ index 000000000..a5c106a4a
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_chef.inl b/rpcs3/Emu/Io/OrderUpVR_chef.inl
 new file mode 100644
-index 000000000..b732b8b74
+index 000000000..5b49c552f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_chef.inl
-@@ -0,0 +1,782 @@
+@@ -0,0 +1,812 @@
 +// Order Up VR: the game's own chef models, rebuilt at start-up from the player's own game files.
 +//
 +// The chefs live in USRDIR/Chef.wad (nested, zlib-compressed WADs; files named by CRC32 of their path, without the
@@ -6941,10 +7164,14 @@ index 000000000..b732b8b74
 +		vec3 shoulder[2]{}, elbow[2]{}, wrist[2]{}, knuckle[2]{}, thumb[2]{}, neck{};   // [0] left (+x), [1] right (-x)
 +		f32 hand_scale = 1.f;              // the cartoon hands are shrunk towards a real hand's size, so they fit around the controller
 +		// The face: small parts drawn with their own pictures (transparent around the shape)
-+		enum { M_BODY, M_EYES, M_MOUTH, M_BROWS, M_COUNT };
++		// M_HEAD: the body picture's triangles on the head (hidden in first person, seen in the mirror)
++		enum { M_BODY, M_EYES, M_MOUTH, M_BROWS, M_HEAD, M_COUNT };
 +		u32 range_start[M_COUNT]{}, range_count[M_COUNT]{};
-+		std::vector<u8> face_rgba[4];      // eyes open, eyes closed (blink), mouth, brows/hair
-+		u32 face_size[4]{};
++		std::vector<u8> face_rgba[3];      // eyes open, eyes closed (blink), brows/hair
++		u32 face_size[3]{};
++		std::vector<std::vector<u8>> mouth_rgba;   // mouth pictures: [0] closed, then more and more open (talking)
++		u32 mouth_size = 0;
++		u32 mouth_v0 = 0, mouth_v1 = 0;            // the mouth's vertices (opened by stretching when there is one picture)
 +		std::string error;
 +	};
 +
@@ -7014,7 +7241,7 @@ index 000000000..b732b8b74
 +	{
 +		m.v.clear(); m.idx.clear();
 +		std::vector<u32> idx_by[model::M_COUNT];
-+		struct seg_bones { u32 base = 0, nv = 0; std::vector<u8> lbone; std::map<u8, vec3> centroid; };
++		struct seg_bones { u32 base = 0, nv = 0; bool face = false; std::vector<u8> lbone; std::map<u8, vec3> centroid; };
 +		std::vector<seg_bones> segs;
 +		for (usz s = 0; s + 0x40 < B.size(); s += 4)
 +		{
@@ -7023,6 +7250,7 @@ index 000000000..b732b8b74
 +			if (nv < 4 || nv > 4000 || ni % 3 || ni == 0 || ni > 20000) continue;
 +			// The face's small parts have their own pictures: eyes (8 vertices), mouth (21), eyebrows and hair (16)
 +			const int mat = nv == 8 ? model::M_EYES : nv == 21 ? model::M_MOUTH : nv == 16 ? model::M_BROWS : model::M_BODY;
++			const bool face_part = nv < 100;   // eyes, mouth, brows, nose, chin: all follow the head
 +			const u32 isz = rd16be(&B[s + 20]);
 +			const u32 tris = ni / 3;
 +			std::vector<u16> ix;
@@ -7058,6 +7286,7 @@ index 000000000..b732b8b74
 +			}
 +			if (!wo) continue;
 +			const u32 base = static_cast<u32>(m.v.size());
++			if (mat == model::M_MOUTH) { m.mouth_v0 = base; m.mouth_v1 = base + nv; }
 +			std::vector<u8> lbone(nv * 4);
 +			for (u32 k = 0; k < nv; k++)
 +			{
@@ -7085,6 +7314,7 @@ index 000000000..b732b8b74
 +				seg_bones sb;
 +				sb.base = base;
 +				sb.nv = nv;
++				sb.face = face_part;
 +				sb.lbone = std::move(lbone);
 +				for (const auto& [b, a] : acc) sb.centroid[b] = a.first * (1.f / std::max(a.second, 1e-6f));
 +				segs.push_back(std::move(sb));
@@ -7099,12 +7329,7 @@ index 000000000..b732b8b74
 +			}
 +		}
 +		if (m.v.empty()) { m.error = "no chef geometry decoded"; return false; }
-+		for (int k = 0; k < model::M_COUNT; k++)
-+		{
-+			m.range_start[k] = static_cast<u32>(m.idx.size());
-+			m.range_count[k] = static_cast<u32>(idx_by[k].size());
-+			m.idx.insert(m.idx.end(), idx_by[k].begin(), idx_by[k].end());
-+		}
++
 +
 +		// Proportions and joints from the T pose
 +		f32 ymax = 0.f, armsum = 0.f, zsum = 0.f, tip = 0.f;
@@ -7156,6 +7381,7 @@ index 000000000..b732b8b74
 +				}
 +				else if (c.y > 1.05f) pc = P_HEAD;
 +				else if (c.y < 0.33f && ax > 0.05f) pc = side ? P_LEG_R : P_LEG_L;
++				if (sb.face) pc = P_HEAD;   // the face's own parts (and the chin) turn with the head
 +				cls[b] = pc;
 +				if (dbg && ax > 0.5f) std::fprintf(stderr, "bone seg %u b %u -> part %u centroid %.3f %.3f %.3f\n", sb.base, b, pc, c.x, c.y, c.z);
 +			}
@@ -7184,6 +7410,25 @@ index 000000000..b732b8b74
 +			if (x.p.y > 0.45f && x.p.y < 1.25f && std::fabs(x.p.x) < 0.25f) bz = std::max(bz, x.p.z);
 +		m.belly_z = bz > 0.1f ? bz : m.face_z;
 +		m.neck = {0.f, m.arm_y + 0.30f, 0.f};
++		// Head triangles (all three corners on the head) go to their own range: hidden in first person
++		{
++			std::vector<u32> body, head;
++			const auto& src = idx_by[model::M_BODY];
++			for (usz t = 0; t + 2 < src.size(); t += 3)
++			{
++				const bool h = m.v[src[t]].part[0] == P_HEAD && m.v[src[t + 1]].part[0] == P_HEAD && m.v[src[t + 2]].part[0] == P_HEAD;
++				auto& dst = h ? head : body;
++				dst.insert(dst.end(), {src[t], src[t + 1], src[t + 2]});
++			}
++			idx_by[model::M_BODY] = std::move(body);
++			idx_by[model::M_HEAD] = std::move(head);
++		}
++		for (int k = 0; k < model::M_COUNT; k++)
++		{
++			m.range_start[k] = static_cast<u32>(m.idx.size());
++			m.range_count[k] = static_cast<u32>(idx_by[k].size());
++			m.idx.insert(m.idx.end(), idx_by[k].begin(), idx_by[k].end());
++		}
 +		m.ok = true;
 +		return true;
 +	}
@@ -7238,21 +7483,28 @@ index 000000000..b732b8b74
 +		}
 +		// Face pictures (DXT5, transparent around the shape), from the same material list as the body
 +		{
-+			const u32 names_f[4] = {0xf7a0875a, 0x353348f2, 0xcdced3b7, 0xed624c71};
-+			const u32 names_m[4] = {0x86731279, 0xe20c7ac9, 0xf4f6cdca, 0x23ab3ec8};
-+			const u32 sizes[4] = {64, 64, 256, 256};
-+			for (int k = 0; k < 4; k++)
++			const auto picture = [&](u32 name, u32 size, std::vector<u8>& out) -> bool
 +			{
-+				const u32 fh = crc_name(fmt::format("images/imgdat/%08x.imgdat.ps3", female ? names_f[k] : names_m[k]));
++				const u32 fh = crc_name(fmt::format("images/imgdat/%08x.imgdat.ps3", name));
 +				const u32 fw = w.find_file(fh, female ? std::initializer_list<u32>{0xf4b0efb0, 0x2a2adcb1} : std::initializer_list<u32>{0x311c75b9, 0x2a2adcb1});
 +				std::vector<u8> raw;
-+				const usz need = usz{sizes[k]} * sizes[k];
-+				if (fw && w.nested_file(fw, fh, raw) && raw.size() >= need)
-+				{
-+					decode_dxt5(raw.data() + (raw.size() - need), sizes[k], sizes[k], m.face_rgba[k]);
-+					m.face_size[k] = sizes[k];
-+				}
++				const usz need = usz{size} * size;
++				if (!fw || !w.nested_file(fw, fh, raw) || raw.size() < need) return false;
++				decode_dxt5(raw.data() + (raw.size() - need), size, size, out);
++				return true;
++			};
++			const u32 names_f[3] = {0xf7a0875a, 0x353348f2, 0xed624c71};   // eyes open, eyes closed, brows/hair
++			const u32 names_m[3] = {0x86731279, 0xe20c7ac9, 0x23ab3ec8};
++			const u32 sizes[3] = {64, 64, 256};
++			for (int k = 0; k < 3; k++) if (picture(female ? names_f[k] : names_m[k], sizes[k], m.face_rgba[k])) m.face_size[k] = sizes[k];
++			// Mouth: closed first, then more and more open. The female chef has one picture (her lips).
++			const std::vector<u32> mouths = female ? std::vector<u32>{0xcdced3b7} : std::vector<u32>{0xd925937e, 0x8873fb45, 0xb3bc8a6a, 0xf4f6cdca};
++			for (u32 h : mouths)
++			{
++				std::vector<u8> px;
++				if (picture(h, 256, px)) m.mouth_rgba.push_back(std::move(px));
 +			}
++			if (!m.mouth_rgba.empty()) m.mouth_size = 256;
 +		}
 +		if (std::getenv("OUVR_CHEF_DEBUG"))
 +		{
@@ -7276,6 +7528,7 @@ index 000000000..b732b8b74
 +		XrPosef hand[2]{};         // controller grip poses: [0] left, [1] right
 +		f32 grip[2]{}, trig[2]{};
 +		f32 walk_phase = 0.f, walk_amount = 0.f;   // stepping: phase (radians) and how much (0 standing .. 1 walking)
++		f32 mouth = 0.f;                           // 0 closed .. 1 wide open (your voice)
 +	};
 +
 +	struct rigid { vec3 c0, c1; XrQuaternionf q{0, 0, 0, 1}; vec3 stretch_dir; f32 stretch = 1.f; f32 scale = 1.f; };
@@ -7428,10 +7681,10 @@ index 000000000..b732b8b74
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_ui.inl b/rpcs3/Emu/Io/OrderUpVR_ui.inl
 new file mode 100644
-index 000000000..d522371d7
+index 000000000..6bb2773ba
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_ui.inl
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,484 @@
 +// Order Up VR: the cards shown in the headset (loading, controls, the diner sign, hints), drawn with Direct2D and
 +// DirectWrite into premultiplied BGRA pictures. Also writes PNG files for the developer tools.
 +// Included from OrderUpVR.cpp inside namespace ouvr.
@@ -7791,14 +8044,33 @@ index 000000000..d522371d7
 +			}
 +			else if (c.style == card::HINT)
 +			{
-+				// The PlayStation square, pink, as big as the card allows
-+				const f32 s = H - m * 2.f - 88.f;
-+				const D2D1_RECT_F sq{x, r.top + 44.f, x + s, r.top + 44.f + s};
++				// A picture instead of words: the pink square -> your controller's X button
++				const f32 sz = H - m * 2.f - 100.f, top = r.top + 50.f;
++				const D2D1_RECT_F sq{x, top, x + sz, top + sz};
 +				for (int k = 3; k >= 1; k--) p.stroke_round(sq, 18.f, rgba(0xFF6FB5, 0.08f), 8.f + k * 8.f);
 +				p.fill_round(sq, 18.f, rgba(0xFF6FB5, 0.12f));
-+				const f32 in = s * 0.26f;
++				const f32 in = sz * 0.26f;
 +				p.stroke_round({sq.left + in, sq.top + in, sq.right - in, sq.bottom - in}, 4.f, rgba(0xFF8CC6), 9.f);
-+				x += s + 40.f;
++				// arrow
++				const f32 ax0 = sq.right + 26.f, ax1 = ax0 + 70.f, ay = top + sz * 0.5f;
++				{
++					ID2D1SolidColorBrush* b = nullptr;
++					rt->CreateSolidColorBrush(rgba(0xFFC58A), &b);
++					if (b)
++					{
++						rt->DrawLine({ax0, ay}, {ax1, ay}, b, 8.f);
++						rt->DrawLine({ax1 - 22.f, ay - 20.f}, {ax1 + 2.f, ay}, b, 8.f);
++						rt->DrawLine({ax1 - 22.f, ay + 20.f}, {ax1 + 2.f, ay}, b, 8.f);
++						ui::rel(b);
++					}
++				}
++				// the X button, as on the left Quest controller
++				const f32 bx = ax1 + 30.f;
++				const D2D1_RECT_F bt{bx, top, bx + sz, top + sz};
++				p.fill_round(bt, sz * 0.5f, rgba(0x2A2F3B));
++				p.stroke_round(bt, sz * 0.5f, rgba(0xFFB25C), 6.f);
++				p.text(L"X", bx, top + sz * 0.16f, sz, sz, sz * 0.52f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFFFFF), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++				x = bt.right + 40.f;
 +				const f32 tw = r.right - pad - x;
 +				p.text(c.kicker, x, y, tw, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);
 +				y += 36.f;

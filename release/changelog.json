@@ -1,5 +1,48 @@
 [
   {
+    "version": "0.13.2",
+    "channel": "beta",
+    "date": "2026-11-18",
+    "simple": [
+      "The launcher now knows what the game is doing (loading, choosing, menus, inside the kitchen, cutscene, paused) instead of counting seconds.",
+      "Your chef's mouth stays closed and moves when you talk into your microphone (Settings > Lip sync).",
+      "The ball in front of your mouth is gone: the chin and the whole face follow your head, and in first person your own head is simply not drawn.",
+      "Your hands no longer vanish near your face; they only fade when they touch the headset.",
+      "\"Press X\" is now a picture (square, arrow, X) right in front of you for a few seconds when the game asks.",
+      "Hands mode always uses your hands for pointing and grabbing (it used to switch to the laser in big restaurants).",
+      "Better logs: the last three sessions, what the game was doing every second, and how every kind of picture was placed.",
+      "Restaurants built without a roof get one (Burger Face)."
+    ],
+    "notes": [
+      "Launcher 1.15.0: reads log/orderup_status.txt (written by the mod once a second) for the game status; keeps the previous two sessions' logs; Collect logs adds orderup_draws.log, the status file, the comfort and channel files, the channel and VR settings.",
+      "Mod logs: a draw summary every 30 s inside the game (kind, lens, target, first texture), and a richer status line (grip/trigger of both hands, view, mode, pointing, scale, mouth).",
+      "Chef: face parts (and the chin) are bound to the head; head triangles get their own range and are not drawn in first person; the first-person cut is a 7 cm sphere at the headset; mouth pictures: male closed/small/half/open frames, female lips stretched; lip sync from the default microphone (waveIn, loudness only).",
+      "Inside the game: a ceiling 3 m above the floor over restaurants built without one (drawn behind the game's picture, only visible where the game draws nothing).",
+      "Pointing with hands no longer falls back to the laser when the scene's typical depth is over 2.2 m."
+    ]
+  },
+  {
+    "version": "0.12.3",
+    "channel": "stable",
+    "date": "2026-11-18",
+    "simple": [
+      "The launcher now knows what the game is doing (loading, choosing, menus, inside the kitchen, cutscene, paused) instead of counting seconds.",
+      "Your chef's mouth stays closed and moves when you talk into your microphone (Settings > Lip sync).",
+      "The ball in front of your mouth is gone: the chin and the whole face follow your head, and in first person your own head is simply not drawn.",
+      "Your hands no longer vanish near your face; they only fade when they touch the headset.",
+      "\"Press X\" is now a picture (square, arrow, X) right in front of you for a few seconds when the game asks.",
+      "Hands mode always uses your hands for pointing and grabbing (it used to switch to the laser in big restaurants).",
+      "Better logs: the last three sessions, what the game was doing every second, and how every kind of picture was placed."
+    ],
+    "notes": [
+      "Launcher 1.15.0: reads log/orderup_status.txt (written by the mod once a second) for the game status; keeps the previous two sessions' logs; Collect logs adds orderup_draws.log, the status file, the comfort and channel files, the channel and VR settings.",
+      "Mod logs: a draw summary every 30 s inside the game (kind, lens, target, first texture), and a richer status line (grip/trigger of both hands, view, mode, pointing, scale, mouth).",
+      "Chef: face parts (and the chin) are bound to the head; head triangles get their own range and are not drawn in first person; the first-person cut is a 7 cm sphere at the headset; mouth pictures: male closed/small/half/open frames, female lips stretched; lip sync from the default microphone (waveIn, loudness only).",
+      "Inside the game: a ceiling 3 m above the floor over restaurants built without one (drawn behind the game's picture, only visible where the game draws nothing).",
+      "Pointing with hands no longer falls back to the laser when the scene's typical depth is over 2.2 m."
+    ]
+  },
+  {
     "version": "0.13.1",
     "channel": "beta",
     "date": "2026-11-18",
