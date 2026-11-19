@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.14.6",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Fixed: after touching a panel in the kitchen, the game could see the select button held down for good once the view switched to the big screen.",
+      "Fixed: after loading a savestate, the tickets and side panels did not anchor to the restaurant."
+    ],
+    "notes": [
+      "touch_press is consumed where it becomes the Move button (it was only cleared inside the true-VR pointer branch).",
+      "ouvr::note_game(hash) runs on every boot (also from a savestate), so the game camera read is enabled; before, only apply_code_patches set it and it is skipped for savestates.",
+      "Checked: SteamVR menu binding (last entry, left out on SteamVR), EXIT touch and forced close, lobby rotation, chef detection, both channels' manifests and launcher checksums."
+    ]
+  },
+  {
     "version": "0.14.5",
     "channel": "beta",
     "date": "2026-11-19",

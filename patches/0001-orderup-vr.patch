@@ -503,7 +503,7 @@ index 0dfcf9cb7..c89550dac 100644
  
  	auto& gem = g_fxo->get<gem_config>();
 diff --git a/rpcs3/Emu/Cell/PPUModule.cpp b/rpcs3/Emu/Cell/PPUModule.cpp
-index 1ff578491..718072df8 100644
+index 1ff578491..582984ecd 100644
 --- a/rpcs3/Emu/Cell/PPUModule.cpp
 +++ b/rpcs3/Emu/Cell/PPUModule.cpp
 @@ -1,4 +1,5 @@
@@ -512,11 +512,12 @@ index 1ff578491..718072df8 100644
  #include "Emu/Cell/PPUModule.h"
  
  #include "Utilities/bin_patch.h"
-@@ -2477,6 +2478,9 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
+@@ -2477,6 +2478,10 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
  		g_fxo->get<patch_engine>().apply(applied, Emu.GetTitleID() + '-' + hash, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size); });
  	}
  
 +	// Order Up VR: the launcher's mods (code patches, before the game is compiled)
++	ouvr::note_game(hash);   // also after a savestate: the mod knows this game's memory layout
 +	if (!ar) ouvr::apply_code_patches(hash, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size); }, applied);
 +
  	if (!applied.empty() || ar)
@@ -524,10 +525,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..c51b6bcbe
+index 000000000..4f8342cdf
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7346 @@
+@@ -0,0 +1,7353 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -4889,6 +4890,7 @@ index 000000000..c51b6bcbe
 +				out.trigger = grip[hand];
 +				out.t = grip[hand] > 0.5f;
 +				out.move = trig[hand] > 0.5f || xr.touch_press;
++				xr.touch_press = false;   // used once: a press only counts while the fingertip is in the panel this frame
 +				apply_flip_assist(xr, out);
 +				out.cross = get_bool(xr, xr.btn_a);
 +				out.circle = get_bool(xr, xr.btn_b);
@@ -7524,6 +7526,11 @@ index 000000000..c51b6bcbe
 +
 +	// Mods offered in the launcher. "Unlock all restaurants": the game's one "is this restaurant locked?" check
 +	// (0x000c00a4, used by Quick Play, the map and the scripts) answers "no". Your save is not changed.
++	void note_game(const std::string& exe_hash)
++	{
++		g_game_known = exe_hash == "PPU-c3913dc2ab47a1d91cb6d2384a4d1df3235b11cf";
++	}
++
 +	void apply_code_patches(const std::string& exe_hash, const std::function<u8*(u32, u32)>& ptr, std::vector<u32>& applied)
 +	{
 +		if (exe_hash != "PPU-c3913dc2ab47a1d91cb6d2384a4d1df3235b11cf") return;   // Order Up!! (EU, BLES01470) only
@@ -7632,6 +7639,7 @@ index 000000000..c51b6bcbe
 +	int stereo_draw_transform(const f32*, bool, u32, u32, u64, const u64*, u32, f32*) { return 0; }
 +	bool stereo_clear_color(u64, f32*) { return false; }
 +	void note_calibration() {}
++	void note_game(const std::string&) {}
 +	void apply_code_patches(const std::string&, const std::function<u8*(u32, u32)>&, std::vector<u32>&) {}
 +	void hud_vertices(const f32*, u32, u32, u32) {}
 +	u64 stereo_generation() { return 0; }
@@ -7876,10 +7884,10 @@ index 000000000..c51b6bcbe
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..4fe70036f
+index 000000000..3a4a36dc7
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,105 @@
 +#pragma once
 +#include <functional>
 +#include <string>
@@ -7963,6 +7971,7 @@ index 000000000..4fe70036f
 +	// (location 0 = local video memory, 1 = main memory). They tell the scene, the copy of it onto the screen
 +	// and the HUD apart.
 +	// The launcher's mods that change the game's code (config/orderupvr_mods.txt), applied when the program loads
++	void note_game(const std::string& exe_hash);
 +	void apply_code_patches(const std::string& exe_hash, const std::function<u8*(u32, u32)>& ptr, std::vector<u32>& applied);
 +
 +	// The next flat draw's first vertices (position attribute: x y z w each), for placing HUD elements

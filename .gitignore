@@ -15,3 +15,4 @@ testinstall/
 docs/img/
 docs/HANDOFF_FROM_CODEX.md
 docs/PLAN_V2.md
+__pycache__/
