@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.14.0",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "New VR lobby: around the menus you now stand inside one of the game's own restaurants, a different one each time you start (Gravy Chug, El Fuego, Stuffolini, Chez Haute, Kung Fusion or the burger joint).",
+      "The restaurant is rebuilt from your own copy of the game, with its real models and pictures. Nothing from the game is shipped with the mod.",
+      "Until it has loaded (well under a second), you see the old diner."
+    ],
+    "notes": [
+      "Lobby (OrderUpVR_lobby.inl): reads the restaurant package in Chef.wad: the scene model (material records found by their ffffcd/0xfc signature, node table by its count + 12 x 0xbe + 0xab filler, Edge segments decoded with the game's SPU decoder; vertex stream 24 or 36 bytes per vertex as the segment header gives), the layout file (name, position, quaternion, scale per node; node hash = ~crc32(lowercase name)), the material files (picture size, DXT1/DXT5, image id) and the picture package that holds most of the images.",
+      "Skipped: sky, exterior, street, buildings and the decal overlays (AOFakery, Downgrade stains). Opaque, cut-out (DXT5), see-through and glow (flag 0x80) batches; RGBA textures with mipmaps; anisotropic wrap sampling; vertex colours as baked light.",
+      "Where you stand: a 20 cm floor grid (floor below, ceiling above, nothing from 12 cm to 1.9 m), within 10 m of the restaurant's median, among roomy spots the one with the longest free view; the menu board hangs in that view.",
+      "Dev tools: --ouvr-lobby-test <usrdir> <out> (rebuilds all six and dumps them), --ouvr-edge-dump <usrdir> <model> <out>."
+    ]
+  },
+  {
     "version": "0.13.6",
     "channel": "beta",
     "date": "2026-11-19",

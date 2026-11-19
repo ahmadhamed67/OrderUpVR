@@ -524,10 +524,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..3d6934ea4
+index 000000000..5c9706a54
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,6876 @@
+@@ -0,0 +1,7195 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -576,6 +576,8 @@ index 000000000..3d6934ea4
 +#include <condition_variable>
 +#include <string>
 +#include <thread>
++#include <span>
++#include <unordered_set>
 +
 +#pragma comment(lib, "d3d11.lib")
 +#pragma comment(lib, "winmm.lib")
@@ -685,6 +687,7 @@ index 000000000..3d6934ea4
 +		}
 +
 +#include "OrderUpVR_chef.inl"
++#include "OrderUpVR_lobby.inl"
 +#include "OrderUpVR_ui.inl"
 +
 +		struct mat4 { f32 m[16]{}; };
@@ -2188,6 +2191,20 @@ index 000000000..3d6934ea4
 +			ID3D11SamplerState* csmp = nullptr;
 +			u32 cidx = 0, cnv = 0;
 +			bool chef_gpu = false;
++			// The lobby restaurant
++			ID3D11VertexShader* lvs = nullptr;
++			ID3D11PixelShader* lps = nullptr;
++			ID3D11InputLayout* lil = nullptr;
++			ID3D11Buffer* lcb = nullptr;
++			ID3D11Buffer* lvb = nullptr;
++			ID3D11Buffer* lib = nullptr;
++			ID3D11SamplerState* lsmp = nullptr;
++			ID3D11BlendState* bs_alpha = nullptr;
++			ID3D11BlendState* bs_add = nullptr;
++			ID3D11DepthStencilState* ds_nowrite = nullptr;
++			std::vector<ID3D11Texture2D*> ltex;
++			std::vector<ID3D11ShaderResourceView*> lsrv;
++			bool lobby_gpu = false, lobby_failed = false;
 +			ID3D11DepthStencilState* ds_mask = nullptr;
 +			ID3D11DepthStencilState* ds_reset = nullptr;
 +			ID3D11DepthStencilState* ds_inside = nullptr;
@@ -2292,6 +2309,32 @@ index 000000000..3d6934ea4
 +	float key = saturate(dot(n, normalize(float3(0.35, 0.9, 0.25))));
 +	float fill = saturate(dot(n, normalize(float3(-0.5, 0.2, -0.6)))) * 0.25;
 +	return float4(color.rgb * (0.38 + 0.62 * key + fill), 1);
++}
++)";
++
++		struct lobby_cb { f32 mvp[16]; f32 params[4]; f32 pad[4]; };
++
++		constexpr const char* lobby_shader = R"(
++cbuffer C : register(b0) { float4x4 mvp; float4 params; float4 pad; };
++Texture2D tex : register(t0);
++SamplerState smp : register(s0);
++struct VI { float3 p : POSITION; float2 uv : TEXCOORD0; float4 c : COLOR0; };
++struct VO { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };
++VO vs_main(VI i)
++{
++	VO o;
++	o.pos = mul(float4(i.p, 1), mvp);
++	o.uv = i.uv;
++	o.c = i.c;
++	return o;
++}
++float4 ps_main(VO i) : SV_Target
++{
++	float4 t = tex.Sample(smp, i.uv);
++	// params.x: 0 opaque, 1 cut-out, 2 see-through, 3 glow (added)
++	if (params.x > 0.5 && params.x < 1.5) clip(t.a - 0.5);
++	float3 c = t.rgb * lerp(float3(1, 1, 1), i.c.rgb, 0.85) * params.y;
++	return float4(c, params.x > 1.5 ? t.a * i.c.a : 1);
 +}
 +)";
 +
@@ -2436,6 +2479,60 @@ index 000000000..3d6934ea4
 +				if (ce) ce->Release();
 +			}
 +
++			// The lobby restaurant: textured, vertex-lit, with see-through and glowing parts
++			{
++				ID3DBlob* lv = nullptr;
++				ID3DBlob* lp = nullptr;
++				ID3DBlob* le = nullptr;
++				const usz ll = std::strlen(lobby_shader);
++				if (SUCCEEDED(compile(lobby_shader, ll, "orderupvr_lobby", nullptr, nullptr, "vs_main", "vs_4_0", 0, 0, &lv, &le)) &&
++					SUCCEEDED(compile(lobby_shader, ll, "orderupvr_lobby", nullptr, nullptr, "ps_main", "ps_4_0", 0, 0, &lp, &le)))
++				{
++					const D3D11_INPUT_ELEMENT_DESC l_layout[] =
++					{
++						{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
++						{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
++						{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0},
++					};
++					bool lok = SUCCEEDED(dev->CreateVertexShader(lv->GetBufferPointer(), lv->GetBufferSize(), nullptr, &g.lvs)) &&
++						SUCCEEDED(dev->CreatePixelShader(lp->GetBufferPointer(), lp->GetBufferSize(), nullptr, &g.lps)) &&
++						SUCCEEDED(dev->CreateInputLayout(l_layout, 3, lv->GetBufferPointer(), lv->GetBufferSize(), &g.lil));
++					D3D11_BUFFER_DESC lcd{};
++					lcd.ByteWidth = sizeof(lobby_cb);
++					lcd.Usage = D3D11_USAGE_DEFAULT;
++					lcd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++					lok = lok && SUCCEEDED(dev->CreateBuffer(&lcd, nullptr, &g.lcb));
++					D3D11_SAMPLER_DESC smp{};
++					smp.Filter = D3D11_FILTER_ANISOTROPIC;
++					smp.MaxAnisotropy = 8;
++					smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
++					smp.MaxLOD = D3D11_FLOAT32_MAX;
++					lok = lok && SUCCEEDED(dev->CreateSamplerState(&smp, &g.lsmp));
++					D3D11_BLEND_DESC bdsc{};
++					bdsc.RenderTarget[0].BlendEnable = TRUE;
++					bdsc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
++					bdsc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
++					bdsc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
++					bdsc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
++					bdsc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++					bdsc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
++					bdsc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
++					lok = lok && SUCCEEDED(dev->CreateBlendState(&bdsc, &g.bs_alpha));
++					bdsc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
++					lok = lok && SUCCEEDED(dev->CreateBlendState(&bdsc, &g.bs_add));
++					D3D11_DEPTH_STENCIL_DESC nd{};
++					nd.DepthEnable = TRUE;
++					nd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
++					nd.DepthFunc = D3D11_COMPARISON_LESS;
++					lok = lok && SUCCEEDED(dev->CreateDepthStencilState(&nd, &g.ds_nowrite));
++					if (!lok) vr_log("Lobby: could not create the restaurant's graphics resources");
++				}
++				else vr_log("Lobby: shader compile failed: %s", le ? static_cast<const char*>(le->GetBufferPointer()) : "?");
++				if (lv) lv->Release();
++				if (lp) lp->Release();
++				if (le) le->Release();
++			}
++
 +			// Unit sphere
 +			{
 +				std::vector<gvert> v;
@@ -2540,12 +2637,14 @@ index 000000000..3d6934ea4
 +		}
 +
 +		void chef_shutdown();
++		void lobby_shutdown();
 +
 +		void gfx_destroy()
 +		{
 +			auto& g = g_gfx;
 +			const auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
 +			chef_shutdown();
++			lobby_shutdown();
 +			for (auto& [tex, view] : g.rtv) view->Release();
 +			g.rtv.clear();
 +			for (int e = 0; e < 2; e++)
@@ -2559,6 +2658,9 @@ index 000000000..3d6934ea4
 +			rel(g.vs); rel(g.ps); rel(g.il); rel(g.cb); rel(g.rs); rel(g.ds_on); rel(g.ds_off);
 +			rel(g.cvs); rel(g.cps); rel(g.cil); rel(g.ccb); rel(g.cvb); rel(g.cib); rel(g.csrv); rel(g.ctex); rel(g.csmp);
 +			rel(g.ds_mask); rel(g.ds_reset); rel(g.ds_inside);
++			rel(g.lvs); rel(g.lps); rel(g.lil); rel(g.lcb); rel(g.lvb); rel(g.lib); rel(g.lsmp); rel(g.bs_alpha); rel(g.bs_add); rel(g.ds_nowrite);
++			for (auto*& t : g.lsrv) rel(t);
++			for (auto*& t : g.ltex) rel(t);
 +			g = {};
 +		}
 +
@@ -3550,6 +3652,140 @@ index 000000000..3d6934ea4
 +			ctx->PSSetConstantBuffers(0, 1, &g.cb);
 +		}
 +
++		// ---- The lobby: one of the game's own restaurants around the menu board (rebuilt from the game files at start-up)
++		struct lobby_runtime
++		{
++			std::thread th;
++			std::atomic<int> state{0};   // 0 not started, 1 loading, 2 ready, 3 failed
++			lobby::restaurant r;
++		};
++		lobby_runtime g_lobby;
++
++		void lobby_shutdown()
++		{
++			if (g_lobby.th.joinable()) g_lobby.th.join();
++		}
++
++		// Background load (once per run), then the upload to the GPU on the headset thread
++		void lobby_tick(xr_state& xr)
++		{
++			auto& g = g_gfx;
++			if (g_lobby.state == 0)
++			{
++				const std::string dir = game_usrdir();
++				if (dir.empty()) return;
++				g_lobby.state = 1;
++				const int pick = static_cast<int>((GetTickCount64() / 7) % std::size(lobby::places));
++				g_lobby.th = std::thread([dir, pick]
++				{
++					const u64 t0 = GetTickCount64();
++					const bool ok = lobby::load(g_lobby.r, dir, pick);
++					const auto& r = g_lobby.r;
++					vr_log("Lobby: %s %s from the game files%s%s (%zu vertices, %zu triangles, %zu batches, %zu pictures, stand at %.1f %.1f %.1f facing %.0f deg, %.1f m free, %llu ms)",
++						ok ? "rebuilt" : "could not rebuild", r.name.c_str(), ok ? "" : ": ", ok ? "" : r.error.c_str(), r.v.size(), r.idx.size() / 3, r.batches.size(), r.pics.size(),
++						r.spawn.x, r.spawn.y, r.spawn.z, r.facing * 57.29578f, r.board_dist, static_cast<unsigned long long>(GetTickCount64() - t0));
++					g_lobby.state = ok ? 2 : 3;
++				});
++				return;
++			}
++			if (g_lobby.state != 2 || g.lobby_gpu || g.lobby_failed || !g.lvs) return;
++			const auto& r = g_lobby.r;
++			auto* dev = xr.device;
++			D3D11_BUFFER_DESC bd{};
++			bd.Usage = D3D11_USAGE_IMMUTABLE;
++			bd.ByteWidth = static_cast<UINT>(r.v.size() * sizeof(lobby::vert));
++			bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++			D3D11_SUBRESOURCE_DATA sd{r.v.data()};
++			bool ok = SUCCEEDED(dev->CreateBuffer(&bd, &sd, &g.lvb));
++			bd.ByteWidth = static_cast<UINT>(r.idx.size() * 4);
++			bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
++			sd.pSysMem = r.idx.data();
++			ok = ok && SUCCEEDED(dev->CreateBuffer(&bd, &sd, &g.lib));
++			g.lsrv.assign(r.pics.size(), nullptr);
++			g.ltex.assign(r.pics.size(), nullptr);
++			for (usz k = 0; k < r.pics.size() && ok; k++)
++			{
++				const auto& p = r.pics[k];
++				if (p.rgba.empty()) continue;
++				D3D11_TEXTURE2D_DESC td{};
++				td.Width = p.w; td.Height = p.h; td.MipLevels = 0; td.ArraySize = 1;
++				td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
++				td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
++				td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
++				if (FAILED(dev->CreateTexture2D(&td, nullptr, &g.ltex[k]))) continue;
++				xr.context->UpdateSubresource(g.ltex[k], 0, nullptr, p.rgba.data(), p.w * 4, 0);
++				if (SUCCEEDED(dev->CreateShaderResourceView(g.ltex[k], nullptr, &g.lsrv[k]))) xr.context->GenerateMips(g.lsrv[k]);
++			}
++			if (!ok) { vr_log("Lobby: could not upload the restaurant to the GPU"); g.lobby_failed = true; return; }
++			g.lobby_gpu = true;
++		}
++
++		// Draws the restaurant around the menu board: you stand on its freest floor, the board in its longest view.
++		// False when it is not ready (the plain diner is drawn instead).
++		bool lobby_draw(xr_state& xr)
++		{
++			auto& g = g_gfx;
++			if (!g.lobby_gpu) return false;
++			const auto& r = g_lobby.r;
++			auto* ctx = xr.context;
++			const vec3 normal{std::sin(xr.screen_yaw), 0.f, std::cos(xr.screen_yaw)};
++			const f32 floor = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.65f;
++			vec3 A = xr.screen_center + normal * xr.screen_distance;
++			A.y = floor;
++			const f32 d = xr.screen_yaw - r.facing;
++			const f32 c = std::cos(d), s = std::sin(d);
++			mat4 M;
++			M.m[0] = c; M.m[2] = s;
++			M.m[5] = 1.f;
++			M.m[8] = -s; M.m[10] = c;
++			M.m[3] = A.x - (c * r.spawn.x + s * r.spawn.z);
++			M.m[7] = A.y - r.spawn.y;
++			M.m[11] = A.z - (-s * r.spawn.x + c * r.spawn.z);
++			M.m[15] = 1.f;
++			lobby_cb cb{};
++			const mat4 mvp = mmul(g.vp, M);
++			std::memcpy(cb.mvp, mvp.m, sizeof(cb.mvp));
++			cb.params[1] = 1.f;
++			ctx->IASetInputLayout(g.lil);
++			ctx->VSSetShader(g.lvs, nullptr, 0);
++			ctx->PSSetShader(g.lps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.lcb);
++			ctx->PSSetConstantBuffers(0, 1, &g.lcb);
++			ctx->PSSetSamplers(0, 1, &g.lsmp);
++			const UINT stride = sizeof(lobby::vert), offset = 0;
++			ctx->IASetVertexBuffers(0, 1, &g.lvb, &stride, &offset);
++			ctx->IASetIndexBuffer(g.lib, DXGI_FORMAT_R32_UINT, 0);
++			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++			int cur = -1;
++			for (const auto& b : r.batches)
++			{
++				if (b.tex < 0 || b.tex >= static_cast<int>(g.lsrv.size()) || !g.lsrv[b.tex]) continue;
++				if (b.blend != cur)
++				{
++					cur = b.blend;
++					cb.params[0] = static_cast<f32>(cur);
++					ctx->UpdateSubresource(g.lcb, 0, nullptr, &cb, 0, 0);
++					const f32 bf[4] = {0, 0, 0, 0};
++					ctx->OMSetBlendState(cur == 2 ? g.bs_alpha : cur == 3 ? g.bs_add : nullptr, bf, 0xffffffff);
++					ctx->OMSetDepthStencilState(cur >= 2 ? g.ds_nowrite : g.ds_on, 0);
++				}
++				ctx->PSSetShaderResources(0, 1, &g.lsrv[b.tex]);
++				ctx->DrawIndexed(b.count, b.first, 0);
++			}
++			// back to the plain shapes pipeline
++			const f32 bf[4] = {0, 0, 0, 0};
++			ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
++			ctx->OMSetDepthStencilState(g.ds_on, 0);
++			ID3D11ShaderResourceView* none = nullptr;
++			ctx->PSSetShaderResources(0, 1, &none);
++			ctx->IASetInputLayout(g.il);
++			ctx->VSSetShader(g.vs, nullptr, 0);
++			ctx->PSSetShader(g.ps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.cb);
++			ctx->PSSetConstantBuffers(0, 1, &g.cb);
++			return true;
++		}
++
 +		// A full-length diner mirror on the left wall, in a chrome frame: see your chef from head to toe.
 +		void draw_mirror(xr_state& xr, int e)
 +		{
@@ -3635,6 +3871,7 @@ index 000000000..3d6934ea4
 +			if (!g.ok || !xr.views_valid) return false;
 +			auto* ctx = xr.context;
 +			if (want_body) chef_tick(xr);
++			lobby_tick(xr);
 +
 +			ctx->IASetInputLayout(g.il);
 +			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -3667,8 +3904,12 @@ index 000000000..3d6934ea4
 +							{
 +								ctx->OMSetDepthStencilState(g.ds_on, 0);
 +								g.vp = view_proj(xr.views[e], 0.05f, 200.f, false);
-+								draw_room(xr);
-+								draw_mirror(xr, e);
++								// The lobby: one of the game's restaurants (the plain diner until it is ready)
++								if (!lobby_draw(xr))
++								{
++									draw_room(xr);
++									draw_mirror(xr, e);
++								}
 +							}
 +						}
 +						release(g.env_sc[e]);
@@ -7341,6 +7582,84 @@ index 000000000..3d6934ea4
 +			out("chooser_beta.png", chooser_card(1, true, "beta"), chooser_w, chooser_h);
 +			return 0;
 +		}
++		if (cmd == "--ouvr-lobby-test" && argc >= 4)
++		{
++			// Rebuilds every lobby restaurant and dumps it (vertices, indices, batches, spawn) for offline checks
++			for (int k = 0; k < static_cast<int>(std::size(lobby::places)); k++)
++			{
++				lobby::restaurant r;
++				const u64 t0 = GetTickCount64();
++				const bool ok = lobby::load(r, argv[2], k);
++				std::printf("%-12s %s %s: %zu vertices, %zu triangles, %zu batches, %zu pictures, stand %.2f %.2f %.2f facing %.0f deg, %.1f m free, %llu ms\n",
++					r.name.c_str(), ok ? "ok" : "FAILED", r.error.c_str(), r.v.size(), r.idx.size() / 3, r.batches.size(), r.pics.size(), r.spawn.x, r.spawn.y, r.spawn.z,
++					r.facing * 57.29578f, r.board_dist, static_cast<unsigned long long>(GetTickCount64() - t0));
++				std::printf("   %s\n", r.info.c_str());
++				if (!ok) continue;
++				std::FILE* o = std::fopen(fmt::format("%s_%d.bin", argv[3], k).c_str(), "wb");
++				if (!o) continue;
++				const u32 hdr[4] = {static_cast<u32>(r.v.size()), static_cast<u32>(r.idx.size()), static_cast<u32>(r.batches.size()), static_cast<u32>(r.pics.size())};
++				std::fwrite(hdr, 4, 4, o);
++				const f32 sp[5] = {r.spawn.x, r.spawn.y, r.spawn.z, r.facing, r.board_dist};
++				std::fwrite(sp, 4, 5, o);
++				std::fwrite(r.v.data(), sizeof(lobby::vert), r.v.size(), o);
++				std::fwrite(r.idx.data(), 4, r.idx.size(), o);
++				for (const auto& b : r.batches) { const s32 bb[4] = {static_cast<s32>(b.first), static_cast<s32>(b.count), b.tex, b.blend}; std::fwrite(bb, 4, 4, o); }
++				for (const auto& p : r.pics)
++				{
++					// a small copy of each picture (every 4th pixel) for the offline render
++					const u32 w = p.w / 4, h = p.h / 4;
++					const u32 wh[2] = {p.rgba.empty() ? 0u : w, p.rgba.empty() ? 0u : h};
++					std::fwrite(wh, 4, 2, o);
++					for (u32 y = 0; y < wh[1]; y++)
++						for (u32 x = 0; x < wh[0]; x++) std::fwrite(&p.rgba[(usz{y} * 4 * p.w + x * 4) * 4], 1, 4, o);
++				}
++				std::fclose(o);
++			}
++			return 0;
++		}
++		if (cmd == "--ouvr-edge-dump" && argc >= 5)
++		{
++			// Decodes every Edge segment's triangle list in a model file (the game's own decoder) for offline study:
++			// records of (segment offset, vertices, indices, index stream offset, its size) then the indices (u16)
++			std::vector<u8> job;
++			std::string err;
++			if (!chef::load_job(argv[2], job, err)) { std::printf("job: %s\n", err.c_str()); return 1; }
++			fs::file in(argv[3]);
++			if (!in) return 1;
++			const std::vector<u8> B = in.to_vector<u8>();
++			std::FILE* o = std::fopen(argv[4], "wb");
++			if (!o) return 1;
++			int found = 0, decoded = 0;
++			for (usz s = 0; s + 0x40 < B.size(); s += 16)
++			{
++				if ((B[s] & 0xf0) != 0x80 || (B[s + 6] & 0xf0) != 0x30) continue;
++				const u32 nv = chef::rd16be(&B[s + 8]), ni = chef::rd16be(&B[s + 10]);
++				if (nv < 3 || nv > 8000 || ni % 3 || ni == 0 || ni > 60000) continue;
++				found++;
++				const u32 isz = chef::rd16be(&B[s + 20]);
++				const u32 tris = ni / 3;
++				for (usz q = s + 16; q + 8 < B.size() && q < s + 0x20000; q += 16)
++				{
++					const u32 n = chef::rd16be(&B[q]), X = chef::rd16be(&B[q + 4]), bits = B[q + 6];
++					if (bits > 16 || X == 0 || X > 4096) continue;
++					const usz tot = 8 + X + (tris * 2 + 7) / 8 + (usz{n} * bits + 7) / 8;
++					if (chef::pad16(tot) != isz || n > ni || q + isz > B.size()) continue;
++					std::vector<u16> ix;
++					if (!chef::edge_decompress(job, &B[s], &B[q], isz, ni, ix)) continue;
++					u16 mx = 0;
++					for (u16 c : ix) mx = std::max(mx, c);
++					if (mx + 1u != nv) continue;
++					const u32 rec[5] = {static_cast<u32>(s), nv, ni, static_cast<u32>(q), isz};
++					std::fwrite(rec, 4, 5, o);
++					std::fwrite(ix.data(), 2, ix.size(), o);
++					decoded++;
++					break;
++				}
++			}
++			std::fclose(o);
++			std::printf("%d segments, %d decoded\n", found, decoded);
++			return 0;
++		}
 +		if (cmd == "--ouvr-chef-test" && argc >= 4)
 +		{
 +			// Rebuilds both chefs from a game's USRDIR and writes them as OBJ (rest pose and a reaching pose)
@@ -7516,10 +7835,10 @@ index 000000000..4fe70036f
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_chef.inl b/rpcs3/Emu/Io/OrderUpVR_chef.inl
 new file mode 100644
-index 000000000..477d2b868
+index 000000000..5a94a5761
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_chef.inl
-@@ -0,0 +1,844 @@
+@@ -0,0 +1,848 @@
 +// Order Up VR: the game's own chef models, rebuilt at start-up from the player's own game files.
 +//
 +// The chefs live in USRDIR/Chef.wad (nested, zlib-compressed WADs; files named by CRC32 of their path, without the
@@ -8116,30 +8435,34 @@ index 000000000..477d2b868
 +		return tw && w.nested_file(tw, tex_file, tex) && tex.size() == 1024 * 1024 / 2;
 +	}
 +
++	// The SPU job with the Edge index decoder, from the game's own SPRX, decrypted with RPCS3's code
++	bool load_job(const std::string& usrdir, std::vector<u8>& job, std::string& err)
++	{
++		fs::file sprx(usrdir + "spurs/spu_codef.ppu.sprx");
++		if (!sprx) { err = "spu_codef.ppu.sprx not found"; return false; }
++		fs::file elf = decrypt_self(sprx);
++		if (!elf) { err = "could not decrypt spu_codef.ppu.sprx"; return false; }
++		std::vector<u8> e = elf.to_vector<u8>();
++		if (e.size() < 0x40 || std::memcmp(e.data(), "\x7f" "ELF", 4) != 0) { err = "spu_codef: not an ELF"; return false; }
++		// ELF64 big-endian: first program header gives the job image
++		const u64 phoff = u64{rd32be(&e[0x20])} << 32 | rd32be(&e[0x24]);
++		if (phoff + 56 > e.size()) { err = "spu_codef: bad program header"; return false; }
++		const u64 off = u64{rd32be(&e[phoff + 8])} << 32 | rd32be(&e[phoff + 12]);
++		const u64 fsz = u64{rd32be(&e[phoff + 32])} << 32 | rd32be(&e[phoff + 36]);
++		if (off + fsz > e.size() || fsz < 0x7000) { err = "spu_codef: bad segment"; return false; }
++		job.assign(e.begin() + off + 0x100, e.begin() + off + fsz);   // the job image starts 0x100 into the segment
++		// The decoder entry we call must be the one this mod was built against
++		if (job.size() < 0x6e64 || rd32be(&job[0x6e60]) != 0x34064185) { err = "spu_codef: unexpected Edge version"; return false; }
++		return true;
++	}
++
 +	// Everything needed from the game's files: Chef.wad and the SPU job with the Edge decoder.
 +	bool load(model& m, const std::string& usrdir, bool female)
 +	{
 +		m = {};
 +		m.female = female;
-+		// The SPU job (Edge geometry) from the game's own SPRX, decrypted with RPCS3's code
 +		std::vector<u8> job;
-+		{
-+			fs::file sprx(usrdir + "spurs/spu_codef.ppu.sprx");
-+			if (!sprx) { m.error = "spu_codef.ppu.sprx not found"; return false; }
-+			fs::file elf = decrypt_self(sprx);
-+			if (!elf) { m.error = "could not decrypt spu_codef.ppu.sprx"; return false; }
-+			std::vector<u8> e = elf.to_vector<u8>();
-+			if (e.size() < 0x40 || std::memcmp(e.data(), "\x7f" "ELF", 4) != 0) { m.error = "spu_codef: not an ELF"; return false; }
-+			// ELF64 big-endian: first program header gives the job image
-+			const u64 phoff = u64{rd32be(&e[0x20])} << 32 | rd32be(&e[0x24]);
-+			if (phoff + 56 > e.size()) { m.error = "spu_codef: bad program header"; return false; }
-+			const u64 off = u64{rd32be(&e[phoff + 8])} << 32 | rd32be(&e[phoff + 12]);
-+			const u64 fsz = u64{rd32be(&e[phoff + 32])} << 32 | rd32be(&e[phoff + 36]);
-+			if (off + fsz > e.size() || fsz < 0x7000) { m.error = "spu_codef: bad segment"; return false; }
-+			job.assign(e.begin() + off + 0x100, e.begin() + off + fsz);   // the job image starts 0x100 into the segment
-+			// The decoder entry we call must be the one this mod was built against
-+			if (job.size() < 0x6e64 || rd32be(&job[0x6e60]) != 0x34064185) { m.error = "spu_codef: unexpected Edge version"; return false; }
-+		}
++		if (!load_job(usrdir, job, m.error)) return false;
 +		wad_reader w;
 +		if (!w.open(usrdir + "Chef.wad")) { m.error = "Chef.wad not readable"; return false; }
 +		// Model files and the body texture (texture files are named images/imgdat/<hash>.imgdat.ps3)
@@ -8362,6 +8685,500 @@ index 000000000..477d2b868
 +			nrm[i] = normalize(n);
 +		}
 +		(void)root;
++	}
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_lobby.inl b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
+new file mode 100644
+index 000000000..1d2a6f14d
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
+@@ -0,0 +1,488 @@
++// Order Up VR: the lobby is one of the game's own restaurants, rebuilt at start-up from the player's own game files
++// (nothing of the game is shipped with the mod).
++//
++// Each restaurant package inside Chef.wad holds:
++//  - the scene: a model file (u32 1, u32 material count) with a material table (0x240 each), a node table (0x60 each:
++//    local bounds, the node's name hash = ~crc32(lowercase name), its number of mesh parts) and the mesh parts. Every
++//    part is two Edge segments (drawn, then a shadow copy). A segment: a 16-byte header (flags, vertex and index
++//    counts, sizes), the compressed index stream (decoded by the game's own SPU decoder, see the chef), positions (f32 x3)
++//    and an attribute stream (24 bytes: colour RGBA + UV, or 36 bytes: normal + colour + UV). The part's material is
++//    named 0x198 bytes before its segment.
++//  - the layout: (u32 1, u32 0, u32 count) then records of name, position, rotation (quaternion x y z w) and scale.
++//  - material files (u32 2, u32 count): each material lists its pictures (width, height, DXT1/DXT5, image id).
++//  - the pictures live in another package: images/imgdat/<id>.imgdat.ps3 (raw DXT blocks).
++// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, after the chef.
++
++namespace lobby
++{
++	using namespace chef;
++
++	struct vert { f32 p[3]; f32 uv[2]; f32 c[4]; };
++	struct batch { u32 first = 0, count = 0; int tex = -1; u8 blend = 0; };   // blend: 0 opaque, 1 cut-out, 2 alpha, 3 additive
++	struct picture { u32 w = 0, h = 0; std::vector<u8> rgba; };
++
++	struct restaurant
++	{
++		bool ok = false;
++		std::string name, error, info;
++		std::vector<vert> v;
++		std::vector<u32> idx;
++		std::vector<batch> batches;
++		std::vector<picture> pics;
++		vec3 spawn{};          // where you stand (restaurant space, on its floor)
++		f32 facing = 0.f;      // the direction the menu board is in (radians about y; 0 = -z)
++		f32 board_dist = 3.f;  // free floor towards the board
++	};
++
++	// The restaurants with a dining room (package hash in Chef.wad, name)
++	struct place_def { u32 wad; const char* name; };
++	constexpr place_def places[] = {
++		{0xcca045da, "Gravy Chug"}, {0x2d1cd440, "El Fuego"}, {0xb95ae814, "Stuffolini"},
++		{0xbaa69b86, "Chez Haute"}, {0x906a2b6d, "Kung Fusion"}, {0x4a13fc83, "Burger joint"},
++	};
++
++	// A whole nested package, decompressed once
++	struct package
++	{
++		std::unordered_map<u32, wad_entry> table;
++		std::vector<u8> body;
++		u32 tsize = 0;
++		bool read(wad_reader& w, u32 hash)
++		{
++			const auto it = w.table.find(hash);
++			if (it == w.table.end()) return false;
++			std::vector<u8> b(it->second.size);
++			w.f.seek(it->second.off);
++			if (w.f.read(b.data(), b.size()) != b.size()) return false;
++			u32 comp = 0;
++			wad_reader::parse_table(b.data(), b.size(), table, tsize, comp);
++			if (table.empty()) return false;
++			if (comp)
++			{
++				uLongf len = rd32le(b.data() + 24);
++				body.resize(len);
++				if (uncompress(body.data(), &len, b.data() + tsize, static_cast<uLong>(b.size() - tsize)) != Z_OK) return false;
++				body.resize(len);
++			}
++			else body.assign(b.begin() + tsize, b.end());
++			return true;
++		}
++		std::span<const u8> file(u32 h) const
++		{
++			const auto it = table.find(h);
++			if (it == table.end() || it->second.off < tsize) return {};
++			const usz s = it->second.off - tsize;
++			if (s + it->second.size > body.size()) return {};
++			return {body.data() + s, it->second.size};
++		}
++	};
++
++	inline u32 name_hash(std::string s)
++	{
++		for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++		return crc_name(s);
++	}
++
++	struct xform { vec3 pos{}; XrQuaternionf rot{0, 0, 0, 1}; vec3 scale{1, 1, 1}; };
++
++	struct tex_ref { u32 w = 0, h = 0, fmt = 0, image = 0, size = 0; };
++
++	// Material files: material hash -> its first picture
++	void parse_materials(std::span<const u8> m, std::unordered_map<u32, tex_ref>& out)
++	{
++		usz p = 8;
++		while (p + 8 <= m.size())
++		{
++			const u32 h = rd32be(&m[p]), size = rd32be(&m[p + 4]);
++			if (size < 0x30 || p + 8 + size > m.size()) break;
++			const u8* blk = &m[p + 8];
++			for (usz c = 0; c + 4 <= size; c += 4)
++			{
++				const u32 n = rd32be(blk + c);
++				if (n < 1 || n > 16 || c + 4 + usz{n} * 0x28 > size) continue;
++				bool good = true;
++				for (u32 i = 0; i < n && good; i++)
++				{
++					const u8* e = blk + c + 4 + i * 0x28;
++					const u32 w = rd32be(e + 16), hh = rd32be(e + 20);
++					good = w && hh && !(w & (w - 1)) && !(hh & (hh - 1)) && w <= 4096 && hh <= 4096;
++				}
++				if (!good) continue;
++				const u8* e = blk + c + 4;
++				out[h] = {rd32be(e + 16), rd32be(e + 20), rd32be(e + 24), rd32be(e + 32), rd32be(e + 36)};
++				break;
++			}
++			p += 8 + size;
++		}
++	}
++
++	vec3 qrot(const XrQuaternionf& q, vec3 v) { return rotate(q, v); }
++
++	bool load(restaurant& r, const std::string& usrdir, int pick)
++	{
++		r = {};
++		std::vector<u8> job;
++		if (!load_job(usrdir, job, r.error)) return false;
++		wad_reader w;
++		if (!w.open(usrdir + "Chef.wad")) { r.error = "Chef.wad not readable"; return false; }
++		const place_def& pd = places[pick % std::size(places)];
++		r.name = pd.name;
++		package pkg;
++		if (!pkg.read(w, pd.wad)) { r.error = "restaurant package not found"; return false; }
++
++		// Find the scene (the biggest model with many materials), the layout and the material files
++		std::span<const u8> scene, layout;
++		std::unordered_map<u32, tex_ref> mats;
++		for (const auto& [fh, e] : pkg.table)
++		{
++			const auto m = pkg.file(fh);
++			if (m.size() < 16) continue;
++			const u32 a = rd32be(&m[0]), b = rd32be(&m[4]);
++			if (a == 1 && b > 20 && b < 1000 && m.size() > scene.size()) scene = m;
++			else if (a == 1 && b == 0 && m.size() > 64 && (m[12] < 64 && ((m[13] >= 'A' && m[13] <= 'z') || (m[12] == 0 && m[14] >= 'A' && m[14] <= 'z'))) && m.size() > layout.size()) layout = m;
++			else if (a == 2) parse_materials(m, mats);
++		}
++		if (scene.empty() || layout.empty()) { r.error = "scene or layout not found"; return false; }
++
++		// Layout: name hash -> placement
++		std::unordered_map<u32, xform> where;
++		std::unordered_map<u32, std::string> names;
++		{
++			usz p = 12;
++			bool first = true;
++			while (p + 42 < layout.size())
++			{
++				u32 len;
++				if (first) { len = layout[p]; p += 1; first = false; }
++				else { len = u32{layout[p]} << 8 | layout[p + 1]; p += 2; }
++				if (!len || p + len + 40 > layout.size()) break;
++				const std::string nm(reinterpret_cast<const char*>(&layout[p]), len - 1);
++				p += len;
++				f32 v[10];
++				for (int k = 0; k < 10; k++) v[k] = rdf32be(&layout[p + k * 4]);
++				p += 40;
++				xform x;
++				x.pos = {v[0], v[1], v[2]};
++				x.rot = qnorm(XrQuaternionf{v[3], v[4], v[5], v[6]});
++				x.scale = {v[7], v[8], v[9]};
++				const u32 h = name_hash(nm);
++				where[h] = x;
++				names[h] = nm;
++			}
++		}
++
++		// Materials of the scene: their record's id (first 4 bytes) -> picture
++		// The node table: a count, 0xbe filler, then records whose bytes 0x20..0x2f are 0xab filler
++		usz n0 = 0;
++		u32 nnodes = 0;
++		for (usz q = 0x28; q + 0x80 < scene.size() && !n0; q += 4)
++		{
++			if (scene[q - 1] == 0xbe) continue;
++			bool be = true;
++			for (int k = 0; k < 12 && be; k++) be = scene[q + k] == 0xbe;
++			if (!be) continue;
++			const usz e = q + 12;
++			bool ab = true;
++			for (int k = 0x20; k < 0x30 && ab; k++) ab = scene[e + k] == 0xab;
++			const u32 cnt = rd32be(&scene[q - 4]);
++			if (ab && cnt > 0 && cnt < 5000 && e + usz{cnt} * 0x60 <= scene.size()) { n0 = e; nnodes = cnt; }
++		}
++		if (!n0) { r.error = "node table not found"; return false; }
++		// Material records (before the node table): ffffcd at +0x10, then 0xfc filler
++		std::unordered_map<u32, int> mat_index;   // record id -> index
++		std::vector<u32> mat_lib, mat_flags;
++		std::vector<u8> mat_alpha;
++		for (usz q = 0x28; q + 0x64 < n0; q += 4)
++		{
++			if (scene[q + 0x10] != 0xff || scene[q + 0x11] != 0xff || scene[q + 0x12] != 0xcd || scene[q + 0x15] != 0xfc || scene[q + 0x23] != 0xfc) continue;
++			mat_index[rd32be(&scene[q])] = static_cast<int>(mat_lib.size());
++			mat_flags.push_back(rd32be(&scene[q + 8]));
++			mat_lib.push_back(rd32be(&scene[q + 0x5c]));
++			mat_alpha.push_back(scene[q + 0x60]);
++		}
++		const u32 nmat = static_cast<u32>(mat_lib.size());
++		if (!nmat) { r.error = "no materials"; return false; }
++
++		// Pictures: the package that holds them (found by the first one's name)
++		std::unordered_map<u32, int> pic_of_image;
++		std::vector<tex_ref> want;
++		for (u32 i = 0; i < nmat; i++)
++		{
++			const auto it = mats.find(mat_lib[i]);
++			if (it == mats.end() || (it->second.fmt != 0x18 && it->second.fmt != 0x20)) continue;
++			if (!pic_of_image.count(it->second.image)) { pic_of_image[it->second.image] = static_cast<int>(want.size()); want.push_back(it->second); }
++		}
++		if (want.empty()) { r.error = "no pictures"; return false; }
++		{
++			// The package holding the most of them (a few may live in shared packages too)
++			std::vector<u32> files(want.size());
++			std::unordered_set<u32> wanted;
++			for (usz k = 0; k < want.size(); k++) { files[k] = crc_name(fmt::format("images/imgdat/%08x.imgdat.ps3", want[k].image)); wanted.insert(files[k]); }
++			u32 tw = 0;
++			usz best = 0;
++			std::unordered_map<u32, wad_entry> inner;
++			for (const auto& [wh, e] : w.table)
++			{
++				if (e.size < 0x100000 || !w.nested_table(wh, inner)) continue;
++				usz c = 0;
++				for (const auto& [fh, fe] : inner) c += wanted.count(fh);
++				if (c > best) { best = c; tw = wh; }
++			}
++			package tp;
++			if (!tw || !tp.read(w, tw)) { r.error = "picture package not found"; return false; }
++			r.pics.resize(want.size());
++			for (usz k = 0; k < want.size(); k++)
++			{
++				const auto& t = want[k];
++				const auto raw = tp.file(files[k]);
++				const usz need = usz{t.w} * t.h / (t.fmt == 0x18 ? 2 : 1);
++				if (raw.size() < need || t.w < 4 || t.h < 4) continue;
++				const usz start = raw.size() >= t.size && t.size >= need ? raw.size() - t.size : raw.size() - need;
++				auto& pic = r.pics[k];
++				pic.w = t.w; pic.h = t.h;
++				if (t.fmt == 0x18) decode_dxt1(raw.data() + start, t.w, t.h, pic.rgba);
++				else decode_dxt5(raw.data() + start, t.w, t.h, pic.rgba);
++			}
++		}
++
++		// Nodes and their mesh parts
++		struct node_t { u32 hash, parts; };
++		std::vector<node_t> nodes(nnodes);
++		for (u32 k = 0; k < nnodes; k++)
++		{
++			const u8* nd = &scene[n0 + k * 0x60];
++			nodes[k] = {rd32be(nd + 0x34), u32{nd[0x3c]} << 8 | nd[0x3d]};
++		}
++		// All segments in file order
++		struct seg_t { usz s; u32 nv, ni; };
++		std::vector<seg_t> segs;
++		for (usz s = pad16(n0 + usz{nnodes} * 0x60); s + 0x40 < scene.size(); s += 16)
++		{
++			if ((scene[s] & 0xf0) != 0x80 || (scene[s + 6] & 0xf0) != 0x30) continue;
++			const u32 nv = rd16be(&scene[s + 8]), ni = rd16be(&scene[s + 10]);
++			if (nv < 3 || nv > 8000 || ni % 3 || ni == 0 || ni > 60000) continue;
++			if (scene[s + 1] > 0x20 || scene[s + 6] != 0x30) continue;   // not a static segment header
++			segs.push_back({s, nv, ni});
++		}
++
++		static const char* skip_words[] = {"sphere", "sky", "exterior", "aofakery", "downgrade", "splats", "street", "sidewalk", "building"};
++		std::map<std::pair<int, u8>, std::vector<u32>> by_batch;   // (picture, blend) -> indices
++		usz si = 0;
++		int parts_bad = 0;
++		for (u32 k = 0; k < nnodes; k++)
++		{
++			const node_t& nd = nodes[k];
++			const auto wi = where.find(nd.hash);
++			bool skip = wi == where.end();
++			if (!skip)
++			{
++				std::string lower = names[nd.hash];
++				for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++				for (const char* sw : skip_words) if (lower.find(sw) != std::string::npos) skip = true;
++			}
++			for (u32 part = 0; part < nd.parts; part++, si += 2)
++			{
++				if (si >= segs.size()) break;
++				if (skip) continue;
++				const auto& sg = segs[si];
++				const usz s = sg.s;
++				// the index stream
++				const u32 isz = rd16be(&scene[s + 20]);
++				const u32 tris = sg.ni / 3;
++				std::vector<u16> ix;
++				usz st = 0;
++				for (usz q = s + 16; q + 8 < scene.size() && q < s + 0x2000; q += 16)
++				{
++					const u32 n = rd16be(&scene[q]), X = rd16be(&scene[q + 4]), bits = scene[q + 6];
++					if (bits > 16 || X == 0 || X > 4096) continue;
++					const usz tot = 8 + X + (tris * 2 + 7) / 8 + (usz{n} * bits + 7) / 8;
++					if (pad16(tot) != isz || n > sg.ni || q + isz > scene.size()) continue;
++					std::vector<u16> cand;
++					if (!edge_decompress(job, &scene[s], &scene[q], isz, sg.ni, cand)) continue;
++					u16 mx = 0;
++					for (u16 c : cand) mx = std::max(mx, c);
++					if (mx + 1u != sg.nv) continue;
++					ix = std::move(cand);
++					st = q;
++					break;
++				}
++				if (ix.empty()) { parts_bad++; continue; }
++				// material
++				if (s < 0x198) continue;
++				const auto mi = mat_index.find(rd32be(&scene[s - 0x198]));
++				if (mi == mat_index.end()) continue;
++				const int m = mi->second;
++				const auto ti = mats.find(mat_lib[m]);
++				if (ti == mats.end()) continue;
++				const auto pi = pic_of_image.find(ti->second.image);
++				if (pi == pic_of_image.end() || r.pics[pi->second].rgba.empty()) continue;
++				const u8 blend = (mat_flags[m] & 0x80) ? 3 : mat_alpha[m] == 1 ? 2 : ti->second.fmt == 0x20 ? 1 : 0;
++				// vertices
++				const usz po = st + isz;
++				const u32 attr_size = rd16be(&scene[s + 0x32]);
++				const u32 stride = attr_size / sg.nv;
++				const usz ao = po + pad16(usz{sg.nv} * 12);
++				if ((stride != 24 && stride != 36) || ao + usz{sg.nv} * stride > scene.size()) continue;
++				const xform& x = wi->second;
++				const u32 base = static_cast<u32>(r.v.size());
++				for (u32 i = 0; i < sg.nv; i++)
++				{
++					vec3 p{rdf32be(&scene[po + i * 12]), rdf32be(&scene[po + i * 12 + 4]), rdf32be(&scene[po + i * 12 + 8])};
++					p = {p.x * x.scale.x, p.y * x.scale.y, p.z * x.scale.z};
++					p = qrot(x.rot, p) + x.pos;
++					const u8* a = &scene[ao + i * stride + (stride == 36 ? 12 : 0)];
++					vert vv{};
++					vv.p[0] = p.x; vv.p[1] = p.y; vv.p[2] = p.z;
++					for (int c = 0; c < 4; c++) vv.c[c] = std::clamp(rdf32be(a + c * 4), 0.f, 1.f);
++					vv.uv[0] = rdf32be(a + 16); vv.uv[1] = rdf32be(a + 20);
++					r.v.push_back(vv);
++				}
++				auto& dst = by_batch[{pi->second, blend}];
++				for (u16 c : ix) dst.push_back(base + c);
++			}
++		}
++		// Opaque first, then cut-outs, then the see-through ones
++		for (u8 b = 0; b < 4; b++)
++			for (auto& [key, list] : by_batch)
++			{
++				if (key.second != b) continue;
++				batch bt;
++				bt.first = static_cast<u32>(r.idx.size());
++				bt.count = static_cast<u32>(list.size());
++				bt.tex = key.first;
++				bt.blend = b;
++				r.idx.insert(r.idx.end(), list.begin(), list.end());
++				r.batches.push_back(bt);
++			}
++		if (r.idx.empty()) { r.error = fmt::format("no geometry (%d parts not decoded)", parts_bad); return false; }
++		r.info = fmt::format("%u nodes, %u materials, %zu segments, %zu placed names, %d parts not decoded", nnodes, nmat, segs.size(), where.size(), parts_bad);
++
++		// Where to stand: inside (floor below, ceiling above), with the most free space around, then the board in
++		// the direction with the longest free view
++		{
++			// floor height: the most common height of upward-facing area
++			std::map<int, f32> up_area;
++			for (usz t = 0; t + 2 < r.idx.size(); t += 3)
++			{
++				const auto& A = r.v[r.idx[t]].p; const auto& B = r.v[r.idx[t + 1]].p; const auto& C = r.v[r.idx[t + 2]].p;
++				const vec3 n = cross(vec3{B[0] - A[0], B[1] - A[1], B[2] - A[2]}, vec3{C[0] - A[0], C[1] - A[1], C[2] - A[2]});
++				const f32 area = std::sqrt(dot(n, n)) * 0.5f;
++				if (area < 1e-4f || std::fabs(n.y) < 0.95f * std::sqrt(dot(n, n))) continue;
++				up_area[static_cast<int>(std::floor((A[1] + B[1] + C[1]) / 3.f * 10.f))] += area;
++			}
++			int floor_bin = 0;
++			f32 best = 0.f;
++			for (const auto& [b, a] : up_area) if (a > best && b < 30) { best = a; floor_bin = b; }
++			const f32 fy = floor_bin * 0.1f + 0.05f;
++			// grid over the geometry
++			f32 x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
++			for (const auto& vv : r.v) { x0 = std::min(x0, vv.p[0]); x1 = std::max(x1, vv.p[0]); z0 = std::min(z0, vv.p[2]); z1 = std::max(z1, vv.p[2]); }
++			constexpr f32 cell = 0.2f;
++			const int gw = std::clamp(static_cast<int>((x1 - x0) / cell) + 1, 1, 600), gh = std::clamp(static_cast<int>((z1 - z0) / cell) + 1, 1, 600);
++			std::vector<u8> occ(usz(gw) * gh, 0), flo(usz(gw) * gh, 0), roof(usz(gw) * gh, 0);
++			const auto mark = [&](std::vector<u8>& g, f32 x, f32 z)
++			{
++				const int i = static_cast<int>((x - x0) / cell), j = static_cast<int>((z - z0) / cell);
++				if (i >= 0 && j >= 0 && i < gw && j < gh) g[usz(j) * gw + i] = 1;
++			};
++			for (usz t = 0; t + 2 < r.idx.size(); t += 3)
++			{
++				const vec3 A{r.v[r.idx[t]].p[0], r.v[r.idx[t]].p[1], r.v[r.idx[t]].p[2]};
++				const vec3 B{r.v[r.idx[t + 1]].p[0], r.v[r.idx[t + 1]].p[1], r.v[r.idx[t + 1]].p[2]};
++				const vec3 C{r.v[r.idx[t + 2]].p[0], r.v[r.idx[t + 2]].p[1], r.v[r.idx[t + 2]].p[2]};
++				const vec3 n = cross(B - A, C - A);
++				const f32 nl = std::sqrt(dot(n, n));
++				if (nl < 1e-6f) continue;
++				const f32 ny = n.y / nl;
++				// sample the triangle every ~10 cm
++				const f32 e = std::max({std::sqrt(dot(B - A, B - A)), std::sqrt(dot(C - A, C - A)), std::sqrt(dot(C - B, C - B))});
++				const int steps = std::clamp(static_cast<int>(e / 0.1f) + 1, 1, 400);
++				for (int a = 0; a <= steps; a++)
++					for (int b = 0; a + b <= steps; b++)
++					{
++						const f32 u = static_cast<f32>(a) / steps, vv = static_cast<f32>(b) / steps;
++						const vec3 p = A + (B - A) * u + (C - A) * vv;
++						const f32 h = p.y - fy;
++						if (ny > 0.9f && std::fabs(h) < 0.25f) mark(flo, p.x, p.z);
++						else if (ny < -0.5f && h > 2.0f && h < 8.f) mark(roof, p.x, p.z);
++						else if (h > 0.12f && h < 1.9f) mark(occ, p.x, p.z);
++					}
++			}
++			// free = inside and not occupied; clearance by repeated erosion
++			std::vector<int> dist(usz(gw) * gh, 0);
++			for (usz i = 0; i < dist.size(); i++) dist[i] = (flo[i] && roof[i] && !occ[i]) ? 1000 : 0;
++			for (int pass = 0; pass < 2; pass++)
++				for (int jj = 0; jj < gh; jj++)
++					for (int ii = 0; ii < gw; ii++)
++					{
++						const int i = pass ? gw - 1 - ii : ii, j = pass ? gh - 1 - jj : jj;
++						int& d = dist[usz(j) * gw + i];
++						if (!d) continue;
++						const int di = pass ? 1 : -1;
++						const int a = (i + di >= 0 && i + di < gw) ? dist[usz(j) * gw + i + di] : 0;
++						const int b = (j + di >= 0 && j + di < gh) ? dist[usz(j + di) * gw + i] : 0;
++						d = std::min(d, std::min(a, b) + 1);
++					}
++			// The restaurant's busy middle (the median of all its detail): stand within 10 m of it, never on a porch outside
++			std::vector<f32> xs, zs;
++			xs.reserve(r.v.size()); zs.reserve(r.v.size());
++			for (const auto& vv : r.v) { xs.push_back(vv.p[0]); zs.push_back(vv.p[2]); }
++			std::nth_element(xs.begin(), xs.begin() + xs.size() / 2, xs.end());
++			std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
++			const f32 mx = xs[xs.size() / 2], mz = zs[zs.size() / 2];
++			int bi = -1, bd = 0;
++			for (f32 radius : {10.f, 1000.f})
++			{
++				for (int j = 0; j < gh; j++)
++					for (int i = 0; i < gw; i++)
++					{
++						const f32 cx = x0 + (i + 0.5f) * cell - mx, cz = z0 + (j + 0.5f) * cell - mz;
++						if (cx * cx + cz * cz > radius * radius) continue;
++						if (dist[usz(j) * gw + i] > bd) { bd = dist[usz(j) * gw + i]; bi = j * gw + i; }
++					}
++				if (bi >= 0) break;
++			}
++			if (bi < 0) { r.error = "no free floor"; return false; }
++			// The longest free line of sight from a cell (16 directions)
++			const auto view = [&](int cidx, f32& facing)
++			{
++				const f32 sx = x0 + (cidx % gw + 0.5f) * cell, sz = z0 + (cidx / gw + 0.5f) * cell;
++				f32 best_len = 0.f;
++				for (int k = 0; k < 16; k++)
++				{
++					const f32 a = k * 6.2831853f / 16.f;
++					const f32 dx = -std::sin(a), dz = -std::cos(a);
++					f32 len = 0.f;
++					for (; len < 12.f; len += cell * 0.5f)
++					{
++						const int i = static_cast<int>((sx + dx * len - x0) / cell), j = static_cast<int>((sz + dz * len - z0) / cell);
++						if (i < 0 || j < 0 || i >= gw || j >= gh) break;
++						const usz c = usz(j) * gw + i;
++						if (occ[c] || !flo[c]) break;
++					}
++					if (len > best_len) { best_len = len; facing = a; }
++				}
++				return best_len;
++			};
++			// Among the roomy spots near the middle, the one with the best view for the board
++			f32 best_score = -1.f;
++			int pick = bi;
++			const int need = std::max(2, bd * 6 / 10);
++			for (int j = 0; j < gh; j += 2)
++				for (int i = 0; i < gw; i += 2)
++				{
++					const int d = dist[usz(j) * gw + i];
++					if (d < need) continue;
++					const f32 cx = x0 + (i + 0.5f) * cell - mx, cz = z0 + (j + 0.5f) * cell - mz;
++					if (cx * cx + cz * cz > 100.f) continue;
++					f32 fa = 0.f;
++					const f32 score = std::min(view(j * gw + i, fa), 8.f) + 2.f * d * cell;
++					if (score > best_score) { best_score = score; pick = j * gw + i; }
++				}
++			r.spawn = {x0 + (pick % gw + 0.5f) * cell, fy, z0 + (pick / gw + 0.5f) * cell};
++			r.board_dist = view(pick, r.facing);
++		}
++		r.ok = true;
++		return true;
 +	}
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_ui.inl b/rpcs3/Emu/Io/OrderUpVR_ui.inl
