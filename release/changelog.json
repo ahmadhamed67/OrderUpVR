@@ -1,5 +1,28 @@
 [
   {
+    "version": "0.13.4",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Switching between Stable and Experimental no longer downloads again: each keeps its own copy.",
+      "The launcher window can be resized.",
+      "Collect logs only shows a message (no folder window).",
+      "New Mods switch on the home screen (Experimental): Unlock all restaurants opens every restaurant in Quick Play and on the map, without changing your save.",
+      "Choose your menu chef (male or female) in Settings; a career still uses its own chef.",
+      "The game's HUD now really goes to its VR places: the tickets rail above the counter, side panels, cards and menus upright in front of you, meters at the food (the one big tilted screen is gone).",
+      "The right stick no longer moves you up and down; left stick click recenters you at the right height.",
+      "Calmer walking: a smaller step, the knee bends and the foot no longer kicks up.",
+      "A warm wooden floor in the diner."
+    ],
+    "notes": [
+      "Launcher 1.17.0: side-by-side installs (emu for Stable, emu-experimental for Experimental; an existing Experimental install moves over), resizable window (min 960x640), Mods panel with switches (orderupvr_mods.txt), menu chef setting, logs without Explorer.",
+      "Unlock all restaurants: the game's 'is this restaurant locked?' check (0x000c00a4, 13 callers incl. the IsRestaurantLocked script binding) is patched to answer 'no' when the program loads (only for the EU executable hash); the save data is untouched.",
+      "HUD layout: the logs showed the game's HUD uses 1280x736 pixels with y down and many quads reach past the edges; positions are now taken from the part on screen, so the routing works. Large pieces (cards, menus, pause) go to an upright front panel at eye level; the left-hand clipboard is gone.",
+      "Controls (true VR): the right stick only turns; the old height offset is reset.",
+      "Menu chef from the settings until the game shows a career's chef."
+    ]
+  },
+  {
     "version": "0.13.3",
     "channel": "beta",
     "date": "2026-11-18",

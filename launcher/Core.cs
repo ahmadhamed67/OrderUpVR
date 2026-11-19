@@ -62,6 +62,9 @@ namespace OrderUpVR
         public int HowToSeen { get; set; }
         public bool ShowGameArt { get; set; }
         public string Channel { get; set; }          // release channel the player picked: "stable" (default) or "beta"
+        public Dictionary<string, string> Installs { get; set; }   // each channel's installed mod version (they live side by side)
+        public bool ModsEnabled { get; set; }                       // the mods master switch (Experimental)
+        public Dictionary<string, bool> Mods { get; set; }          // each mod on or off
         public string InstalledChannel { get; set; } // channel of the installed mod (null: installed before channels existed = beta)      // the hero shows the game's own artwork from the player's game folder
         public Dictionary<string, string> Vr { get; set; }   // VR comfort and body choices (written to the mod as orderupvr_comfort.txt)           // revision of the controls guide last shown (shown again when controls change)
 
@@ -104,7 +107,33 @@ namespace OrderUpVR
         }
         public static string ChannelOf(Settings s) { return s.Channel == "beta" ? "beta" : "stable"; }
 
-        public static string EmuDir(Settings s) { return Path.Combine(s.InstallDir, "emu"); }
+        // Each channel has its own copy of the mod, so switching back and forth never downloads again
+        public static string EmuDir(Settings s) { return EmuDir(s, ChannelOf(s)); }
+        public static string EmuDir(Settings s, string channel) { return Path.Combine(s.InstallDir, channel == "beta" ? "emu-experimental" : "emu"); }
+
+        // After loading settings or switching channel: the installed version shown is the picked channel's
+        public static void SyncChannel(Settings s)
+        {
+            if (s.Installs == null)
+            {
+                s.Installs = new Dictionary<string, string>();
+                if (!string.IsNullOrEmpty(s.InstalledVersion))
+                {
+                    // Before side-by-side installs there was one copy in "emu"; an Experimental one moves to its own folder
+                    string ch = s.InstalledChannel ?? "beta";
+                    if (ch == "beta" && !string.IsNullOrEmpty(s.InstallDir))
+                    {
+                        string from = Path.Combine(s.InstallDir, "emu"), to = Path.Combine(s.InstallDir, "emu-experimental");
+                        try { if (Directory.Exists(from) && !Directory.Exists(to)) Directory.Move(from, to); } catch { }
+                    }
+                    s.Installs[ch] = s.InstalledVersion;
+                }
+            }
+            string cur = ChannelOf(s);
+            string v;
+            s.InstalledVersion = s.Installs.TryGetValue(cur, out v) ? v : null;
+            s.InstalledChannel = cur;
+        }
         public static string LauncherPath(Settings s) { return Path.Combine(s.InstallDir, "OrderUpVR.exe"); }
 
         public static bool IsRpcs3Dir(string p)
@@ -269,6 +298,8 @@ namespace OrderUpVR
                 }
 
                 s.InstalledVersion = version;
+                if (s.Installs == null) s.Installs = new Dictionary<string, string>();
+                s.Installs[ChannelOf(s)] = version;
                 s.Uninstalled = false;
                 s.Save();
                 try { File.WriteAllText(Path.Combine(s.InstallDir, MarkerName), "Order Up VR install folder\r\n"); } catch { }
@@ -406,7 +437,12 @@ namespace OrderUpVR
         // Only files the launcher created are deleted: the user's own RPCS3, firmware, saves and game are never touched.
         public static void Uninstall(Settings s, bool keepData)
         {
-            string emu = EmuDir(s);
+            foreach (string ch in new[] { "stable", "beta" }) UninstallCopy(EmuDir(s, ch), keepData);
+            FinishUninstall(s, keepData);
+        }
+
+        static void UninstallCopy(string emu, bool keepData)
+        {
             RemoveLinks(emu);
             if (Directory.Exists(emu))
             {
@@ -423,7 +459,10 @@ namespace OrderUpVR
                 foreach (string f in Directory.GetFiles(emu)) File.Delete(f);
                 if (!keepData) Directory.Delete(emu, false);
             }
+        }
 
+        static void FinishUninstall(Settings s, bool keepData)
+        {
             try { File.Delete(DesktopLink); } catch { }
             try { File.Delete(StartLink); } catch { }
             UnregisterApp();
@@ -433,6 +472,7 @@ namespace OrderUpVR
             {
                 s.Uninstalled = true;
                 s.InstalledVersion = null;
+                s.Installs = new Dictionary<string, string>();
                 s.Save();
             }
             else

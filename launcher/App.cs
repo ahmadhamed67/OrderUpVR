@@ -62,14 +62,15 @@ namespace OrderUpVR
             Title = "Order Up VR";
             Width = 1080; Height = 700;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            ResizeMode = ResizeMode.CanMinimize;
+            ResizeMode = ResizeMode.CanResize;
+            MinWidth = 960; MinHeight = 640;
             Background = new SolidColorBrush(Color.FromRgb(0x0E, 0x10, 0x15));
             UseLayoutRounding = true;
             TaskbarItemInfo = new TaskbarItemInfo();
 
             var chrome = new WindowChrome();
             chrome.CaptionHeight = 46;
-            chrome.ResizeBorderThickness = new Thickness(0);
+            chrome.ResizeBorderThickness = new Thickness(6);
             chrome.GlassFrameThickness = new Thickness(0, 0, 0, 1);
             chrome.CornerRadius = new CornerRadius(0);
             chrome.UseAeroCaptionButtons = false;
@@ -117,7 +118,8 @@ namespace OrderUpVR
             };
             steps.Add(delegate { win.manifest = Core.FetchManifest(manifestPath); win.manifest.version = "0.11.0"; win.manifest.changelog[0].version = "0.11.0"; win.RenderChangelog(); win.RefreshAll(); });
             steps.Add(delegate { shot("1_home"); win.s.ShowGameArt = true; win.ApplyGameArt(false); });
-            steps.Add(delegate { shot("2_home_art"); win.ShowWhatsNew(); });
+            steps.Add(delegate { shot("2_home_art"); win.s.Channel = "beta"; win.s.ModsEnabled = true; win.RenderHeroChannel(); win.ShowMods(); });
+            steps.Add(delegate { shot("2b_mods"); win.CloseDialog(); win.ShowWhatsNew(); });
             steps.Add(delegate { shot("3_whatsnew"); win.CloseDialog(); win.ShowHowTo(); });
             steps.Add(delegate { shot("4_help1"); win.ShowHelpSlide(1); });
             steps.Add(delegate { shot("5_help2"); win.ShowHelpSlide(3); });
@@ -574,6 +576,7 @@ namespace OrderUpVR
             new[] { "You and the view", "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "on", "On", "off", "Off" },
             new[] { "You and the view", "huddist", "Order tickets distance", "How far the game's tickets and timers float (never inside the counter)", "1.5", "1.0", "Near", "1.5", "Normal", "2.0", "Far" },
             new[] { "You and the view", "cutscenes", "Cutscenes", "Big screen: cutscenes and camera fly-throughs play on the diner screen", "screen", "screen", "Big screen", "3d", "Inside the game" },
+            new[] { "You and the view", "menuchef", "Menu chef", "Your chef in the menus and the diner (a career uses its own chef)", "male", "male", "Male", "female", "Female" },
             new[] { "You and the view", "lipsync", "Lip sync", "Your chef's mouth moves when you talk (your PC's default microphone; nothing is recorded)", "on", "on", "On", "off", "Off" },
             new[] { "In the kitchen", "kitchen", "Kitchen", "Room: the kitchen stays still around you, every station where it really is", "room", "room", "Room (true VR)", "follow", "Follows the camera" },
             new[] { "In the kitchen", "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there", "on", "on", "On", "off", "Off" },
@@ -1377,6 +1380,7 @@ namespace OrderUpVR
             psi.EnvironmentVariables["ORDERUP_VR_MODVERSION"] = s.InstalledVersion ?? "";
             psi.EnvironmentVariables["ORDERUP_VR_CHANNEL"] = s.InstalledChannel ?? "stable";
             WriteVrFile();
+            WriteModsFile();
             try
             {
                 // The installed build's channel, for the mod (Stable keeps true VR locked)
@@ -1669,13 +1673,94 @@ namespace OrderUpVR
                 string zip = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OrderUpVR_logs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".zip");
                 ZipFile.CreateFromDirectory(tmp, zip);
                 Directory.Delete(tmp, true);
-                ShowToast("Logs saved to your Desktop as " + System.IO.Path.GetFileName(zip) + ". No passwords or personal files are included.", true);
-                try { Process.Start("explorer.exe", "/select,\"" + zip + "\""); } catch { }
+                ShowToast("Logs saved to your Desktop: " + System.IO.Path.GetFileName(zip) + " (no passwords or personal files).", true);
             }
             catch (Exception ex) { ShowToast("Could not collect logs: " + ex.Message, false); }
         }
 
         // ------------------------------------------------------------------ settings page
+        // ------------------------------------------------------------------ mods (Experimental)
+        static readonly string[][] ModList =
+        {
+            new[] { "unlock_restaurants", "Unlock all restaurants", "Every restaurant is open in Quick Play and on the map. Your save is not changed: switch it off and they are locked again." },
+        };
+
+        bool ModOn(string id) { bool v; return s.Mods != null && s.Mods.TryGetValue(id, out v) && v; }
+
+        void WriteModsFile()
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(Core.EmuDir(s), "config");
+                if (!Directory.Exists(dir)) return;
+                bool on = Core.ChannelOf(s) == "beta" && s.ModsEnabled;
+                var sb = new System.Text.StringBuilder();
+                sb.Append("enabled=").Append(on ? "on" : "off").AppendLine();
+                foreach (var m in ModList) sb.Append(m[0]).Append('=').Append(on && ModOn(m[0]) ? "on" : "off").AppendLine();
+                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_mods.txt"), sb.ToString());
+            }
+            catch { }
+        }
+
+        // An iPhone-style switch
+        Border MakeSwitch(bool on, Action toggle)
+        {
+            var track = new Border(); track.Width = 44; track.Height = 24; track.CornerRadius = new CornerRadius(12); track.Cursor = Cursors.Hand;
+            track.Background = on ? (Brush)new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x97)) : new SolidColorBrush(Color.FromRgb(0x3A, 0x40, 0x4C));
+            var knob = new Ellipse(); knob.Width = knob.Height = 18; knob.Fill = Brushes.White; knob.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left; knob.Margin = new Thickness(3, 0, 3, 0);
+            track.Child = knob;
+            track.MouseLeftButtonUp += delegate { toggle(); };
+            return track;
+        }
+
+        void RenderHeroMods()
+        {
+            var host = Get<StackPanel>("HeroChannel");
+            if (host == null || Core.ChannelOf(s) != "beta") return;
+            var row = new Border(); row.Margin = new Thickness(0, 12, 0, 0); row.CornerRadius = new CornerRadius(12); row.Padding = new Thickness(12, 6, 8, 6);
+            row.Background = new SolidColorBrush(Color.FromArgb(0xD0, 0x14, 0x17, 0x20)); row.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x33, 0x3E)); row.BorderThickness = new Thickness(1);
+            row.HorizontalAlignment = HorizontalAlignment.Right;
+            var sp = new StackPanel(); sp.Orientation = Orientation.Horizontal;
+            var label = new TextBlock(); label.Text = "Mods  ›"; label.Foreground = TextBrush; label.FontWeight = FontWeights.SemiBold; label.FontSize = 13; label.VerticalAlignment = VerticalAlignment.Center; label.Margin = new Thickness(0, 0, 12, 0); label.Cursor = Cursors.Hand;
+            label.ToolTip = "See the mods";
+            label.MouseLeftButtonUp += delegate { ShowMods(); };
+            sp.Children.Add(label);
+            sp.Children.Add(MakeSwitch(s.ModsEnabled, delegate { s.ModsEnabled = !s.ModsEnabled; s.Save(); WriteModsFile(); RenderHeroChannel(); ShowToast(s.ModsEnabled ? "Mods on. They apply the next time the game starts." : "Mods off.", true); }));
+            row.Child = sp;
+            host.Children.Add(row);
+        }
+
+        void ShowMods()
+        {
+            ShowDialog("Mods", "Extras for the Experimental version. They apply the next time the game starts." + (s.ModsEnabled ? "" : " The Mods switch on the home screen is off, so none of them are active."), null, false, Btn("Done", null));
+            var more = Get<StackPanel>("DialogMore");
+            more.Children.Clear();
+            foreach (var m in ModList)
+            {
+                var id = m[0];
+                var g = new Grid(); g.Margin = new Thickness(0, 6, 0, 10);
+                g.ColumnDefinitions.Add(new ColumnDefinition());
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var texts = new StackPanel();
+                var t = new TextBlock(); t.Text = m[1]; t.Foreground = Brushes.White; t.FontWeight = FontWeights.SemiBold; t.FontSize = 14;
+                var h = new TextBlock(); h.Text = m[2]; h.Foreground = DimBrush; h.FontSize = 12; h.TextWrapping = TextWrapping.Wrap; h.Margin = new Thickness(0, 2, 14, 0);
+                texts.Children.Add(t); texts.Children.Add(h);
+                Border sw = null;
+                Action toggle = null;
+                toggle = delegate
+                {
+                    if (s.Mods == null) s.Mods = new Dictionary<string, bool>();
+                    s.Mods[id] = !ModOn(id); s.Save(); WriteModsFile();
+                    var fresh = MakeSwitch(ModOn(id), toggle); Grid.SetColumn(fresh, 1); fresh.VerticalAlignment = VerticalAlignment.Center;
+                    g.Children.Remove(sw); sw = fresh; g.Children.Add(sw);
+                };
+                sw = MakeSwitch(ModOn(id), toggle); Grid.SetColumn(sw, 1); sw.VerticalAlignment = VerticalAlignment.Center;
+                g.Children.Add(texts); g.Children.Add(sw);
+                more.Children.Add(g);
+            }
+            Get<ScrollViewer>("DialogMoreScroll").Visibility = Visibility.Visible;
+        }
+
         // Release channel: Stable (dependable) or Experimental (internally "beta": newest, updated constantly)
         static string ChannelName(string ch) { return ch == "beta" ? "Experimental" : "Stable"; }
 
@@ -1703,7 +1788,9 @@ namespace OrderUpVR
         void SwitchChannel(string val)
         {
             if (val == Core.ChannelOf(s) || busy || game != null) { if (game != null) ShowToast("Close the game first to switch versions.", false); return; }
-            s.Channel = val; s.Save();
+            s.Channel = val;
+            Core.SyncChannel(s);   // the other channel's copy, if it was installed before: no download
+            s.Save();
             BuildChannelRows();
             RenderHeroChannel();
             manifest = null;
@@ -1720,6 +1807,7 @@ namespace OrderUpVR
             var cap = new TextBlock(); cap.Text = "VERSION"; cap.FontSize = 10.5; cap.FontWeight = FontWeights.Bold; cap.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC5, 0x8A)); cap.Margin = new Thickness(4, 0, 0, 6); cap.HorizontalAlignment = HorizontalAlignment.Right;
             host.Children.Add(cap);
             host.Children.Add(MakeChannelSwitch());
+            RenderHeroMods();
             if (Core.ChannelOf(s) == "beta")
             {
                 var w = new TextBlock(); w.Text = "⚠ Updated constantly, may break"; w.FontSize = 11.5; w.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8F, 0xAB)); w.Margin = new Thickness(0, 6, 4, 0); w.HorizontalAlignment = HorizontalAlignment.Right;
@@ -1908,6 +1996,7 @@ namespace OrderUpVR
             }
 
             Settings s = Settings.Load();
+            if (s != null) { Core.SyncChannel(s); s.Save(); }
             bool installed = s != null && !s.Uninstalled && !string.IsNullOrEmpty(s.InstallDir) && File.Exists(Core.LauncherPath(s));
             bool uninstall = Array.IndexOf(args, "--uninstall") >= 0;
 
