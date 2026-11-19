@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.14.1",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Inside the game, the order tickets hang from a steel ticket rail.",
+      "The small side panels stand on poles, and cards and menus sit in a wooden menu board on an easel."
+    ],
+    "notes": [
+      "HUD props (body layer, true VR only, around each panel and never over it): rail bar, shelf and ceiling rods for the tickets panel; dark frames on a pole and foot for the side panels; a wooden frame, chalk tray and easel legs for the front panel, shown while that panel has content.",
+      "docs/VR_AUDIT.md: restaurant file format and the plan for rebuilding the menus from the game's UI scripts."
+    ]
+  },
+  {
     "version": "0.14.0",
     "channel": "beta",
     "date": "2026-11-19",

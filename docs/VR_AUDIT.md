@@ -71,3 +71,29 @@ drives that single pointer (hands mode), so reaching for an item and holding GRI
 3. Stations and plates get mod-drawn highlight volumes; releasing inside one calls the game's drop.
 4. A wrong drop shows a short message where you dropped it.
 5. The tickets become paper objects on the rail (read from the game's order list), touched to open their steps.
+
+## Restaurant files (lobby, 0.14.0)
+
+Each restaurant package in Chef.wad (diner cca045da, mexican 2d1cd440, italian b95ae814, worldclass baa69b86,
+asian 906a2b6d, fastfood 4a13fc83, drive-thru 8c524289, final stage 6ce6f2f7) holds:
+
+- **Scene model** (`u32 1, u32 materials`): material records (variable size; found by `ff ff cd` at +0x10 and 0xfc
+  filler; +8 flags, +0x5c material-file hash, +0x60 = 1 for see-through), node table (count, 12 x 0xbe, then 0x60-byte
+  records: local bounds, name hash `~crc32(lowercase name)` at +0x34, part count at +0x3c), then the parts. Each part is
+  two Edge segments (drawn + shadow copy). Segment header: flags `81 0x 00 06 00 ff 30 00`, vertex/index counts at +8/+10,
+  index stream size at +20, position block size at +0x20, attribute block size at +0x32 (24 bytes per vertex = RGBA + UV,
+  36 = normal + RGBA + UV). The part's material record id sits 0x198 bytes before its segment.
+- **Layout** (`u32 1, u32 0, u32 count`): name (first length u8, then u16), position, quaternion (x y z w), scale.
+- **Material files** (`u32 2, u32 count`): per material, its pictures: width, height, format (0x18 DXT1, 0x20 DXT5),
+  mip count, image id, byte size. Pictures: `images/imgdat/<id>.imgdat.ps3` in a separate picture package.
+- **Scene script** `models/scenes/<name>/<name>.csl` (FITG/MLSC bytecode): NodeProps for gameplay nodes (cameras,
+  seats, paths, triggers). Not needed for the lobby.
+
+## Menus as VR objects: next steps
+
+Done (0.14.1): the HUD panels have physical housings in true VR (steel ticket rail, side stands, a wooden menu board
+on an easel). The panels themselves are still the game's own HUD pixels mapped onto them.
+
+Next: the UI art (ticket cards, meters, menu buttons) lives in the same packages as `images/imgdat` pictures referenced
+by the UI csl scripts; reading those scripts (same bytecode as the scene script, see the lobby's interpreter notes)
+gives the button layouts and the actions they call, so menus can be rebuilt as 3D buttons that send the same input.

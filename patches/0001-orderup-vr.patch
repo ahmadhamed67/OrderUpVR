@@ -524,10 +524,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..5c9706a54
+index 000000000..ee09ee109
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7195 @@
+@@ -0,0 +1,7282 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -2638,6 +2638,7 @@ index 000000000..5c9706a54
 +
 +		void chef_shutdown();
 +		void lobby_shutdown();
++		void draw_hud_props(xr_state& xr);
 +
 +		void gfx_destroy()
 +		{
@@ -3946,6 +3947,7 @@ index 000000000..5c9706a54
 +								}
 +							}
 +							draw_exit_button(xr);
++							draw_hud_props(xr);
 +						}
 +						release(g.body_sc[e]);
 +					}
@@ -4152,6 +4154,91 @@ index 000000000..5c9706a54
 +			face({0.f, -0.05f, -D}, eye, out[3]);
 +			out[3].hw = W; out[3].hh = H;
 +			(void)xr;
++		}
++
++		// The HUD panels as things in the kitchen: a steel ticket rail the order tickets hang from, little stands for
++		// the side panels, and a wooden menu board on an easel for cards and menus. Only around each panel (the body
++		// layer is drawn over the game's picture, so nothing may cover the panel itself).
++		void draw_hud_props(xr_state& xr)
++		{
++			if (!xr.live3d || !xr.mode3d) return;
++			cam_info c;
++			{
++				std::lock_guard lock(g_state_mutex);
++				c = g_cam;
++			}
++			if (!c.valid) return;
++			hud_panel pn[4];
++			layout_hud(xr, pn);
++			const f32 floor_rel = (xr.floor_known ? xr.floor_y : xr.last_head.y - 1.6f) - xr.player_pos.y;
++			const vec3 steel{0.74f, 0.76f, 0.79f}, dark{0.16f, 0.16f, 0.18f}, wood{0.45f, 0.28f, 0.16f};
++			for (int k = 0; k < 4; k++)
++			{
++				const hud_panel& p = pn[k];
++				if (!p.on || p.hw <= 0.f || p.hh <= 0.f) continue;
++				// panel corners and axes in your room
++				const vec3 P = from_player(xr, p.P);
++				const vec3 A = rotate(yaw_q(xr.player_yaw), p.A), B = rotate(yaw_q(xr.player_yaw), p.B);
++				const vec3 N = normalize(cross(A, B));
++				const auto bar = [&](vec3 a, vec3 b, f32 r, vec3 col) { draw_limb(xr, a, b, r, r, col); };
++				const auto slab = [&](vec3 ctr, f32 w, f32 h, f32 d, vec3 col) { draw_boxo(xr, ctr, A, B, N, {w, h, d}, col); };
++				if (k == 0)
++				{
++					// Ticket rail: a steel bar along the top of the tickets, hung from the ceiling on two rods
++					if (!c.hud_seen[0] && !c.hud_seen[1] && !c.hud_seen[2]) continue;
++					const vec3 top = P + B * (p.hh + 0.025f);
++					bar(top - A * (p.hw + 0.06f), top + A * (p.hw + 0.06f), 0.014f, steel);
++					slab(top + B * 0.012f - N * 0.01f, p.hw * 2.f + 0.14f, 0.012f, 0.05f, steel);
++					for (f32 s : {-1.f, 1.f})
++					{
++						const vec3 end = top + A * (s * (p.hw + 0.02f));
++						bar(end, end + vec3{0.f, 0.6f, 0.f}, 0.008f, dark);
++						draw_ball(xr, top + A * (s * (p.hw + 0.07f)), 0.02f, steel);
++					}
++				}
++				else if (k == 1 || k == 2)
++				{
++					// Side panels: a slim dark frame on a pole with a round foot
++					if (!c.hud_seen[k]) continue;
++					const f32 t = 0.018f;
++					slab(P + B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.02f, dark);
++					slab(P - B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.02f, dark);
++					slab(P - A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.02f, dark);
++					slab(P + A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.02f, dark);
++					const vec3 foot = from_player(xr, vec3{p.P.x, floor_rel, p.P.z});
++					const vec3 under = P - B * (p.hh + t);
++					if (under.y > foot.y + 0.05f)
++					{
++						bar(under, foot, 0.012f, steel);
++						draw_ellipsoid(xr, foot, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}, {0.14f, 0.012f, 0.14f}, dark);
++					}
++				}
++				else
++				{
++					// Cards and menus: a wooden board frame on an easel
++					if (!c.hud_seen[3]) continue;
++					const f32 t = 0.05f;
++					slab(P + B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.035f, wood);
++					slab(P - B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.035f, wood);
++					slab(P - A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.035f, wood);
++					slab(P + A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.035f, wood);
++					// chalk tray under the board
++					slab(P - B * (p.hh + t + 0.015f) + N * 0.03f, p.hw * 2.f, 0.02f, 0.07f, wood);
++					// easel legs to the floor
++					const f32 fy = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.6f;
++					for (f32 s : {-1.f, 1.f})
++					{
++						const vec3 from = P - B * (p.hh + t) + A * (s * (p.hw * 0.8f));
++						vec3 to = from + A * (s * 0.12f) + N * 0.15f;
++						to.y = fy;
++						if (from.y > fy + 0.1f) bar(from, to, 0.016f, wood);
++					}
++					const vec3 back_top = P + B * (p.hh * 0.6f) - N * 0.04f;
++					vec3 back_foot = back_top - N * 0.45f;
++					back_foot.y = fy;
++					if (back_top.y > fy + 0.1f) bar(back_top, back_foot, 0.014f, wood);
++				}
++			}
 +		}
 +
 +		// Pointing at a HUD panel: where the ray meets it, in the game's screen units (-1..1, y up)
