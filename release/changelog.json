@@ -1,5 +1,27 @@
 [
   {
+    "version": "0.13.5",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Menus and cards stay together on one upright panel in front of you, so Quit and the other buttons are where you see them.",
+      "Doneness meters and flip icons are small again and sit over the food.",
+      "Seated: your height in the kitchen is between the game camera's height and your own, and recentring no longer jumps around during camera cuts.",
+      "The game draws more above you (ceilings and roofs).",
+      "An EXIT sign in the diner: hold the TRIGGER on it to close the game.",
+      "The launcher says what the game is really doing, and 'closing' while it closes, instead of counting seconds.",
+      "Logs: only in Experimental, and much more detailed (what you did, four times a second, and what you pointed at on every press)."
+    ],
+    "notes": [
+      "HUD: when a card or menu was on screen last frame, every HUD draw goes to the front panel (whole screen mapping), so menus are no longer split across panels; small centre pieces are placed over the food at the scene depth and shrunk by the natural/widened lens ratio around their own centre.",
+      "Wide view up to 110 degrees tall.",
+      "Recenter: seated places the camera halfway between the game camera height and your seated eye height above your floor; auto recentre only after the camera is still (20 frames), not in a cutscene, at most every 4 s.",
+      "Exit: the diner's EXIT card (hold TRIGGER 1.2 s) quits RPCS3.",
+      "Status file written every frame loop (also with the headset off); 'paused' replaced by 'a menu is open'.",
+      "Experimental logs: log/orderup_track.log (4 per second: view, head, both hands, grip/trigger, pointer, which HUD panel, HUD regions seen, scale, depths) with EVENT lines for every grip/trigger press; draw tables every 5 s. Collect logs only on Experimental."
+    ]
+  },
+  {
     "version": "0.13.4",
     "channel": "beta",
     "date": "2026-11-19",

@@ -524,10 +524,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..f613518b8
+index 000000000..91bb51fb5
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,6538 @@
+@@ -0,0 +1,6684 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -768,6 +768,7 @@ index 000000000..f613518b8
 +			bool cinema = true;  // cutscenes and camera fly-throughs play on the big screen
 +			bool wide = true;    // widen the game's field of view inside the game (the game draws what is around you)
 +			hud_panel panels[4]; // the VR HUD layout (player frame, metres)
++			bool deep_log = false; // Experimental: detailed logs (draw tables every 5 s)
 +			bool fixed_unit = false;   // the player set a world scale by hand: no automatic scale
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
@@ -1095,6 +1096,9 @@ index 000000000..f613518b8
 +			} comfort;
 +			u64 input_tick = 0;       // last button or trigger press (camera moves right after it are yours)
 +			u32 seen_place_id = 0;    // the last kitchen the player was seated in
++			u64 last_auto_recentre = 0;
++			int ptr_panel = -1;       // the HUD panel the pointer is on (-1: the 3D scene / the big screen)
++			bool prev_press[4]{};     // grip and trigger of both hands last frame (events in the log)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
 +
 +			// Kitchen stations: turn your head to the next station and the game moves there
@@ -1139,6 +1143,14 @@ index 000000000..f613518b8
 +			bool chooser_bgra = false, chooser_has = false;
 +			vec3 chooser_pos{};
 +			f32 chooser_yaw = 0.f;
++			// The diner's EXIT sign: hold the TRIGGER on it to close the game
++			XrSwapchain exit_sc = XR_NULL_HANDLE;
++			std::vector<XrSwapchainImageD3D11KHR> exit_images;
++			bool exit_bgra = false, exit_has = false, exit_hover = false, exit_done = false;
++			std::wstring exit_sig;
++			u64 exit_hold_since = 0;
++			vec3 exit_pos{};
++			f32 exit_yaw = 0.f;
 +			std::vector<XrSwapchainImageD3D11KHR> calib_images;
 +			bool calib_bgra = false, calib_has = false;
 +		};
@@ -1150,6 +1162,8 @@ index 000000000..f613518b8
 +		constexpr u32 help_w = 1200, help_h = 660;
 +		constexpr u32 sign_w = 1280, sign_h = 300;
 +		constexpr u32 chooser_w = 1200, chooser_h = 660;
++		constexpr u32 exit_w = 640, exit_h = 300;
++		constexpr f32 exit_width_m = 0.62f;
 +		constexpr f32 chooser_width_m = 1.5f;
 +		constexpr f32 help_width_m = 1.25f;
 +		constexpr f32 panel_width_m = 1.6f;
@@ -1717,6 +1731,17 @@ index 000000000..f613518b8
 +			return c;
 +		}
 +
++		ui::card exit_card(f32 hold)
++		{
++			ui::card c;
++			c.style = ui::card::PANEL;
++			c.kicker = L"LEAVE THE DINER";
++			c.title = L"Exit game";
++			c.subtitle = hold > 0.f ? L"Keep holding..." : L"Point here and hold the TRIGGER";
++			if (hold > 0.f) c.progress = static_cast<int>(hold * 100.f);
++			return c;
++		}
++
 +		// The sign over the menu board in the restaurant
 +		void draw_sign(xr_state& xr, bool first_time)
 +		{
@@ -1995,12 +2020,17 @@ index 000000000..f613518b8
 +					c = g_cam;
 +				}
 +				const f32 cam_h = -c.floor_lev * xr.unit;
-+				if (!xr.comfort.seated && c.bounds && xr.floor_known && cam_h > 0.8f && cam_h < 2.6f)
++				const f32 eye_h = xr.last_head.y - xr.floor_y;
++				if (c.bounds && xr.floor_known && cam_h > 0.8f && cam_h < 2.6f)
 +				{
-+					xr.player_pos.y = xr.floor_y + cam_h;
-+					vr_log("Recentred: standing, the game camera is %.2f m above your floor (your eyes are at %.2f m)", cam_h, xr.last_head.y - xr.floor_y);
++					// Standing: the game's floor is your floor. Seated: halfway between the game camera's height and
++					// your seated eyes (fully at the floor you would be too low, at the camera too high)
++					const f32 h = xr.comfort.seated ? (cam_h + eye_h) * 0.5f : cam_h;
++					xr.player_pos.y = xr.floor_y + h;
++					vr_log("Recentred: %s, game camera %.2f m above your floor (your eyes %.2f m, camera placed at %.2f m)", xr.comfort.seated ? "seated" : "standing", cam_h, eye_h, h);
 +				}
-+				else vr_log("Recentred: %s, the game camera is at your eyes", xr.comfort.seated ? "seated" : "standing (floor not measured yet)");
++				else vr_log("Recentred: %s, the game camera is at your eyes (floor %s, camera height %.2f m)", xr.comfort.seated ? "seated" : "standing",
++					xr.floor_known ? "known" : "not known", cam_h);
 +			}
 +			xr.player_pos.y += xr.lower;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
@@ -3716,6 +3746,49 @@ index 000000000..f613518b8
 +			return true;
 +		}
 +
++		// Experimental: a track of what you do, 4 times a second (log/orderup_track.log), and an event for every press
++		void track_log(xr_state& xr, const pointer_state& out)
++		{
++			static std::FILE* f = nullptr;
++			static u64 last = 0, opened = 0;
++			const u64 now = GetTickCount64();
++			if (!f && !opened) { opened = now; f = std::fopen((fs::get_log_dir() + "orderup_track.log").c_str(), "w"); }
++			if (!f) return;
++			if (std::ftell(f) > 30 * 1024 * 1024) return;
++			cam_info c;
++			{
++				std::lock_guard lock(g_state_mutex);
++				c = g_cam;
++			}
++			SYSTEMTIME t; GetLocalTime(&t);
++			const auto hp = [&](int k) { const vec3 p = to_player(xr, to_vec(xr.hand_pose[k].position)); return p; };
++			// events: a press of grip or trigger, and where it pointed
++			const bool press[4] = {xr.hand_grip[0] > 0.6f, xr.hand_grip[1] > 0.6f, xr.hand_trig[0] > 0.6f, xr.hand_trig[1] > 0.6f};
++			static const char* names[4] = {"left GRIP", "right GRIP", "left TRIGGER", "right TRIGGER"};
++			for (int k = 0; k < 4; k++)
++			{
++				if (press[k] && !xr.prev_press[k])
++				{
++					const vec3 h = hp(k & 1);
++					std::fprintf(f, "[%02d:%02d:%02d.%03d] EVENT %s: pointer %.3f %.3f %s, on %s, hand %.2f %.2f %.2f (player frame, m), view %s%s\n",
++						t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, names[k], out.x, out.y, out.on_screen ? "on screen" : "off screen",
++						xr.ptr_panel < 0 ? (xr.live3d ? "the 3D scene" : "the big screen") : xr.ptr_panel == 0 ? "the tickets rail" : xr.ptr_panel == 1 ? "the left panel" : xr.ptr_panel == 2 ? "the right panel" : "the front panel",
++						h.x, h.y, h.z, xr.live3d ? "3d" : "screen", xr.exit_hover ? ", on the EXIT sign" : "");
++				}
++				xr.prev_press[k] = press[k];
++			}
++			if (now - last < 250) return;
++			last = now;
++			const vec3 head = to_player(xr, xr.last_head), l = hp(0), r = hp(1);
++			const f32 yaw = std::atan2(-xr.last_forward.x, -xr.last_forward.z) * 57.29578f;
++			std::fprintf(f, "[%02d:%02d:%02d.%03d] view %s mode %s cinema %d still %d | head %.2f %.2f %.2f yaw %.0f | L %.2f %.2f %.2f g%.1f t%.1f | R %.2f %.2f %.2f g%.1f t%.1f | "
++				"ptr %.3f %.3f %d panel %d move %d T %d | hud rail %d left %d right %d front %d | unit %.3f food %.1f depth %.1f\n",
++				t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, xr.live3d ? "3d" : "screen", xr.chooser_active ? "choosing" : xr.mode3d ? "vr" : "flat", c.cinema, c.still,
++				head.x, head.y, head.z, yaw, l.x, l.y, l.z, xr.hand_grip[0], xr.hand_trig[0], r.x, r.y, r.z, xr.hand_grip[1], xr.hand_trig[1],
++				out.x, out.y, out.on_screen, xr.ptr_panel, out.move, out.t, c.hud_seen[0], c.hud_seen[1], c.hud_seen[2], c.hud_seen[3], xr.unit, c.food_d, c.depth);
++			std::fflush(f);
++		}
++
 +		// Live status for the launcher (log/orderup_status.txt, once a second): what the game and the headset are doing.
 +		// Written even while the headset is off, so the launcher always knows the game is running.
 +		void write_status(xr_state& xr)
@@ -3743,7 +3816,7 @@ index 000000000..f613518b8
 +							static_cast<unsigned long long>(now_st), static_cast<int>(xr.session_state), static_cast<unsigned long long>(frames), fps,
 +							last_frame ? static_cast<long long>(now_st - last_frame) : -1ll, xr.channel.c_str(), xr.chooser_active ? 1 : 0,
 +							xr.chooser_active ? "none" : xr.mode3d ? "truevr" : "flat", xr.live3d ? "3d" : "screen", cs.valid ? 1 : 0, cs.cinema ? 1 : 0,
-+							cs.n2 >= 15 ? 1 : 0, xr.panel_text.empty() ? "" : std::string(xr.panel_title.begin(), xr.panel_title.end()).c_str(), g_calib_tick.load() ? 1 : 0);
++							cs.hud_seen[3] > 0 ? 1 : 0, xr.panel_text.empty() ? "" : std::string(xr.panel_title.begin(), xr.panel_title.end()).c_str(), g_calib_tick.load() ? 1 : 0);
 +						std::fclose(f);
 +						MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
 +					}
@@ -4016,6 +4089,7 @@ index 000000000..f613518b8
 +					// Hands: the game's pointer is wherever your hand covers the game's picture, as seen from the game
 +					// camera (= your eyes). Reach for a burger and it is under the pointer. Laser: where the ray meets it.
 +					bool have = false, on_hud = false;
++					xr.ptr_panel = -1;
 +					vec3 hud_q{};
 +					f32 nx = 0.f, ny = 0.f;
 +					// The HUD panels (tickets rail, order card on your left hand, stations on your right, a dialog in
@@ -4035,7 +4109,7 @@ index 000000000..f613518b8
 +						{
 +							if (!cam.hud_seen[k]) continue;
 +							vec3 hp{};
-+							if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); }
++							if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); xr.ptr_panel = k; }
 +						}
 +					}
 +					if (have) {}
@@ -4145,6 +4219,39 @@ index 000000000..f613518b8
 +					}
 +
 +					compute_motion(xr, aim, aim_vel, out, dt, width, height, xr.screen_center, xr.screen_yaw);
++
++					// The EXIT sign beside the menu board: hold the TRIGGER on it for a second to close the game
++					xr.exit_hover = false;
++					if (xr.exit_has && !xr.chooser_active)
++					{
++						const vec3 n{std::sin(xr.exit_yaw), 0.f, std::cos(xr.exit_yaw)}, rt{std::cos(xr.exit_yaw), 0.f, -std::sin(xr.exit_yaw)};
++						const f32 den = dot(dir, n);
++						if (den < -1e-4f)
++						{
++							const f32 t = dot(xr.exit_pos - origin, n) / den;
++							const vec3 h = origin + dir * t - xr.exit_pos;
++							const f32 hw = exit_width_m * 0.5f, hh = exit_width_m * exit_h / exit_w * 0.5f;
++							if (t > 0.f && std::fabs(dot(h, rt)) < hw && std::fabs(h.y) < hh)
++							{
++								xr.exit_hover = true;
++								xr.aim_origin = origin;
++								xr.aim_hit = origin + dir * t + n * 0.01f;
++								out.on_screen = true;
++							}
++						}
++					}
++					if (xr.exit_hover && trig[hand] > 0.6f)
++					{
++						out.move = false;
++						if (!xr.exit_hold_since) xr.exit_hold_since = now_ms;
++						else if (now_ms - xr.exit_hold_since > 1200 && !xr.exit_done)
++						{
++							xr.exit_done = true;
++							vr_log("Exit: the player closed the game from the diner");
++							Emu.CallFromMainThread([] { Emu.Quit(true); });
++						}
++					}
++					else xr.exit_hold_since = 0;
 +				}
 +				xr.show_pointer = out.on_screen;
 +
@@ -4216,9 +4323,11 @@ index 000000000..f613518b8
 +
 +				update_stations(xr, cam, out, now_ms, grabbing);
 +				// A new kitchen (or station area) was measured: seat the player in it at the right height
-+				if (xr.live3d && cam.place_id != xr.seen_place_id)
++				// (once the camera has settled for a moment, and not more often than every 4 s: camera cuts come in bursts)
++				if (xr.live3d && cam.place_id != xr.seen_place_id && cam.still >= 20 && !cam.cinema && now_ms - xr.last_auto_recentre > 4000)
 +				{
 +					xr.seen_place_id = cam.place_id;
++					xr.last_auto_recentre = now_ms;
 +					if (cam.place_id) place_screen(xr);
 +				}
 +			}
@@ -4234,6 +4343,7 @@ index 000000000..f613518b8
 +			}
 +
 +			write_status(xr);
++			if (xr.channel == "beta") track_log(xr, out);
 +
 +			std::lock_guard lock(g_state_mutex);
 +			g_pointer = out;
@@ -4280,6 +4390,7 @@ index 000000000..f613518b8
 +
 +		void run_frame(xr_state& xr)
 +		{
++			write_status(xr);   // once a second (also when the headset is off or its menu is open)
 +			XrFrameState frame_state{XR_TYPE_FRAME_STATE};
 +			if (XR_FAILED(xrWaitFrame(xr.session, nullptr, &frame_state))) return;
 +			if (XR_FAILED(xrBeginFrame(xr.session, nullptr))) return;
@@ -4318,6 +4429,7 @@ index 000000000..f613518b8
 +				g_views.cinema = xr.comfort.cinema;
 +				g_views.wide = xr.comfort.wide;
 +				for (int k = 0; k < 4; k++) g_views.panels[k] = hud_layout[k];
++				g_views.deep_log = xr.channel == "beta";
 +				g_views.fixed_unit = xr.fixed_unit;
 +			}
 +			const u64 now_tick = GetTickCount64();
@@ -4558,6 +4670,33 @@ index 000000000..f613518b8
 +					calib.pose.orientation = yaw_q(yaw);
 +					calib.size = {0.8f, 0.8f * 300.f / 1024.f};
 +					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);
++				}
++			}
++
++			// The EXIT sign in the diner, to the right of the menu board
++			XrCompositionLayerQuad exit_q{XR_TYPE_COMPOSITION_LAYER_QUAD};
++			if (frame_state.shouldRender && drew && !xr.live3d && xr.screen_placed && !xr.chooser_active)
++			{
++				const f32 hold = xr.exit_hold_since ? std::min(1.f, (now_tick - xr.exit_hold_since) / 1200.f) : 0.f;
++				const ui::card ec = exit_card(hold);
++				const std::wstring sig = ec.signature();
++				if (sig != xr.exit_sig) { draw_card(xr, xr.exit_sc, xr.exit_images, xr.exit_bgra, xr.exit_has, exit_w, exit_h, ec); xr.exit_sig = sig; }
++				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
++				const vec3 right{std::cos(xr.screen_yaw), 0.0f, -std::sin(xr.screen_yaw)};
++				xr.exit_pos = xr.screen_center + right * (xr.screen_width * 0.5f + 0.55f) + normal * 0.6f;
++				xr.exit_pos.y = xr.last_head.y - 0.35f;
++				xr.exit_yaw = xr.screen_yaw - 0.35f;
++				if (xr.exit_has)
++				{
++					exit_q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
++					exit_q.space = xr.local_space;
++					exit_q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
++					exit_q.subImage.swapchain = xr.exit_sc;
++					exit_q.subImage.imageRect.extent = {static_cast<s32>(exit_w), static_cast<s32>(exit_h)};
++					exit_q.pose.position = {xr.exit_pos.x, xr.exit_pos.y, xr.exit_pos.z};
++					exit_q.pose.orientation = yaw_q(xr.exit_yaw);
++					exit_q.size = {exit_width_m, exit_width_m * exit_h / exit_w};
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&exit_q);
 +				}
 +			}
 +
@@ -5153,7 +5292,7 @@ index 000000000..f613518b8
 +			s.n3_by_key.clear();
 +			if (s.drawlog_f) { std::fclose(s.drawlog_f); s.drawlog_f = nullptr; s.drawlog = false; }
 +			s.drawsum = false;
-+			if (s.want3d && GetTickCount64() - s.drawsum_tick > 30000) { s.drawsum = true; s.drawsum_tick = GetTickCount64(); s.drawsum_map.clear(); }
++			if (s.want3d && GetTickCount64() - s.drawsum_tick > (v.deep_log ? 5000u : 30000u)) { s.drawsum = true; s.drawsum_tick = GetTickCount64(); s.drawsum_map.clear(); }
 +			{
 +				static const std::string sim = []{ const char* e = std::getenv("ORDERUP_VR_SIM"); return std::string(e ? e : ""); }();
 +				if (!sim.empty() && fs::is_file(sim + "/drawlog"))
@@ -5320,7 +5459,7 @@ index 000000000..f613518b8
 +		f32 widen(f32 deg)
 +		{
 +			const f32 t = std::tan(deg * 0.00872665f);
-+			return std::max(deg, 2.f * std::atan(std::min(t * 2.4f, std::tan(0.698f))) * 57.29578f);   // at most 80 degrees tall
++			return std::max(deg, 2.f * std::atan(std::min(t * 3.4f, std::tan(0.96f))) * 57.29578f);   // at most 110 degrees tall (ceilings above you are drawn)
 +		}
 +
 +		void fov_update()
@@ -6731,7 +6870,8 @@ index 000000000..f613518b8
 +			{
 +				const f32 cxn = (x0 + x1) * 0.5f, cyn = (y0 + y1) * 0.5f, wn = x1 - x0, hn = y1 - y0;
 +				int region = -1;
-+				if (wn > 0.7f && hn > 0.7f) region = 3;                                     // cards, menus, overlays: in front
++				const bool menu_up = s.hud_seen[3] > 0;   // a card or menu was on screen last frame: keep the whole HUD together
++				if (menu_up || (wn > 0.7f && hn > 0.7f)) region = 3;                       // cards, menus, overlays: in front
 +				else if (cyn > 0.55f) region = 0;                                           // tickets along the top: the rail
 +				else if (cxn < -0.4f) region = 1;                                           // small things on the left
 +				else if (cxn > 0.4f) region = 2;                                            // small things on the right
@@ -6748,11 +6888,12 @@ index 000000000..f613518b8
 +				}
 +				if (region < 0 && s.enabled && s.cam.valid)
 +				{
-+					// Small things in the middle (doneness meters, "Perfect!", prompts): at the food, where the game
-+					// shows them over the picture, so they sit on what they belong to
++					// Small things in the middle (doneness meters, "Perfect!", the flip icons): over the food, where the
++					// game shows them, at the food's distance, and at their natural size (the widened view would make
++					// them huge): each piece is shrunk around its own centre
 +					mat4 base;
 +					const auto& c = s.cam;
-+					const f32 D = std::max(s.hud_depth > 0.f ? s.hud_depth / 0.92f : s.depth * 0.9f, c.B / c.A * 1.2f);
++					const f32 D = std::max(s.depth * 0.97f, c.B / c.A * 1.2f);
 +					if (rv_base(content_gen, base))
 +					{
 +						mat4 S2;
@@ -6760,7 +6901,12 @@ index 000000000..f613518b8
 +						S2.m[5] = D / c.sy; S2.m[7] = D * c.cy / c.sy;
 +						S2.m[11] = -D;
 +						S2.m[15] = 1.f;
-+						const mat4 X = mmul(base, S2);
++						const f32 k = std::clamp(s.hud_k, 0.2f, 1.f);
++						mat4 shrink;   // ndc: x' = cx + (x - cx) k (homogeneous: x' = k x + cx (1 - k) w)
++						shrink.m[0] = k; shrink.m[3] = cxn * (1.f - k);
++						shrink.m[5] = k; shrink.m[7] = cyn * (1.f - k);
++						shrink.m[10] = 1.f; shrink.m[15] = 1.f;
++						const mat4 X = mmul(base, mmul(S2, shrink));
 +						std::memcpy(x, X.m, sizeof(f32) * 16);
 +						return 6;
 +					}

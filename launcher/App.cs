@@ -935,6 +935,8 @@ namespace OrderUpVR
 
         void RefreshAll()
         {
+            var logsBtn = Get<Button>("LogsBtn");
+            if (logsBtn != null) logsBtn.Visibility = Core.ChannelOf(s) == "beta" ? Visibility.Visible : Visibility.Collapsed;
             if (Get<StackPanel>("Chips") == null) return;
             RenderChips();
             RenderStatus();
@@ -1584,6 +1586,12 @@ namespace OrderUpVR
                 if (st != null && doing != null && doing != lastActivity) { Note("Game: " + doing); lastActivity = doing; }
                 SetStatus(minimized ? "Restore the game window" : "Playing" + (doing != null ? ": " + doing : ""), minimized ? 2 : 0, liveVr);
             }
+            else if (sawGameWindow)
+            {
+                // The game was running and its window and status are gone: it is closing
+                liveGame = "Closing...";
+                SetStatus("The game is closing", 1, "");
+            }
             else
             {
                 liveGame = "Starting... " + secs + " s";
@@ -1615,7 +1623,7 @@ namespace OrderUpVR
             if (g("panel").Length > 0) return g("panel");
             if (g("choosing") == "1") return "choosing Flat screen or True VR in the headset";
             string mode = g("mode") == "truevr" ? "True VR" : "Flat screen";
-            if (g("paused") == "1") return mode + ", paused";
+            if (g("paused") == "1") return mode + ", a menu is open";
             if (g("cinema") == "1") return mode + ", cutscene on the big screen";
             if (g("view") == "3d") return mode + ", inside the kitchen";
             if (g("scene3d") == "1") return mode + ", in the restaurant";
@@ -1641,7 +1649,7 @@ namespace OrderUpVR
                 string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
                 foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"log\orderup_camdump.bin.z", @"config\orderupvr_state.txt", "orderupvr_state.txt",
-                    @"log\orderup_draws.log", @"log\orderup_status.txt", @"log\orderup_vr.prev1.log", @"log\orderup_vr.prev2.log", @"log\orderup_draws.prev1.log",
+                    @"log\orderup_draws.log", @"log\orderup_track.log", @"log\orderup_status.txt", @"log\orderup_vr.prev1.log", @"log\orderup_vr.prev2.log", @"log\orderup_draws.prev1.log",
                     @"config\orderupvr_comfort.txt", @"config\orderupvr_channel.txt" })
                 {
                     string p = System.IO.Path.Combine(emu, rel);
