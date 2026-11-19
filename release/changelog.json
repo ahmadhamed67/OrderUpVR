@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.14.4",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Order tickets and the side panels now sit on the restaurant itself: over the counter where the game shows them, at the food. They stay on the counter when the game changes station or cuts the camera.",
+      "They stay small, face you, and you still use them by touching them."
+    ],
+    "notes": [
+      "Game camera hook: the view matrix the game keeps at 0x003821d8 (3x4 rows right/up/back with translation; camera position mirrored at 0x00382218), read each frame from guest memory, only for BLES01470 (exe hash checked).",
+      "Anchors: when you are placed in a kitchen, the centres of the ticket strip (ndc 0, 0.775) and the side strips (ndc -/+0.7, -0.225) at the food distance (natural lens) are turned into game-world points; each frame: world -> current game view (memory) -> room anchor (camera solve D) -> levelled -> metres, facing your head. More than 3 m away (another part of the restaurant): the room spot from 0.14.3 is used.",
+      "Log line 'HUD: tickets and side panels anchored in the restaurant' shows the anchor points."
+    ]
+  },
+  {
     "version": "0.14.3",
     "channel": "beta",
     "date": "2026-11-19",
