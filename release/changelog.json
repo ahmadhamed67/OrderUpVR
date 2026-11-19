@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.14.3",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "The floating wooden board, easel and ticket-rail add-ons are gone.",
+      "Order tickets and the side panels now stay put in the kitchen where you were placed, small and within reach. They no longer follow you around.",
+      "Touch them with your fingertip to use them: hover to point, push in to press. No more aiming through a board.",
+      "Menus and cards appear in front of you at arm's length each time one opens, and you touch them too.",
+      "EXIT button: grab it from your left shoulder as before, then simply touch the red button with your right hand for 1 second.",
+      "SteamVR: the left MENU button belongs to SteamVR again (its menu opens, not the game's). Pause the game by clicking both sticks."
+    ],
+    "notes": [
+      "HUD panels are fixed in room space: tickets 55 cm ahead and 12 cm above your eyes (60 cm wide), side panels 45 cm ahead, 42 cm to each side and 25 cm below your eyes (22 cm wide), all placed when the screen/kitchen is placed; the front panel (whole screen, 60 cm wide) is placed 50 cm ahead each time a card or menu opens. Proportions follow the game's HUD regions.",
+      "Hands mode: the index fingertip within 6 cm in front of a panel points at it; within 1.2 cm (or through) presses the select button. Laser mode keeps ray pointing. The old head-through-hand ray to the panels is removed.",
+      "EXIT: any right fingertip or the palm within 7 cm of the dome for 1 s (from 0.4 s after it appears). After Emu.Quit, the process ends after 4 s if it is still running.",
+      "SteamVR: the left menu/click binding is not suggested, so SteamVR keeps the button for its dashboard; pause is both stick clicks.",
+      "Research: the game's current view matrix is at 0x003821d8 (3x4 rows: right, up, back, each with translation) and the camera position at 0x00382218 in EBOOT data, for anchoring things to the restaurant itself next."
+    ]
+  },
+  {
     "version": "0.14.2",
     "channel": "beta",
     "date": "2026-11-19",

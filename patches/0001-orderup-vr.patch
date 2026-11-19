@@ -524,10 +524,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..9be229d9a
+index 000000000..7acf6e207
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7316 @@
+@@ -0,0 +1,7279 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1107,6 +1107,11 @@ index 000000000..9be229d9a
 +			u32 seen_place_id = 0;    // the last kitchen the player was seated in
 +			u64 last_auto_recentre = 0;
 +			int ptr_panel = -1;       // the HUD panel the pointer is on (-1: the 3D scene / the big screen)
++			// The HUD panels are fixed in your room (placed at kitchen spots when you are placed; the menu panel each time
++			// a menu opens), never following you around. Room space: P, A (right), B (up), half sizes.
++			bool hud_locked = false, menu_locked = false, menu_was_up = false;
++			hud_panel hud_room[4];
++			bool touch_press = false;  // a fingertip pushed into a HUD panel this frame (the game's select button)
 +			bool prev_press[4]{};     // grip and trigger of both hands last frame (events in the log)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
 +
@@ -1390,12 +1395,13 @@ index 000000000..9be229d9a
 +					{xr.btn_b, to_path(xr, "/user/hand/right/input/b/click")},
 +					{xr.btn_x, to_path(xr, "/user/hand/left/input/x/click")},
 +					{xr.btn_y, to_path(xr, "/user/hand/left/input/y/click")},
-+					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},
++					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},   // last: left out on SteamVR
 +				};
 +				XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
 +				suggested.interactionProfile = to_path(xr, "/interaction_profiles/oculus/touch_controller");
 +				suggested.suggestedBindings = bindings;
-+				suggested.countSuggestedBindings = static_cast<u32>(std::size(bindings));
++				// SteamVR: the left MENU button stays SteamVR's (its menu); the game is paused with both sticks
++				suggested.countSuggestedBindings = static_cast<u32>(std::size(bindings)) - (g_steamvr ? 1u : 0u);
 +				xr_ok(xr, xrSuggestInteractionProfileBindings(xr.instance, &suggested), "suggest bindings (touch)");
 +			}
 +
@@ -1409,13 +1415,13 @@ index 000000000..9be229d9a
 +					{xr.grip_pose, to_path(xr, "/user/hand/right/input/grip/pose")},
 +					{xr.trigger, to_path(xr, "/user/hand/left/input/select/click")},
 +					{xr.trigger, to_path(xr, "/user/hand/right/input/select/click")},
-+					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},
 +					{xr.btn_a, to_path(xr, "/user/hand/right/input/menu/click")},
++					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},   // last: left out on SteamVR
 +				};
 +				XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
 +				suggested.interactionProfile = to_path(xr, "/interaction_profiles/khr/simple_controller");
 +				suggested.suggestedBindings = bindings;
-+				suggested.countSuggestedBindings = static_cast<u32>(std::size(bindings));
++				suggested.countSuggestedBindings = static_cast<u32>(std::size(bindings)) - (g_steamvr ? 1u : 0u);
 +				xr_ok(xr, xrSuggestInteractionProfileBindings(xr.instance, &suggested), "suggest bindings (simple)");
 +			}
 +
@@ -1711,7 +1717,7 @@ index 000000000..9be229d9a
 +				{L"RIGHT STICK", L"Turn"},
 +				{L"LOOK", L"Change station"},
 +				{L"BOTH GRIPS", L"Move the menu board"},
-+				{L"LEFT SHOULDER", L"GRIP: the EXIT button"},
++				{L"LEFT SHOULDER", L"GRIP: EXIT button, touch it"},
 +			};
 +			c.tip = g_steamvr ? L"Hold both sticks in for 2 seconds to see this again." : L"Hold the left MENU button for 2 seconds to see this again.";
 +			return c;
@@ -2021,6 +2027,7 @@ index 000000000..9be229d9a
 +			xr.screen_center.y = xr.last_head.y - 0.10f;
 +			xr.screen_yaw = std::atan2(-f.x, -f.z);
 +			xr.screen_placed = true;
++			xr.hud_locked = false;   // the HUD panels are placed again where you are
 +
 +			// True VR: the game camera sits where you stand, facing where you face. Seated: at your eyes. Standing: at
 +			// its real height in this kitchen above your real floor (so the chef is as tall as the game's camera).
@@ -2962,7 +2969,7 @@ index 000000000..9be229d9a
 +		// ---- The EXIT button. Reach over your left shoulder and squeeze GRIP: a big red button comes out in your left
 +		// hand. GRIP again puts it away (a pop and a puff of cloud). Squeeze it with your right hand for 3 seconds to close
 +		// the game.
-+		constexpr u64 exit_hold_ms = 3000;
++		constexpr u64 exit_hold_ms = 1000;   // touch the button for a second
 +
 +		vec3 left_shoulder(const xr_state& xr)
 +		{
@@ -3035,12 +3042,16 @@ index 000000000..9be229d9a
 +					vr_log("Exit button: put away");
 +				}
 +			}
++			// Pressed by touching it: any fingertip or the palm of your right hand on the red dome
 +			bool squeeze = false;
-+			if (xr.xb_out && xr.hand_valid[1] && rg)
++			(void)rg;
++			if (xr.xb_out && xr.hand_valid[1] && now_ms - xr.xb_since > 400)
 +			{
 +				const hand_geo r = make_hand(xr.hand_pose[1], 1, xr.hand_grip[1], xr.hand_trig[1]);
-+				const vec3 d1 = r.grab - c, d2 = r.palm - c;
-+				squeeze = std::min(dot(d1, d1), dot(d2, d2)) < 0.10f * 0.10f;
++				const vec3 dome = c + up * 0.03f;
++				f32 best = dot(r.palm - dome, r.palm - dome);
++				for (int f = 0; f < 5; f++) { const vec3 d = r.joints[f][3] - dome; best = std::min(best, dot(d, d)); }
++				squeeze = best < 0.07f * 0.07f;
 +			}
 +			if (squeeze)
 +			{
@@ -3049,8 +3060,10 @@ index 000000000..9be229d9a
 +				{
 +					xr.exit_done = true;
 +					play_pop(false);
-+					vr_log("Exit: the player squeezed the EXIT button for 3 seconds");
++					vr_log("Exit: the player pressed the EXIT button");
 +					Emu.CallFromMainThread([] { Emu.Quit(true); });
++					// If the emulator has not closed in 4 seconds, end the process (the launcher sees it closing)
++					std::thread([] { Sleep(4000); vr_log("Exit: closing the process"); TerminateProcess(GetCurrentProcess(), 0); }).detach();
 +				}
 +			}
 +			else xr.xb_squeeze_since = 0;
@@ -3981,7 +3994,6 @@ index 000000000..9be229d9a
 +								}
 +							}
 +							draw_exit_button(xr);
-+							draw_hud_props(xr);
 +						}
 +						release(g.body_sc[e]);
 +					}
@@ -4154,124 +4166,57 @@ index 000000000..9be229d9a
 +		// Where the VR HUD panels are this frame (player frame, metres; the player frame is the game camera's place)
 +		void layout_hud(xr_state& xr, hud_panel out[4])
 +		{
-+			const auto face = [](vec3 at, vec3 eye, hud_panel& pn)
++			cam_info c;
 +			{
-+				vec3 n = eye - at;
-+				n.y = 0.f;   // upright: panels never lean back or forward
-+				n = normalize(n);
++				std::lock_guard lock(g_state_mutex);
++				c = g_cam;
++			}
++			// Each panel keeps the shape of its part of the game's screen
++			const f32 aspect = std::max(c.sy, 0.2f) / std::max(c.sx, 0.2f);   // screen width / height
++			const auto set = [](hud_panel& pn, vec3 at, vec3 face_to, f32 hw, f32 hh)
++			{
++				vec3 n = face_to - at;
++				n.y = 0.f;
++				n = dot(n, n) > 1e-6f ? normalize(n) : vec3{0.f, 0.f, 1.f};
++				pn.on = true;
++				pn.P = at;
 +				pn.A = normalize(cross(vec3{0.f, 1.f, 0.f}, n));
 +				pn.B = {0.f, 1.f, 0.f};
-+				pn.P = at;
++				pn.hw = hw;
++				pn.hh = hh;
 +			};
-+			const vec3 eye{0.f, 0.f, 0.f};
-+			// The game's screen, at its natural size (as the game frames it) at the HUD distance
-+			cam_info c;
++			vec3 fwd = xr.last_forward;
++			fwd.y = 0.f;
++			fwd = dot(fwd, fwd) > 1e-6f ? normalize(fwd) : vec3{0.f, 0.f, -1.f};
++			const vec3 right{-fwd.z, 0.f, fwd.x};
++			const vec3 head = xr.last_head;
++			// Tickets and the side panels: placed once where you are placed, within reach, ticket-sized
++			if (!xr.hud_locked)
 +			{
-+				std::lock_guard lock(g_state_mutex);
-+				c = g_cam;
++				const f32 rail_hw = 0.30f;   // the top strip of the screen (22.5% of its height, full width)
++				set(xr.hud_room[0], head + fwd * 0.55f + vec3{0.f, 0.12f, 0.f}, head, rail_hw, rail_hw * 0.225f / aspect);
++				const f32 side_hw = 0.11f;   // the side strips (30% of the width, 77.5% of the height)
++				set(xr.hud_room[1], head + fwd * 0.45f - right * 0.42f + vec3{0.f, -0.25f, 0.f}, head, side_hw, side_hw * (0.775f / 0.3f) / aspect);
++				set(xr.hud_room[2], head + fwd * 0.45f + right * 0.42f + vec3{0.f, -0.25f, 0.f}, head, side_hw, side_hw * (0.775f / 0.3f) / aspect);
++				xr.hud_locked = true;
 +			}
-+			const f32 D = xr.comfort.hud_dist, nsx = std::max(c.sx * c.hud_k * 0.8f, 0.2f), nsy = std::max(c.sy * c.hud_k * 0.8f, 0.2f);
-+			const f32 W = D / nsx, H = D / nsy;   // half sizes of the screen at that distance
-+			// Ticket rail: a strip above the counter, ahead and a little above your eyes
-+			out[0].on = true;
-+			face({0.f, 0.28f, -D * 0.75f}, eye, out[0]);
-+			out[0].hw = W * 0.8f; out[0].hh = H * 0.225f * 0.8f;
-+			// Left and right: small panels beside you
-+			out[1].on = true;
-+			face({-W * 0.9f, -0.10f, -D * 0.8f}, eye, out[1]);
-+			out[1].hw = W * 0.3f; out[1].hh = H * 0.775f;
-+			out[2].on = true;
-+			face({W * 0.9f, -0.10f, -D * 0.8f}, eye, out[2]);
-+			out[2].hw = W * 0.3f; out[2].hh = H * 0.775f;
-+			// Cards, menus and the pause menu: the whole screen, upright, straight in front at eye level
-+			out[3].on = true;
-+			face({0.f, -0.05f, -D}, eye, out[3]);
-+			out[3].hw = W; out[3].hh = H;
-+			(void)xr;
-+		}
-+
-+		// The HUD panels as things in the kitchen: a steel ticket rail the order tickets hang from, little stands for
-+		// the side panels, and a wooden menu board on an easel for cards and menus. Only around each panel (the body
-+		// layer is drawn over the game's picture, so nothing may cover the panel itself).
-+		void draw_hud_props(xr_state& xr)
-+		{
-+			if (!xr.live3d || !xr.mode3d) return;
-+			cam_info c;
++			// Cards and menus: each time one opens, in front of you at arm's length
++			const bool menu_up = c.hud_seen[3] > 0;
++			if ((menu_up && !xr.menu_was_up) || !xr.menu_locked)
 +			{
-+				std::lock_guard lock(g_state_mutex);
-+				c = g_cam;
++				const f32 hw = 0.30f;
++				set(xr.hud_room[3], head + fwd * 0.50f + vec3{0.f, -0.12f, 0.f}, head, hw, hw / aspect);
++				xr.menu_locked = true;
 +			}
-+			if (!c.valid) return;
-+			hud_panel pn[4];
-+			layout_hud(xr, pn);
-+			const f32 floor_rel = (xr.floor_known ? xr.floor_y : xr.last_head.y - 1.6f) - xr.player_pos.y;
-+			const vec3 steel{0.74f, 0.76f, 0.79f}, dark{0.16f, 0.16f, 0.18f}, wood{0.45f, 0.28f, 0.16f};
++			xr.menu_was_up = menu_up;
++			// To your player frame (what the renderer and the pointer use)
++			const XrQuaternionf inv = qconj(yaw_q(xr.player_yaw));
 +			for (int k = 0; k < 4; k++)
 +			{
-+				const hud_panel& p = pn[k];
-+				if (!p.on || p.hw <= 0.f || p.hh <= 0.f) continue;
-+				// panel corners and axes in your room
-+				const vec3 P = from_player(xr, p.P);
-+				const vec3 A = rotate(yaw_q(xr.player_yaw), p.A), B = rotate(yaw_q(xr.player_yaw), p.B);
-+				const vec3 N = normalize(cross(A, B));
-+				const auto bar = [&](vec3 a, vec3 b, f32 r, vec3 col) { draw_limb(xr, a, b, r, r, col); };
-+				const auto slab = [&](vec3 ctr, f32 w, f32 h, f32 d, vec3 col) { draw_boxo(xr, ctr, A, B, N, {w, h, d}, col); };
-+				if (k == 0)
-+				{
-+					// Ticket rail: a steel bar along the top of the tickets, hung from the ceiling on two rods
-+					if (!c.hud_seen[0] && !c.hud_seen[1] && !c.hud_seen[2]) continue;
-+					const vec3 top = P + B * (p.hh + 0.025f);
-+					bar(top - A * (p.hw + 0.06f), top + A * (p.hw + 0.06f), 0.014f, steel);
-+					slab(top + B * 0.012f - N * 0.01f, p.hw * 2.f + 0.14f, 0.012f, 0.05f, steel);
-+					for (f32 s : {-1.f, 1.f})
-+					{
-+						const vec3 end = top + A * (s * (p.hw + 0.02f));
-+						bar(end, end + vec3{0.f, 0.6f, 0.f}, 0.008f, dark);
-+						draw_ball(xr, top + A * (s * (p.hw + 0.07f)), 0.02f, steel);
-+					}
-+				}
-+				else if (k == 1 || k == 2)
-+				{
-+					// Side panels: a slim dark frame on a pole with a round foot
-+					if (!c.hud_seen[k]) continue;
-+					const f32 t = 0.018f;
-+					slab(P + B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.02f, dark);
-+					slab(P - B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.02f, dark);
-+					slab(P - A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.02f, dark);
-+					slab(P + A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.02f, dark);
-+					const vec3 foot = from_player(xr, vec3{p.P.x, floor_rel, p.P.z});
-+					const vec3 under = P - B * (p.hh + t);
-+					if (under.y > foot.y + 0.05f)
-+					{
-+						bar(under, foot, 0.012f, steel);
-+						draw_ellipsoid(xr, foot, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}, {0.14f, 0.012f, 0.14f}, dark);
-+					}
-+				}
-+				else
-+				{
-+					// Cards and menus: a wooden board frame on an easel
-+					if (!c.hud_seen[3]) continue;
-+					const f32 t = 0.05f;
-+					slab(P + B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.035f, wood);
-+					slab(P - B * (p.hh + t * 0.5f), p.hw * 2.f + 2.f * t, t, 0.035f, wood);
-+					slab(P - A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.035f, wood);
-+					slab(P + A * (p.hw + t * 0.5f), t, p.hh * 2.f, 0.035f, wood);
-+					// chalk tray under the board
-+					slab(P - B * (p.hh + t + 0.015f) + N * 0.03f, p.hw * 2.f, 0.02f, 0.07f, wood);
-+					// easel legs to the floor
-+					const f32 fy = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.6f;
-+					for (f32 s : {-1.f, 1.f})
-+					{
-+						const vec3 from = P - B * (p.hh + t) + A * (s * (p.hw * 0.8f));
-+						vec3 to = from + A * (s * 0.12f) + N * 0.15f;
-+						to.y = fy;
-+						if (from.y > fy + 0.1f) bar(from, to, 0.016f, wood);
-+					}
-+					const vec3 back_top = P + B * (p.hh * 0.6f) - N * 0.04f;
-+					vec3 back_foot = back_top - N * 0.45f;
-+					back_foot.y = fy;
-+					if (back_top.y > fy + 0.1f) bar(back_top, back_foot, 0.014f, wood);
-+				}
++				out[k] = xr.hud_room[k];
++				out[k].P = to_player(xr, xr.hud_room[k].P);
++				out[k].A = rotate(inv, xr.hud_room[k].A);
++				out[k].B = rotate(inv, xr.hud_room[k].B);
 +			}
 +		}
 +
@@ -4643,22 +4588,40 @@ index 000000000..9be229d9a
 +					f32 nx = 0.f, ny = 0.f;
 +					// The HUD panels (tickets rail, order card on your left hand, stations on your right, a dialog in
 +					// front): pointing at one gives the game that spot on its screen. Otherwise the 3D scene below.
++					xr.touch_press = false;
 +					{
-+						vec3 ro = origin, rd = dir;
-+						if (!xr.pointing_laser && xr.hand_valid[hand])
-+						{
-+							const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
-+							ro = xr.last_head;
-+							rd = normalize(hg.grab - xr.last_head);
-+						}
-+						const vec3 po = to_player(xr, ro), pd = rotate(qconj(yaw_q(xr.player_yaw)), rd);
 +						hud_panel pans[4];
 +						layout_hud(xr, pans);
-+						for (int k = 0; k < 4 && !have; k++)
++						if (xr.pointing_laser)
 +						{
-+							if (!cam.hud_seen[k]) continue;
-+							vec3 hp{};
-+							if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); xr.ptr_panel = k; }
++							const vec3 po = to_player(xr, origin), pd = rotate(qconj(yaw_q(xr.player_yaw)), dir);
++							for (int k = 0; k < 4 && !have; k++)
++							{
++								if (!cam.hud_seen[k]) continue;
++								vec3 hp{};
++								if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); xr.ptr_panel = k; }
++							}
++						}
++						else if (xr.hand_valid[hand])
++						{
++							// Touch: your index fingertip near a panel points at that spot; pushing into it presses
++							const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
++							const vec3 tip = to_player(xr, hg.joints[0][3]);
++							for (int k = 0; k < 4 && !have; k++)
++							{
++								if (!cam.hud_seen[k]) continue;
++								const vec3 n = normalize(cross(pans[k].A, pans[k].B));
++								const f32 dist = dot(tip - pans[k].P, n);
++								if (dist > 0.06f || dist < -0.08f) continue;
++								vec3 hp{};
++								if (hit_panel(pans[k], hud_regions[k], tip + n * 0.2f, n * -1.f, nx, ny, hp))
++								{
++									have = on_hud = true;
++									hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f);
++									xr.ptr_panel = k;
++									xr.touch_press = dist < 0.012f;
++								}
++							}
 +						}
 +					}
 +					if (have) {}
@@ -4859,7 +4822,7 @@ index 000000000..9be229d9a
 +				// Grip grabs (the game's T button), trigger selects (the Move button), as in most VR games.
 +				out.trigger = grip[hand];
 +				out.t = grip[hand] > 0.5f;
-+				out.move = trig[hand] > 0.5f;
++				out.move = trig[hand] > 0.5f || xr.touch_press;
 +				apply_flip_assist(xr, out);
 +				out.cross = get_bool(xr, xr.btn_a);
 +				out.circle = get_bool(xr, xr.btn_b);
