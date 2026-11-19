@@ -550,6 +550,16 @@ namespace OrderUpVR
             BuildVrRows();
 
             watch = new DispatcherTimer(); watch.Interval = TimeSpan.FromSeconds(1); watch.Tick += delegate { WatchGame(); };
+            // The VR app tile follows SteamVR / Link starting and stopping
+            var vrTimer = new DispatcherTimer(); vrTimer.Interval = TimeSpan.FromSeconds(4);
+            string vrKey = null;
+            vrTimer.Tick += delegate
+            {
+                if (game != null) return;
+                string k = (Core.RunningOpenXrRuntime() ?? "") + "|" + (Core.ActiveOpenXrRuntime() ?? "");
+                if (k != vrKey) { if (vrKey != null) RenderStatus(); vrKey = k; }
+            };
+            vrTimer.Start();
             updateTimer = new DispatcherTimer(); updateTimer.Interval = TimeSpan.FromMinutes(30);
             updateTimer.Tick += delegate { if (!s.NoAutoUpdate) CheckUpdates(false); };
             updateTimer.Start();
@@ -969,7 +979,7 @@ namespace OrderUpVR
         }
 
         // One small tile per thing the game needs
-        void StatusRow(string label, string value, Brush dot, bool pulse)
+        StackPanel StatusRow(string label, string value, Brush dot, bool pulse)
         {
             var tile = new Border(); tile.CornerRadius = new CornerRadius(16); tile.Padding = new Thickness(16, 12, 14, 12);
             tile.Margin = new Thickness(Get<UniformGrid>("StatusPanel").Children.Count == 0 ? 0 : 12, 0, 0, 0);
@@ -991,6 +1001,7 @@ namespace OrderUpVR
             g.Children.Add(e); g.Children.Add(sp);
             tile.Child = g;
             Get<UniformGrid>("StatusPanel").Children.Add(tile);
+            return sp;
         }
 
         void RenderStatus()
@@ -1004,7 +1015,27 @@ namespace OrderUpVR
             }
             else
             {
-                StatusRow("VR app", runtime ?? "Start Quest Link, Air Link, Virtual Desktop or SteamVR", runtime != null ? GoodBrush : WarnBrush, false);
+                // The VR app you are using is running but is not the default: one click makes it the default
+                string running = Core.RunningOpenXrRuntime(), active = Core.ActiveOpenXrRuntime();
+                bool other = running != null && !string.Equals(running, active, StringComparison.OrdinalIgnoreCase);
+                var vr = StatusRow("VR app", other ? Core.RuntimeName(running) + " is on, not the default" : runtime ?? "Start Quest Link, Air Link, Virtual Desktop or SteamVR",
+                    other ? WarnBrush : runtime != null ? GoodBrush : WarnBrush, false);
+                if (other)
+                {
+                    string name = Core.RuntimeName(running), path = running;
+                    var b = new Border(); b.CornerRadius = new CornerRadius(9); b.Padding = new Thickness(10, 3, 10, 4); b.Margin = new Thickness(0, 6, 0, 0);
+                    b.Background = AccentBrush; b.HorizontalAlignment = HorizontalAlignment.Left; b.Cursor = Cursors.Hand;
+                    var bt = new TextBlock(); bt.Text = "Make it the default"; bt.Foreground = Brushes.Black; bt.FontWeight = FontWeights.SemiBold; bt.FontSize = 12;
+                    b.Child = bt;
+                    b.ToolTip = "Sets " + name + " as this PC's OpenXR runtime. Windows asks for permission.";
+                    b.MouseLeftButtonUp += delegate
+                    {
+                        bool ok = Core.SetActiveOpenXrRuntime(path);
+                        ShowToast(ok ? name + " is now the default VR app." : "It was not changed (Windows permission was not given).", ok);
+                        RenderStatus();
+                    };
+                    vr.Children.Add(b);
+                }
                 bool r = Core.IsRpcs3Dir(s.Rpcs3Dir), g = Core.IsGameDir(s.GameDir);
                 StatusRow("RPCS3", r ? "Ready" : "Not found: open Settings", r ? GoodBrush : BadBrush, false);
                 StatusRow("Game", g ? "Order Up!! (" + Core.TitleId + ")" : "Not found: open Settings", g ? GoodBrush : BadBrush, false);

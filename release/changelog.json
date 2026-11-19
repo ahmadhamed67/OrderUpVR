@@ -1,5 +1,26 @@
 [
   {
+    "version": "0.13.6",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "The restaurant no longer disappears after the waiter's cutscene (the view is back to 80 degrees tall).",
+      "Seated: you sit closer to your own height in the kitchen.",
+      "Female chef: her lips now move with the male mouth shapes and close back to her own lips, no stretching.",
+      "New EXIT button: reach over your left shoulder and squeeze GRIP. A big red button pops into your left hand. GRIP again puts it away. Squeeze it with your right hand for 3 seconds to close the game.",
+      "SteamVR: the left MENU button opens Steam, so pause is now both sticks clicked together.",
+      "Launcher: if your VR app is running but is not the default, one button makes it the default."
+    ],
+    "notes": [
+      "Wide view capped at 2.4x tan / 80 degrees: at 3.4x / 110 degrees the game culled almost everything (draws fell from ~275 to 27 in the 0.13.5 log).",
+      "Seated recenter: camera at eye_h + 0.25 * (camera height - eye_h).",
+      "Female mouth frames: cdced3b7 (her closed lips) then the male talking frames 8873fb45, b3bc8a6a, f4f6cdca (searched in the male WAD too); the stretch of a single frame is off.",
+      "Exit button replaces the floating EXIT card: left GRIP within 26 cm of the left shoulder takes it out, GRIP again puts it away (synthesized pop, cloud puff); right-hand grip within 10 cm for 3 s quits RPCS3; 16 rim lights show the progress. The hand holding or squeezing it sends no grab to the game.",
+      "SteamVR (runtime name): Start = both stick clicks; recentre and Select are held back while both sticks are pressed; help card says so.",
+      "Launcher 1.19.0: detects SteamVR (vrserver), Virtual Desktop and Meta (OVRServer_x64) running; if that runtime is not ActiveRuntime, the VR app tile shows 'Make it the default' (reg add HKLM ActiveRuntime, elevated)."
+    ]
+  },
+  {
     "version": "0.13.5",
     "channel": "beta",
     "date": "2026-11-19",

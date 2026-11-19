@@ -537,6 +537,55 @@ namespace OrderUpVR
             return Path.Combine(full, "OrderUpVR");
         }
 
+        // Every OpenXR runtime installed on this PC (manifest paths)
+        public static List<string> AvailableOpenXrRuntimes()
+        {
+            var list = new List<string>();
+            try
+            {
+                using (RegistryKey k = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64).OpenSubKey(@"SOFTWARE\Khronos\OpenXR\1\AvailableRuntimes"))
+                    if (k != null) foreach (string n in k.GetValueNames()) if (File.Exists(n)) list.Add(n);
+            }
+            catch { }
+            // Known places, in case a runtime did not list itself
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            foreach (string c in new[] {
+                Path.Combine(pf, @"Oculus\Support\oculus-runtime\oculus_openxr_64.json"),
+                Path.Combine(pf86, @"Steam\steamapps\common\SteamVR\steamxr_win64.json"),
+                Path.Combine(pf, @"Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json") })
+                if (File.Exists(c) && !list.Exists(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase))) list.Add(c);
+            return list;
+        }
+
+        // The VR app that is running right now (its OpenXR manifest), or null
+        public static string RunningOpenXrRuntime()
+        {
+            string want = null;
+            try
+            {
+                if (Process.GetProcessesByName("vrserver").Length > 0) want = "SteamVR";
+                else if (Process.GetProcessesByName("VirtualDesktop.Streamer").Length > 0) want = "Virtual Desktop";
+                else if (Process.GetProcessesByName("OVRServer_x64").Length > 0) want = "Meta Horizon Link";
+            }
+            catch { }
+            if (want == null) return null;
+            foreach (string m in AvailableOpenXrRuntimes()) if (RuntimeName(m) == want) return m;
+            return null;
+        }
+
+        // Makes a runtime the default OpenXR runtime (Windows asks for permission: it is a machine setting)
+        public static bool SetActiveOpenXrRuntime(string manifestPath)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("reg.exe", @"add ""HKLM\SOFTWARE\Khronos\OpenXR\1"" /v ActiveRuntime /t REG_SZ /d """ + manifestPath + @""" /f /reg:64");
+                psi.Verb = "runas"; psi.UseShellExecute = true; psi.WindowStyle = ProcessWindowStyle.Hidden;
+                using (var p = Process.Start(psi)) { p.WaitForExit(15000); }
+                return string.Equals(ActiveOpenXrRuntime(), manifestPath, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
         public static string RuntimeName(string manifestPath)
         {
             if (string.IsNullOrEmpty(manifestPath)) return null;
