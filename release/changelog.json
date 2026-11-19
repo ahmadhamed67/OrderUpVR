@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.14.5",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Collect logs now also includes everything about the launcher: its settings and preferences, your mods switches, VR comfort settings, both Stable and Experimental installs, which VR apps are installed and running, and your graphics card."
+    ],
+    "notes": [
+      "Launcher 1.20.0: the log zip adds launcher.txt (launcher version and program, uptime, window, what it shows now, game/update/busy state, channels and both install folders, your RPCS3 and game folders and whether they are found, all preferences and mods, VR comfort, default and installed OpenXR runtimes, VR processes running, Windows, CPU count, graphics drivers, Visual C++ runtime), launcher_settings.json, orderupvr_mods.txt and the other channel's last mod log."
+    ]
+  },
+  {
     "version": "0.14.4",
     "channel": "beta",
     "date": "2026-11-19",

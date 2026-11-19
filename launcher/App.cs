@@ -1672,6 +1672,74 @@ namespace OrderUpVR
             }
         }
 
+        // Everything the launcher knows right now, for the logs
+        string LauncherReport()
+        {
+            var r = new StringBuilder();
+            Action<string, object> line = (k, v) => r.Append(k).Append(": ").Append(v == null ? "(none)" : v.ToString()).Append("\r\n");
+            r.Append("== Launcher ==\r\n");
+            line("Version", Core.LauncherVersion);
+            try { line("Program", Process.GetCurrentProcess().MainModule.FileName); } catch { }
+            try { line("Running for", (DateTime.Now - Process.GetCurrentProcess().StartTime).ToString(@"hh\:mm\:ss")); } catch { }
+            line("Window", (int)ActualWidth + "x" + (int)ActualHeight + (WindowState == WindowState.Maximized ? " maximized" : ""));
+            line("Time", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+            r.Append("\r\n== Now ==\r\n");
+            line("Game running from this launcher", game != null && !game.HasExited);
+            try { line("RPCS3 processes running", Process.GetProcessesByName("rpcs3").Length); } catch { }
+            line("Game status shown", liveGame);
+            line("Headset status shown", liveVr);
+            line("Busy (installing/updating)", busy);
+            line("Update available", UpdateAvailable);
+            line("Latest on the channel", manifest == null ? null : manifest.version + " (" + manifest.channel + ")");
+            r.Append("\r\n== Channels and installs ==\r\n");
+            line("Channel picked", Core.ChannelOf(s));
+            line("Installed build channel", s.InstalledChannel);
+            line("Installed version (picked channel)", s.InstalledVersion);
+            if (s.Installs != null) foreach (var kv in s.Installs) line("Install " + kv.Key, kv.Value);
+            foreach (string ch in new[] { "stable", "beta" })
+            {
+                string d = Core.EmuDir(s, ch);
+                string exe = System.IO.Path.Combine(d, "rpcs3.exe");
+                line("Folder " + ch, d + (File.Exists(exe) ? " (rpcs3.exe " + File.GetLastWriteTime(exe).ToString("yyyy-MM-dd HH:mm") + ")" : " (not installed)"));
+            }
+            line("RPCS3 folder (yours)", s.Rpcs3Dir + (Core.IsRpcs3Dir(s.Rpcs3Dir) ? " (ok)" : " (NOT FOUND)"));
+            line("Game folder", s.GameDir + (Core.IsGameDir(s.GameDir) ? " (ok)" : " (NOT FOUND)"));
+            r.Append("\r\n== Preferences ==\r\n");
+            line("Check for updates automatically", !s.NoAutoUpdate);
+            line("Minimize while playing", !s.KeepLauncherOpen);
+            line("Show the game's art", s.ShowGameArt);
+            line("Mods switch", s.ModsEnabled);
+            foreach (var m in ModList) line("Mod " + m[0], ModOn(m[0]));
+            line("Prepared version (first start done)", s.PreparedVersion);
+            r.Append("\r\n== VR comfort and body ==\r\n");
+            if (s.Vr != null) foreach (var kv in s.Vr) line(kv.Key, kv.Value);
+            else r.Append("(defaults)\r\n");
+            r.Append("\r\n== VR software ==\r\n");
+            line("Default OpenXR runtime", Core.ActiveOpenXrRuntime());
+            line("VR app running now", Core.RunningOpenXrRuntime());
+            foreach (string rt in Core.AvailableOpenXrRuntimes()) line("Installed runtime", Core.RuntimeName(rt) + " = " + rt);
+            foreach (string pn in new[] { "vrserver", "vrmonitor", "OVRServer_x64", "OculusClient", "VirtualDesktop.Streamer", "VirtualDesktop.Service" })
+                try { line("Process " + pn, Process.GetProcessesByName(pn).Length > 0 ? "running" : "-"); } catch { }
+            r.Append("\r\n== PC ==\r\n");
+            line("Windows", Environment.OSVersion.VersionString + (Environment.Is64BitOperatingSystem ? " 64-bit" : ""));
+            line("Processors", Environment.ProcessorCount);
+            try
+            {
+                foreach (var name in Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}").GetSubKeyNames())
+                {
+                    using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\" + name))
+                    {
+                        object desc = k == null ? null : k.GetValue("DriverDesc"), ver = k == null ? null : k.GetValue("DriverVersion");
+                        if (desc != null) line("Graphics", desc + " (driver " + ver + ")");
+                    }
+                }
+            }
+            catch { }
+            var vc = Core.VcRedistVersion();
+            line("Visual C++ runtime", vc == null ? "not found" : vc.ToString());
+            return r.ToString();
+        }
+
         void CollectLogs()
         {
             try
@@ -1709,6 +1777,19 @@ namespace OrderUpVR
                     "\r\nChannel picked: " + Core.ChannelOf(s) + ", installed build: " + (s.InstalledChannel ?? "unknown") +
                     "\r\nOpenXR runtime: " + (Core.ActiveOpenXrRuntime() ?? "none") + "\r\nWindows: " + Environment.OSVersion.VersionString +
                     "\r\nVR settings: " + (s.Vr == null ? "defaults" : string.Join(", ", System.Linq.Enumerable.Select(s.Vr, kv => kv.Key + "=" + kv.Value))) + "\r\n");
+                // The launcher itself: its settings, what it is doing, both channels' installs, the VR apps
+                try { if (File.Exists(Settings.FilePath)) File.Copy(Settings.FilePath, System.IO.Path.Combine(tmp, "launcher_settings.json"), true); } catch { }
+                try
+                {
+                    string mods = System.IO.Path.Combine(emu, @"config\orderupvr_mods.txt");
+                    if (File.Exists(mods)) File.Copy(mods, System.IO.Path.Combine(tmp, "orderupvr_mods.txt"), true);
+                    // the other channel's last mod log, when it has one
+                    string other = Core.EmuDir(s, Core.ChannelOf(s) == "beta" ? "stable" : "beta");
+                    string ol = System.IO.Path.Combine(other, @"log\orderup_vr.log");
+                    if (File.Exists(ol)) CopyTail(ol, System.IO.Path.Combine(tmp, "other_channel_orderup_vr.log"), 5L * 1048576);
+                }
+                catch { }
+                try { File.WriteAllText(System.IO.Path.Combine(tmp, "launcher.txt"), LauncherReport()); } catch { }
                 string zip = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OrderUpVR_logs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".zip");
                 ZipFile.CreateFromDirectory(tmp, zip);
                 Directory.Delete(tmp, true);
