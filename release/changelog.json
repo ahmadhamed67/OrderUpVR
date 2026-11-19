@@ -1,5 +1,22 @@
 [
   {
+    "version": "0.14.2",
+    "channel": "beta",
+    "date": "2026-11-19",
+    "simple": [
+      "Your body now follows the profile you load: load a profile and within a couple of seconds you become that profile's chef (it never switched before).",
+      "Lobby: stoves, sinks and furniture are back where the game puts them, and broken pieces are gone.",
+      "Lobby: seated, you see the restaurant as if standing, so it no longer towers over you; it is also a little smaller.",
+      "Lobby: for now only the restaurants that look right are used (Gravy Chug, El Fuego, Chez Haute); the others come back once fixed."
+    ],
+    "notes": [
+      "Chef detection: the texture pieces had to have 20 distinct byte values in 48 bytes; the chef textures reach at most 17, so no piece was ever chosen ('0 male and 0 female pieces' in every log). Now the 6 most detailed 64-byte pieces per chef that the other chef's texture lacks; one pass over RSX local memory every 2 s with an 8-byte lookup per aligned block; a chef wins with 2+ pieces and 2 more than the other.",
+      "Lobby parts: a mesh part is its block (material id 0x198 before its first segment) plus every drawn segment (attribute block size > 0) up to the next block; shadow copies are skipped. Before, two segments per part were assumed, so in Stuffolini, Chez Haute and the burger joint every object after the first big part took another object's place and material.",
+      "Lobby: segments with non-finite or out-of-range positions are dropped; overlay/decal/shadow names skipped; standing spot near the median of the dining tables when the layout names them, floor height taken near them.",
+      "Lobby scale 0.9; seated (or floor unknown): restaurant floor 1.6 m below the eyes at board placement."
+    ]
+  },
+  {
     "version": "0.14.1",
     "channel": "beta",
     "date": "2026-11-19",

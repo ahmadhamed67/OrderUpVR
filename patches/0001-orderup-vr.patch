@@ -524,10 +524,10 @@ index 1ff578491..718072df8 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..ee09ee109
+index 000000000..9be229d9a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7282 @@
+@@ -0,0 +1,7316 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -3398,24 +3398,35 @@ index 000000000..ee09ee109
 +		{
 +			auto& d = g_detect;
 +			const u64 now = GetTickCount64();
-+			if (d.busy || now - d.last < 5000) return;
++			if (d.busy || now - d.last < 2000) return;
 +			d.last = now;
 +			if (d.th.joinable()) d.th.join();
 +			if (!d.sig_tried)
 +			{
-+				d.sig_tried = true;
 +				const std::string dir = game_usrdir();
-+				for (int f = 0; f < 2 && !dir.empty(); f++)
++				if (dir.empty()) return;   // the game is not booted yet: try again later
++				d.sig_tried = true;
++				std::vector<u8> tex[2];
++				const bool ok = chef::texture_bytes(dir, false, tex[0]) && chef::texture_bytes(dir, true, tex[1]);
++				for (int f = 0; f < 2 && ok; f++)
 +				{
-+					std::vector<u8> tex;
-+					if (!chef::texture_bytes(dir, f == 1, tex)) continue;
-+					// Pieces with lots of detail (not flat colour), spread over the picture
-+					for (usz off = 0x8000; off + 48 < tex.size() && d.sig[f].size() < 4; off += 0x11000)
++					// The most detailed pieces of this chef's picture (8 DXT blocks) that the other chef's picture lacks
++					std::vector<std::pair<int, usz>> cand;
++					for (usz off = 0x1000; off + 64 < tex[f].size(); off += 0x800)
 +					{
 +						bool seen[256]{};
 +						int distinct = 0;
-+						for (usz k = 0; k < 48; k++) if (!seen[tex[off + k]]) { seen[tex[off + k]] = true; distinct++; }
-+						if (distinct >= 20) d.sig[f].emplace_back(tex.begin() + off, tex.begin() + off + 48);
++						for (usz k = 0; k < 64; k++) if (!seen[tex[f][off + k]]) { seen[tex[f][off + k]] = true; distinct++; }
++						cand.emplace_back(distinct, off);
++					}
++					std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
++					const auto& other = tex[f ^ 1];
++					for (const auto& [dn, off] : cand)
++					{
++						if (d.sig[f].size() >= 6 || dn < 8) break;
++						const auto b = tex[f].begin() + off, e = b + 64;
++						if (std::search(other.begin(), other.end(), std::boyer_moore_horspool_searcher(b, e)) != other.end()) continue;
++						d.sig[f].emplace_back(b, e);
 +					}
 +				}
 +				vr_log("Chef: looking for the game's chef textures (%zu male and %zu female pieces)", d.sig[0].size(), d.sig[1].size());
@@ -3426,22 +3437,39 @@ index 000000000..ee09ee109
 +			{
 +				auto& dd = g_detect;
 +				int hits[2]{};
-+				// Video memory (RSX local memory) stays mapped for the whole game
++				// One pass over video memory (RSX local memory, mapped for the whole game): DXT blocks are 8-byte
++				// aligned, so each aligned 8 bytes is looked up among the pieces' first blocks
++				std::unordered_map<u64, std::pair<int, int>> first;   // first 8 bytes -> (chef, piece)
++				for (int f = 0; f < 2; f++)
++					for (int k = 0; k < static_cast<int>(dd.sig[f].size()); k++)
++					{
++						u64 v;
++						std::memcpy(&v, dd.sig[f][k].data(), 8);
++						first[v] = {f, k};
++					}
++				std::vector<bool> quick(65536);   // a fast first check on the low 16 bits
++				for (const auto& [v, fk] : first) quick[v & 0xffff] = true;
++				bool seen[2][8]{};
 +				for (u32 base = 0xC0000000u; base < 0xD0000000u; base += 0x100000u)
 +				{
 +					if (!vm::check_addr(base, vm::page_readable, 0x100000u)) continue;
 +					const u8* mem = static_cast<const u8*>(vm::base(base));
 +					constexpr usz len = 0x100000u;
-+					for (int f = 0; f < 2; f++)
-+						for (const auto& sg : dd.sig[f])
-+						{
-+							const auto it = std::search(mem, mem + len, std::boyer_moore_horspool_searcher(sg.begin(), sg.end()));
-+							if (it != mem + len) hits[f]++;
-+						}
++					for (usz o = 0; o + 64 <= len; o += 8)
++					{
++						u64 v;
++						std::memcpy(&v, mem + o, 8);
++						if (!quick[v & 0xffff]) continue;
++						const auto it = first.find(v);
++						if (it == first.end()) continue;
++						const auto [f, k] = it->second;
++						if (!seen[f][k] && std::memcmp(mem + o, dd.sig[f][k].data(), 64) == 0) { seen[f][k] = true; hits[f]++; }
++					}
 +				}
 +				const int was = dd.chosen.load();
-+				if (hits[1] >= 2 && hits[0] == 0) { dd.chosen = 1; dd.found = true; }
-+				else if (hits[0] >= 2 && hits[1] == 0) { dd.chosen = 0; dd.found = true; }
++				// One chef clearly present (a profile's chef stays in video memory while its career is shown)
++				if (hits[1] >= 2 && hits[1] > hits[0] + 1) { dd.chosen = 1; dd.found = true; }
++				else if (hits[0] >= 2 && hits[0] > hits[1] + 1) { dd.chosen = 0; dd.found = true; }
 +				if (dd.chosen.load() != was || dd.scans++ == 0)
 +					vr_log("Chef: the game uses the %s chef (texture pieces found: male %d, female %d)", dd.chosen.load() ? "female" : "male", hits[0], hits[1]);
 +				dd.busy = false;
@@ -3676,7 +3704,9 @@ index 000000000..ee09ee109
 +				const std::string dir = game_usrdir();
 +				if (dir.empty()) return;
 +				g_lobby.state = 1;
-+				const int pick = static_cast<int>((GetTickCount64() / 7) % std::size(lobby::places));
++				int good[std::size(lobby::places)], n = 0;
++				for (int k = 0; k < static_cast<int>(std::size(lobby::places)); k++) if (lobby::places[k].lobby) good[n++] = k;
++				const int pick = good[(GetTickCount64() / 7) % n];
 +				g_lobby.th = std::thread([dir, pick]
 +				{
 +					const u64 t0 = GetTickCount64();
@@ -3730,17 +3760,21 @@ index 000000000..ee09ee109
 +			const auto& r = g_lobby.r;
 +			auto* ctx = xr.context;
 +			const vec3 normal{std::sin(xr.screen_yaw), 0.f, std::cos(xr.screen_yaw)};
-+			const f32 floor = xr.floor_known ? xr.floor_y : xr.last_head.y - 1.65f;
++			// Seated: you see the restaurant as if standing (its floor 1.6 m below your eyes, measured when the board was
++			// placed), otherwise it towers over you. Standing: your real floor.
++			const f32 eyes = xr.screen_center.y + 0.10f;
++			const f32 floor = xr.comfort.seated || !xr.floor_known ? eyes - 1.6f : xr.floor_y;
 +			vec3 A = xr.screen_center + normal * xr.screen_distance;
 +			A.y = floor;
 +			const f32 d = xr.screen_yaw - r.facing;
-+			const f32 c = std::cos(d), s = std::sin(d);
++			constexpr f32 k = 0.9f;   // the game's restaurants are built a little larger than life
++			const f32 c = std::cos(d) * k, s = std::sin(d) * k;
 +			mat4 M;
 +			M.m[0] = c; M.m[2] = s;
-+			M.m[5] = 1.f;
++			M.m[5] = k;
 +			M.m[8] = -s; M.m[10] = c;
 +			M.m[3] = A.x - (c * r.spawn.x + s * r.spawn.z);
-+			M.m[7] = A.y - r.spawn.y;
++			M.m[7] = A.y - k * r.spawn.y;
 +			M.m[11] = A.z - (-s * r.spawn.x + c * r.spawn.z);
 +			M.m[15] = 1.f;
 +			lobby_cb cb{};
@@ -8776,10 +8810,10 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_lobby.inl b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
 new file mode 100644
-index 000000000..1d2a6f14d
+index 000000000..42ab556f1
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,531 @@
 +// Order Up VR: the lobby is one of the game's own restaurants, rebuilt at start-up from the player's own game files
 +// (nothing of the game is shipped with the mod).
 +//
@@ -8817,10 +8851,10 @@ index 000000000..1d2a6f14d
 +	};
 +
 +	// The restaurants with a dining room (package hash in Chef.wad, name)
-+	struct place_def { u32 wad; const char* name; };
++	struct place_def { u32 wad; const char* name; bool lobby; };   // lobby: checked to look right where you stand
 +	constexpr place_def places[] = {
-+		{0xcca045da, "Gravy Chug"}, {0x2d1cd440, "El Fuego"}, {0xb95ae814, "Stuffolini"},
-+		{0xbaa69b86, "Chez Haute"}, {0x906a2b6d, "Kung Fusion"}, {0x4a13fc83, "Burger joint"},
++		{0xcca045da, "Gravy Chug", true}, {0x2d1cd440, "El Fuego", true}, {0xb95ae814, "Stuffolini", false},
++		{0xbaa69b86, "Chez Haute", true}, {0x906a2b6d, "Kung Fusion", false}, {0x4a13fc83, "Burger joint", false},
 +	};
 +
 +	// A whole nested package, decompressed once
@@ -8929,6 +8963,7 @@ index 000000000..1d2a6f14d
 +		// Layout: name hash -> placement
 +		std::unordered_map<u32, xform> where;
 +		std::unordered_map<u32, std::string> names;
++		std::vector<vec3> tables;   // the dining room: where its tables are
 +		{
 +			usz p = 12;
 +			bool first = true;
@@ -8950,6 +8985,11 @@ index 000000000..1d2a6f14d
 +				const u32 h = name_hash(nm);
 +				where[h] = x;
 +				names[h] = nm;
++				std::string lower = nm;
++				for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++				if ((lower.find("table") != std::string::npos || lower.find("booth") != std::string::npos) && lower.find("stain") == std::string::npos &&
++					lower.find("downgrade") == std::string::npos && lower.find("cam") == std::string::npos && lower.find("counter") == std::string::npos)
++					tables.push_back(x.pos);
 +			}
 +		}
 +
@@ -9047,9 +9087,22 @@ index 000000000..1d2a6f14d
 +			segs.push_back({s, nv, ni});
 +		}
 +
-+		static const char* skip_words[] = {"sphere", "sky", "exterior", "aofakery", "downgrade", "splats", "street", "sidewalk", "building"};
++		// Mesh parts: each starts with a block naming its material (0x198 bytes before its first segment), then its
++		// drawn segments (with a vertex attribute block), then their shadow copies (none). Big parts have several.
++		struct part_t { int mat = -1; std::vector<usz> draw; };
++		std::vector<part_t> parts_list;
++		for (const auto& sg : segs)
++		{
++			const usz s = sg.s;
++			const auto mi = s >= 0x198 ? mat_index.find(rd32be(&scene[s - 0x198])) : mat_index.end();
++			if (mi != mat_index.end()) { parts_list.emplace_back(); parts_list.back().mat = mi->second; }
++			if (parts_list.empty()) continue;
++			if (rd16be(&scene[s + 0x32]) != 0) parts_list.back().draw.push_back(&sg - segs.data());
++		}
++
++		static const char* skip_words[] = {"sphere", "sky", "exterior", "aofakery", "downgrade", "splats", "street", "sidewalk", "building", "overlay", "decal", "shadow"};
 +		std::map<std::pair<int, u8>, std::vector<u32>> by_batch;   // (picture, blend) -> indices
-+		usz si = 0;
++		usz pi_next = 0;
 +		int parts_bad = 0;
 +		for (u32 k = 0; k < nnodes; k++)
 +		{
@@ -9062,65 +9115,69 @@ index 000000000..1d2a6f14d
 +				for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 +				for (const char* sw : skip_words) if (lower.find(sw) != std::string::npos) skip = true;
 +			}
-+			for (u32 part = 0; part < nd.parts; part++, si += 2)
++			for (u32 part = 0; part < nd.parts; part++)
 +			{
-+				if (si >= segs.size()) break;
++				if (pi_next >= parts_list.size()) break;
++				const part_t& pt = parts_list[pi_next++];
 +				if (skip) continue;
-+				const auto& sg = segs[si];
-+				const usz s = sg.s;
-+				// the index stream
-+				const u32 isz = rd16be(&scene[s + 20]);
-+				const u32 tris = sg.ni / 3;
-+				std::vector<u16> ix;
-+				usz st = 0;
-+				for (usz q = s + 16; q + 8 < scene.size() && q < s + 0x2000; q += 16)
-+				{
-+					const u32 n = rd16be(&scene[q]), X = rd16be(&scene[q + 4]), bits = scene[q + 6];
-+					if (bits > 16 || X == 0 || X > 4096) continue;
-+					const usz tot = 8 + X + (tris * 2 + 7) / 8 + (usz{n} * bits + 7) / 8;
-+					if (pad16(tot) != isz || n > sg.ni || q + isz > scene.size()) continue;
-+					std::vector<u16> cand;
-+					if (!edge_decompress(job, &scene[s], &scene[q], isz, sg.ni, cand)) continue;
-+					u16 mx = 0;
-+					for (u16 c : cand) mx = std::max(mx, c);
-+					if (mx + 1u != sg.nv) continue;
-+					ix = std::move(cand);
-+					st = q;
-+					break;
-+				}
-+				if (ix.empty()) { parts_bad++; continue; }
-+				// material
-+				if (s < 0x198) continue;
-+				const auto mi = mat_index.find(rd32be(&scene[s - 0x198]));
-+				if (mi == mat_index.end()) continue;
-+				const int m = mi->second;
++				const int m = pt.mat;
 +				const auto ti = mats.find(mat_lib[m]);
 +				if (ti == mats.end()) continue;
 +				const auto pi = pic_of_image.find(ti->second.image);
 +				if (pi == pic_of_image.end() || r.pics[pi->second].rgba.empty()) continue;
 +				const u8 blend = (mat_flags[m] & 0x80) ? 3 : mat_alpha[m] == 1 ? 2 : ti->second.fmt == 0x20 ? 1 : 0;
-+				// vertices
-+				const usz po = st + isz;
-+				const u32 attr_size = rd16be(&scene[s + 0x32]);
-+				const u32 stride = attr_size / sg.nv;
-+				const usz ao = po + pad16(usz{sg.nv} * 12);
-+				if ((stride != 24 && stride != 36) || ao + usz{sg.nv} * stride > scene.size()) continue;
 +				const xform& x = wi->second;
-+				const u32 base = static_cast<u32>(r.v.size());
-+				for (u32 i = 0; i < sg.nv; i++)
++				for (usz di : pt.draw)
 +				{
-+					vec3 p{rdf32be(&scene[po + i * 12]), rdf32be(&scene[po + i * 12 + 4]), rdf32be(&scene[po + i * 12 + 8])};
-+					p = {p.x * x.scale.x, p.y * x.scale.y, p.z * x.scale.z};
-+					p = qrot(x.rot, p) + x.pos;
-+					const u8* a = &scene[ao + i * stride + (stride == 36 ? 12 : 0)];
-+					vert vv{};
-+					vv.p[0] = p.x; vv.p[1] = p.y; vv.p[2] = p.z;
-+					for (int c = 0; c < 4; c++) vv.c[c] = std::clamp(rdf32be(a + c * 4), 0.f, 1.f);
-+					vv.uv[0] = rdf32be(a + 16); vv.uv[1] = rdf32be(a + 20);
-+					r.v.push_back(vv);
++					const auto& sg = segs[di];
++					const usz s = sg.s;
++					// the index stream
++					const u32 isz = rd16be(&scene[s + 20]);
++					const u32 tris = sg.ni / 3;
++					std::vector<u16> ix;
++					usz st = 0;
++					for (usz q = s + 16; q + 8 < scene.size() && q < s + 0x2000; q += 16)
++					{
++						const u32 n = rd16be(&scene[q]), X = rd16be(&scene[q + 4]), bits = scene[q + 6];
++						if (bits > 16 || X == 0 || X > 4096) continue;
++						const usz tot = 8 + X + (tris * 2 + 7) / 8 + (usz{n} * bits + 7) / 8;
++						if (pad16(tot) != isz || n > sg.ni || q + isz > scene.size()) continue;
++						std::vector<u16> cand;
++						if (!edge_decompress(job, &scene[s], &scene[q], isz, sg.ni, cand)) continue;
++						u16 mx = 0;
++						for (u16 c : cand) mx = std::max(mx, c);
++						if (mx + 1u != sg.nv) continue;
++						ix = std::move(cand);
++						st = q;
++						break;
++					}
++					if (ix.empty()) { parts_bad++; continue; }
++					// vertices
++					const usz po = st + isz;
++					const u32 attr_size = rd16be(&scene[s + 0x32]);
++					const u32 stride = attr_size / sg.nv;
++					const usz ao = po + pad16(usz{sg.nv} * 12);
++					if ((stride != 24 && stride != 36) || attr_size != stride * sg.nv || ao + usz{sg.nv} * stride > scene.size()) { parts_bad++; continue; }
++					const u32 base = static_cast<u32>(r.v.size());
++					bool sane = true;
++					for (u32 i = 0; i < sg.nv; i++)
++					{
++						vec3 p{rdf32be(&scene[po + i * 12]), rdf32be(&scene[po + i * 12 + 4]), rdf32be(&scene[po + i * 12 + 8])};
++						if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || std::fabs(p.x) > 500.f || std::fabs(p.y) > 500.f || std::fabs(p.z) > 500.f) sane = false;
++						p = {p.x * x.scale.x, p.y * x.scale.y, p.z * x.scale.z};
++						p = qrot(x.rot, p) + x.pos;
++						const u8* a = &scene[ao + i * stride + (stride == 36 ? 12 : 0)];
++						vert vv{};
++						vv.p[0] = p.x; vv.p[1] = p.y; vv.p[2] = p.z;
++						for (int c = 0; c < 4; c++) vv.c[c] = std::clamp(rdf32be(a + c * 4), 0.f, 1.f);
++						vv.uv[0] = rdf32be(a + 16); vv.uv[1] = rdf32be(a + 20);
++						if (!std::isfinite(vv.uv[0]) || !std::isfinite(vv.uv[1])) { vv.uv[0] = vv.uv[1] = 0.f; }
++						r.v.push_back(vv);
++					}
++					if (!sane) { r.v.resize(base); parts_bad++; continue; }
++					auto& dst = by_batch[{pi->second, blend}];
++					for (u16 c : ix) dst.push_back(base + c);
 +				}
-+				auto& dst = by_batch[{pi->second, blend}];
-+				for (u16 c : ix) dst.push_back(base + c);
 +			}
 +		}
 +		// Opaque first, then cut-outs, then the see-through ones
@@ -9137,7 +9194,11 @@ index 000000000..1d2a6f14d
 +				r.batches.push_back(bt);
 +			}
 +		if (r.idx.empty()) { r.error = fmt::format("no geometry (%d parts not decoded)", parts_bad); return false; }
-+		r.info = fmt::format("%u nodes, %u materials, %zu segments, %zu placed names, %d parts not decoded", nnodes, nmat, segs.size(), where.size(), parts_bad);
++		{
++			usz parts = 0;
++			for (const auto& nd : nodes) parts += nd.parts;
++			r.info = fmt::format("%u nodes (%zu parts, %zu found), %u materials, %zu segments, %zu placed names, %d parts not decoded", nnodes, parts, parts_list.size(), nmat, segs.size(), where.size(), parts_bad);
++		}
 +
 +		// Where to stand: inside (floor below, ceiling above), with the most free space around, then the board in
 +		// the direction with the longest free view
@@ -9152,9 +9213,25 @@ index 000000000..1d2a6f14d
 +				if (area < 1e-4f || std::fabs(n.y) < 0.95f * std::sqrt(dot(n, n))) continue;
 +				up_area[static_cast<int>(std::floor((A[1] + B[1] + C[1]) / 3.f * 10.f))] += area;
 +			}
++			// The dining room's middle (median of its tables), when the layout names them
++			bool have_tables = tables.size() >= 2;
++			vec3 tmid{};
++			if (have_tables)
++			{
++				std::vector<f32> tx, ty, tz;
++				for (const auto& t : tables) { tx.push_back(t.x); ty.push_back(t.y); tz.push_back(t.z); }
++				std::sort(tx.begin(), tx.end()); std::sort(ty.begin(), ty.end()); std::sort(tz.begin(), tz.end());
++				tmid = {tx[tx.size() / 2], ty[ty.size() / 2], tz[tz.size() / 2]};
++			}
++			// floor: the biggest upward area (near the tables' height when known)
 +			int floor_bin = 0;
 +			f32 best = 0.f;
-+			for (const auto& [b, a] : up_area) if (a > best && b < 30) { best = a; floor_bin = b; }
++			for (const auto& [b, a] : up_area)
++			{
++				if (b >= 30) continue;
++				if (have_tables && std::fabs(b * 0.1f - tmid.y) > 1.2f) continue;
++				if (a > best) { best = a; floor_bin = b; }
++			}
 +			const f32 fy = floor_bin * 0.1f + 0.05f;
 +			// grid over the geometry
 +			f32 x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
@@ -9211,9 +9288,9 @@ index 000000000..1d2a6f14d
 +			for (const auto& vv : r.v) { xs.push_back(vv.p[0]); zs.push_back(vv.p[2]); }
 +			std::nth_element(xs.begin(), xs.begin() + xs.size() / 2, xs.end());
 +			std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
-+			const f32 mx = xs[xs.size() / 2], mz = zs[zs.size() / 2];
++			const f32 mx = have_tables ? tmid.x : xs[xs.size() / 2], mz = have_tables ? tmid.z : zs[zs.size() / 2];
 +			int bi = -1, bd = 0;
-+			for (f32 radius : {10.f, 1000.f})
++			for (f32 radius : {have_tables ? 5.f : 10.f, 1000.f})
 +			{
 +				for (int j = 0; j < gh; j++)
 +					for (int i = 0; i < gw; i++)
@@ -9256,7 +9333,7 @@ index 000000000..1d2a6f14d
 +					const int d = dist[usz(j) * gw + i];
 +					if (d < need) continue;
 +					const f32 cx = x0 + (i + 0.5f) * cell - mx, cz = z0 + (j + 0.5f) * cell - mz;
-+					if (cx * cx + cz * cz > 100.f) continue;
++					if (cx * cx + cz * cz > (have_tables ? 25.f : 100.f)) continue;
 +					f32 fa = 0.f;
 +					const f32 score = std::min(view(j * gw + i, fa), 8.f) + 2.f * d * cell;
 +					if (score > best_score) { best_score = score; pick = j * gw + i; }
