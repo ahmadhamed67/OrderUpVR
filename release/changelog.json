@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.15.0",
+    "channel": "beta",
+    "date": "2026-11-22",
+    "simple": [
+      "One scale for everything: your chef body, the lobby and the game's restaurant now share the same size. Your eyes are the chef's eyes, so counters come to your waist in the lobby and in the kitchen alike.",
+      "In the kitchen you now stand on the restaurant's floor at the chef's height (seated: as if standing), close enough to reach the food. Before, the restaurant shrank to about 40% of real size.",
+      "Lobby textures fixed: floors no longer have holes or glow, lamp light pools look like light again, and see-through parts use the picture's own transparency.",
+      "Lobby looks like a well-kept restaurant: stains, splats, cobwebs, dirt, scratches and broken props are gone."
+    ],
+    "notes": [
+      "Scale: metres per game unit = your eye height / the chef's eye height (1.45 units); seated assumes 1.6 m eyes. Set when you are placed (place_screen), not per frame and no longer 1.62 / camera height (that also used the previous kitchen's scale on every recentre). Used by the chef body (in.scale), the fallback body, the lobby (k) and the game (xr.unit). An old hand-set 'worldscale' is ignored.",
+      "In-game eyes: at the chef's eye height above the game floor, at most 1.8 m below the game camera, stepped towards the camera's look target until it is within 0.55 m reach (at most 1.5 m). The hand pointer casts from your eye through your hand to the food plane (no parallax now that the eye is not at the game camera). Mod ceiling at 4 units. Counter-anchored tickets accepted up to 5 m.",
+      "Lobby pictures: solid / cut-out / see-through from each picture's alpha (97% opaque = solid; a clear on/off mask = cut-out; else see-through); material flag 0x80 = additive glow. Before, every DXT5 picture was cut-out and see-through came from a material byte, which punched holes in floors and made solid surfaces glow.",
+      "Lobby skip list: stain, splat, cobweb, web_, dirt, rust, scratch, filthy, destroyed, broken, mop, fallen, open cans, dirty plates, wet-floor sign and AO overlays (the game shows those only in a run-down restaurant).",
+      "Groundwork from another session kept: each hand's ray is recorded and handed to the game side, and grip start/end is logged (for real grabbing, not used yet)."
+    ]
+  },
+  {
     "version": "0.14.6",
     "channel": "beta",
     "date": "2026-11-19",

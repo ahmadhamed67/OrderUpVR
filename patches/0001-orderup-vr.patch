@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..4f8342cdf
+index 000000000..a5b77e33f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7353 @@
+@@ -0,0 +1,7388 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -758,6 +758,11 @@ index 000000000..4f8342cdf
 +		struct hud_panel { bool on = false; vec3 P{}, A{}, B{}; f32 hw = 0.f, hh = 0.f; };
 +
 +		// The headset side publishes where the eyes are; the renderer side reads it once per game frame.
++		// One scale for everything: your eyes are the chef's eyes. Metres per game unit = your eye height / the chef's
++		// eye height (the chef model and the restaurants share the game's units). Seated: you see as a standing chef.
++		constexpr f32 chef_eye_u = 1.45f;   // the chef's eyes above its feet (game units; chef::model eye_y)
++		constexpr f32 seated_eye_m = 1.6f;  // a seated player sees from this height
++
 +		struct view_snapshot
 +		{
 +			bool valid = false;
@@ -765,7 +770,7 @@ index 000000000..4f8342cdf
 +			XrFovf fov[2]{};
 +			vec3 player_pos{};   // the game camera's place in the room (LOCAL space)
 +			f32 player_yaw = 0.f;
-+			f32 unit = 0.3048f;  // metres per game unit
++			f32 unit = seated_eye_m / chef_eye_u;  // metres per game unit
 +			bool mode3d = true;
 +			bool stereo = true;  // false = one image for both eyes (head tracked, no depth)
 +			f32 hud_dist = 1.5f; // metres: where the game's HUD and menus float
@@ -1048,6 +1053,8 @@ index 000000000..4f8342cdf
 +			bool cursor_ok = false, laser_ok = false, pointer_images_tried = false;
 +			bool show_pointer = false;
 +			vec3 aim_origin{}, aim_hit{};
++			// Real grabbing: each hand's ray, in room space, computed from the grip pose.
++			vec3 hand_ray_origin[2]{}, hand_ray_dir[2]{};
 +
 +			// Pointer smoothing (One Euro filter)
 +			f32 fx = 0.5f, fy = 0.5f, fdx = 0.f, fdy = 0.f;
@@ -1062,7 +1069,9 @@ index 000000000..4f8342cdf
 +			// True VR
 +			bool mode3d = true;       // user choice: inside the game (true) or the big screen (false)
 +			bool stereo = true;       // depth (eyes alternate) or one image for both eyes
-+			f32 unit = 0.3048f;       // metres per game unit
++			f32 unit = seated_eye_m / chef_eye_u;   // metres per game unit (set when you are placed)
++			vec3 eye_off{};           // your eyes relative to the game camera (player frame, game units), set when placed
++			f32 eye_drop = 1.8f, reach = 0.55f, max_step = 1.5f;   // metres: most your eyes go below the camera; reach; step
 +			vec3 player_pos{};        // where the game camera sits in the room
 +			f32 player_yaw = 0.f;
 +			XrSwapchain eye_sc[2]{};
@@ -2036,28 +2045,36 @@ index 000000000..4f8342cdf
 +			xr.hud_locked = false;   // the HUD panels are placed again where you are
 +			xr.hud_world_ok = false;
 +
-+			// True VR: the game camera sits where you stand, facing where you face. Seated: at your eyes. Standing: at
-+			// its real height in this kitchen above your real floor (so the chef is as tall as the game's camera).
++			// True VR: one scale for your body, the lobby and the restaurant (your eyes are the chef's eyes). Your eyes go
++			// to the chef's eye height above the game's floor (at most eye_drop below the game camera), stepped towards
++			// what the camera looks at until it is within reach.
 +			xr.player_pos = xr.last_head;
 +			xr.player_yaw = xr.screen_yaw;
++			xr.eye_off = {};
 +			{
 +				cam_info c;
 +				{
 +					std::lock_guard lock(g_state_mutex);
 +					c = g_cam;
 +				}
-+				const f32 cam_h = -c.floor_lev * xr.unit;
-+				const f32 eye_h = xr.last_head.y - xr.floor_y;
-+				if (c.bounds && xr.floor_known && cam_h > 0.8f && cam_h < 2.6f)
++				const bool real_floor = !xr.comfort.seated && xr.floor_known;
++				const f32 eye_m = real_floor ? xr.last_head.y - xr.floor_y : seated_eye_m;
++				xr.unit = std::clamp(eye_m / chef_eye_u, 0.85f, 1.35f);
++				const f32 u = xr.unit;
++				const f32 cam_u = -c.floor_lev;   // the game camera above the restaurant's floor (game units)
++				if (c.bounds && cam_u > 1.f && cam_u < 14.f)
 +				{
-+					// Standing: the game's floor is your floor. Seated: halfway between the game camera's height and
-+					// your seated eyes (fully at the floor you would be too low, at the camera too high)
-+					const f32 h = xr.comfort.seated ? eye_h + (cam_h - eye_h) * 0.25f : cam_h;   // seated: close to your own eye height
-+					xr.player_pos.y = xr.floor_y + h;
-+					vr_log("Recentred: %s, game camera %.2f m above your floor (your eyes %.2f m, camera placed at %.2f m)", xr.comfort.seated ? "seated" : "standing", cam_h, eye_h, h);
++					const f32 eye_u = std::clamp(cam_u - xr.eye_drop / u, std::min(chef_eye_u, cam_u), cam_u);
++					const vec3 lv = level(c.up_a, xform(c.D, vec3{0.f, 0.f, -(c.food_d > 0.05f ? c.food_d : c.depth)}));
++					const f32 lh = std::sqrt(lv.x * lv.x + lv.z * lv.z);
++					const f32 k = lh > 1e-3f ? std::clamp(lh - xr.reach / u, 0.f, xr.max_step / u) / lh : 0.f;
++					xr.eye_off = {lv.x * k, eye_u - cam_u, lv.z * k};
++					xr.player_pos = xr.last_head - rotate(yaw_q(xr.player_yaw), xr.eye_off * u);
++					vr_log("Recentred: %s, %.3f m per unit (your eyes %.2f m = the chef's); camera %.2f units up, your eyes %.2f units up, %.2f m forward",
++						xr.comfort.seated ? "seated" : "standing", u, eye_m, cam_u, eye_u, lh * k * u);
 +				}
-+				else vr_log("Recentred: %s, the game camera is at your eyes (floor %s, camera height %.2f m)", xr.comfort.seated ? "seated" : "standing",
-+					xr.floor_known ? "known" : "not known", cam_h);
++				else vr_log("Recentred: %s, %.3f m per unit, the game camera is at your eyes (restaurant floor %s)",
++					xr.comfort.seated ? "seated" : "standing", u, c.bounds ? "out of range" : "not measured yet");
 +			}
 +			xr.player_pos.y += xr.lower;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
@@ -2915,7 +2932,8 @@ index 000000000..4f8342cdf
 +			const vec3 up{0.f, 1.f, 0.f};
 +			const f32 eye_h = head.y - xr.floor_y;
 +			// Body size from your real height when standing; a seated player gets an average-height chef
-+			const f32 scale = (!cf.seated && xr.floor_known && eye_h > 1.3f) ? std::clamp(eye_h / 1.65f, 0.85f, 1.15f) : 1.f;
++			const f32 scale = std::clamp(xr.unit * chef_eye_u / 1.65f, 0.8f, 1.2f);   // the same scale as everything else
++			(void)eye_h;
 +			const f32 fem = cf.female ? 1.f : 0.f;
 +			const f32 shoulder_w = (0.18f - 0.025f * fem) * scale;
 +			const vec3 back = fb * (-0.10f);
@@ -3602,7 +3620,7 @@ index 000000000..4f8342cdf
 +			in.head_q = xr.views_valid ? xr.views[0].pose.orientation : XrQuaternionf{0, 0, 0, 1};
 +			in.body_yaw = xr.body_yaw;
 +			in.floor_y = xr.floor_y;
-+			in.scale = std::clamp((xr.last_head.y - xr.floor_y) / std::max(m.eye_y, 0.5f), 0.6f, 1.3f);
++			in.scale = std::clamp(xr.unit, 0.6f, 1.5f);   // the same scale as the restaurant and the lobby (crouching no longer shrinks you)
 +			for (int sd = 0; sd < 2; sd++)
 +			{
 +				in.hand_valid[sd] = xr.hand_valid[sd];
@@ -3783,11 +3801,11 @@ index 000000000..4f8342cdf
 +			// Seated: you see the restaurant as if standing (its floor 1.6 m below your eyes, measured when the board was
 +			// placed), otherwise it towers over you. Standing: your real floor.
 +			const f32 eyes = xr.screen_center.y + 0.10f;
-+			const f32 floor = xr.comfort.seated || !xr.floor_known ? eyes - 1.6f : xr.floor_y;
++			const f32 k = xr.unit;   // one scale: your chef body, this lobby and the game's restaurant
++			const f32 floor = xr.comfort.seated || !xr.floor_known ? eyes - chef_eye_u * k : xr.floor_y;
 +			vec3 A = xr.screen_center + normal * xr.screen_distance;
 +			A.y = floor;
 +			const f32 d = xr.screen_yaw - r.facing;
-+			constexpr f32 k = 0.9f;   // the game's restaurants are built a little larger than life
 +			const f32 c = std::cos(d) * k, s = std::sin(d) * k;
 +			mat4 M;
 +			M.m[0] = c; M.m[2] = s;
@@ -3905,7 +3923,7 @@ index 000000000..4f8342cdf
 +			auto& g = g_gfx;
 +			const f32 u = xr.unit, extra = 4.f / u;
 +			const f32 x0 = c.bx0 - extra, x1 = c.bx1 + extra, z0 = c.bz0 - extra, z1 = c.bz1 + extra;
-+			const f32 y = c.floor_lev + 3.0f / u;
++			const f32 y = c.floor_lev + 4.0f;   // game units: above the 3.6-unit doors
 +			const XrQuaternionf py = yaw_q(xr.player_yaw);
 +			const vec3 R = rotate(py, {1.f, 0.f, 0.f}), Z = rotate(py, {0.f, 0.f, 1.f}), Up{0.f, 1.f, 0.f};
 +			const auto local = [&](f32 lx, f32 ly, f32 lz) { return from_player(xr, vec3{lx, ly, lz} * u); };
@@ -4276,7 +4294,7 @@ index 000000000..4f8342cdf
 +				{
 +					const vec3 pp = level(c.up_a, xform(c.D, game_to_view(gv, xr.hud_world[i]))) * xr.unit;
 +					const vec3 rel = pp - head_p;
-+					if (!std::isfinite(pp.x) || dot(rel, rel) > 9.f) continue;   // far away (another part of the restaurant): keep the room spot
++					if (!std::isfinite(pp.x) || dot(rel, rel) > 25.f) continue;   // more than 5 m away (another part of the restaurant): keep the room spot
 +					vec3 n = head_p - pp;
 +					n.y = 0.f;
 +					n = dot(n, n) > 1e-6f ? normalize(n) : vec3{0.f, 0.f, 1.f};
@@ -4423,7 +4441,12 @@ index 000000000..4f8342cdf
 +					XrSpaceLocation gl{XR_TYPE_SPACE_LOCATION};
 +					xr.hand_valid[h] = xr.grip_space[h] != XR_NULL_HANDLE && XR_SUCCEEDED(xrLocateSpace(xr.grip_space[h], xr.local_space, time, &gl)) &&
 +						(gl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (gl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
-+					if (xr.hand_valid[h]) xr.hand_pose[h] = gl.pose;
++					if (xr.hand_valid[h])
++					{
++						xr.hand_pose[h] = gl.pose;
++						xr.hand_ray_origin[h] = to_vec(gl.pose.position);
++						xr.hand_ray_dir[h] = normalize(rotate(gl.pose.orientation, vec3{0.f, 0.f, -1.f}));
++					}
 +					xr.hand_grip[h] = grip[h];
 +					xr.hand_trig[h] = trig[h];
 +				}
@@ -4697,7 +4720,18 @@ index 000000000..4f8342cdf
 +					else if (!xr.pointing_laser && xr.hand_valid[hand])
 +					{
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
-+						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, hg.grab) * (1.f / xr.unit), -1.f));
++						// What your eye sees behind your hand, on the plane of the food (your eyes are not at the game camera)
++						vec3 aim_pt = hg.grab;
++						{
++							const vec3 eye = xr.last_head, plane = to_local(0.f, 0.f);
++							const f32 dy = hg.grab.y - eye.y;
++							if (dy < -0.02f && hg.grab.y > plane.y)
++							{
++								const f32 t = (plane.y - eye.y) / dy;
++								if (t > 1.f && t < 6.f) aim_pt = eye + (hg.grab - eye) * t;
++							}
++						}
++						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, aim_pt) * (1.f / xr.unit), -1.f));
 +						if (gp.z < -0.05f)
 +						{
 +							nx = (cam.sx * gp.x + cam.cx * gp.z) / -gp.z;
@@ -4891,6 +4925,17 @@ index 000000000..4f8342cdf
 +				out.t = grip[hand] > 0.5f;
 +				out.move = trig[hand] > 0.5f || xr.touch_press;
 +				xr.touch_press = false;   // used once: a press only counts while the fingertip is in the panel this frame
++				// Real grabbing: record when the player starts/stops holding an item (GRIP), as the first step toward
++				// calling the game's own drag handlers with a 3D ray from the hand.
++				{
++					static bool prev_t = false;
++					if (out.t != prev_t)
++					{
++						vr_log("Grab: %s (hand %s, on_screen=%d, x=%.2f y=%.2f)", out.t ? "start" : "end",
++							hand ? "right" : "left", out.on_screen, out.x, out.y);
++						prev_t = out.t;
++					}
++				}
 +				apply_flip_assist(xr, out);
 +				out.cross = get_bool(xr, xr.btn_a);
 +				out.circle = get_bool(xr, xr.btn_b);
@@ -4928,6 +4973,11 @@ index 000000000..4f8342cdf
 +
 +			write_status(xr);
 +			if (xr.channel == "beta") track_log(xr, out);
++
++			// Real grabbing: expose the active hand's ray to the game-facing code.
++			const int ah = xr.active_hand;
++			out.ray_origin[0] = xr.hand_ray_origin[ah].x; out.ray_origin[1] = xr.hand_ray_origin[ah].y; out.ray_origin[2] = xr.hand_ray_origin[ah].z;
++			out.ray_dir[0] = xr.hand_ray_dir[ah].x; out.ray_dir[1] = xr.hand_ray_dir[ah].y; out.ray_dir[2] = xr.hand_ray_dir[ah].z;
 +
 +			std::lock_guard lock(g_state_mutex);
 +			g_pointer = out;
@@ -5017,14 +5067,6 @@ index 000000000..4f8342cdf
 +				g_views.fixed_unit = xr.fixed_unit;
 +			}
 +			const u64 now_tick = GetTickCount64();
-+			{
-+				f32 au = 0.f;
-+				{
-+					std::lock_guard lock(g_state_mutex);
-+					au = g_cam.auto_unit;
-+				}
-+				if (!xr.fixed_unit && au > 0.f && std::fabs(au - xr.unit) > 1e-4f) xr.unit = au;
-+			}
 +			const bool was3d = xr.live3d;
 +			xr.live3d = xr.mode3d && now_tick - xr.last_3d_tick < 400 && xr.eye_has[0] && (xr.mono3d || xr.eye_has[1]);
 +			if (xr.live3d != was3d) vr_log("Headset view: %s", xr.live3d ? "inside the game (3D)" : "big screen");
@@ -5455,7 +5497,7 @@ index 000000000..4f8342cdf
 +					}
 +					g_views.player_pos = head0;
 +					g_views.player_yaw = 0.f;
-+					g_views.unit = g_cam.auto_unit > 0.f ? g_cam.auto_unit : 0.3048f;
++					g_views.unit = seated_eye_m / chef_eye_u;
 +					g_views.mode3d = mode3d != 0;
 +					g_views.stereo = true;
 +					g_views.hud_dist = 1.5f;
@@ -5593,11 +5635,7 @@ index 000000000..4f8342cdf
 +			xr.stereo = persist_get("stereo") != "0";
 +			xr.pointing_laser = persist_get("pointing") == "laser";
 +			xr.lower = 0.f;   // the old right-stick height offset is gone: recenter sets your height
-+			if (const std::string ws = persist_get("worldscale"); !ws.empty())
-+			{
-+				xr.unit = std::clamp(static_cast<f32>(std::atof(ws.c_str())), 0.02f, 5.0f);
-+				xr.fixed_unit = true;
-+			}
++			xr.fixed_unit = false;   // (an old hand-set "worldscale" is ignored: one scale from your eyes keeps body, lobby and game in step)
 +			vr_log("True VR settings: view %s, %s, %.4f m per game unit", xr.mode3d ? "inside the game" : "big screen",
 +				xr.stereo ? "stereo" : "mono", xr.unit);
 +			if (const char* sim_dir = std::getenv("ORDERUP_VR_SIM"); sim_dir && *sim_dir)
@@ -6095,14 +6133,11 @@ index 000000000..4f8342cdf
 +			const auto pct = [](std::vector<f32> v, f32 p) { auto it = v.begin() + static_cast<std::ptrdiff_t>((v.size() - 1) * p); std::nth_element(v.begin(), it, v.end()); return *it; };
 +			const f32 cam_h = -pct(ys, 0.05f);
 +			s.floor_lev = -cam_h;
-+			if (!s.fixed_unit && cam_h > 2.5f && cam_h < 14.f)
++			if (cam_h > 1.f && cam_h < 14.f && std::fabs(cam_h - s.auto_unit) > 0.05f)
 +			{
-+				const f32 u = std::clamp(1.62f / cam_h, 0.17f, 0.42f);
-+				if (std::fabs(u - s.auto_unit) > 0.01f)
-+				{
-+					vr_log("World scale: the camera sits %.2f game units above the floor, so one unit is %.3f m (was %.3f)", cam_h, u, s.unit);
-+					s.auto_unit = u;
-+				}
++				// (auto_unit now remembers the camera height last logged; the scale comes from your eyes)
++				vr_log("Restaurant floor: the game camera sits %.2f units above it (%.2f above the chef's eyes)", cam_h, cam_h - chef_eye_u);
++				s.auto_unit = cam_h;
 +			}
 +			// Walls: where nearly all of the restaurant's things are (the outermost 1% left out), at least 2 m each way
 +			const f32 two_m = 2.f / std::max(s.unit, 0.05f);
@@ -7884,10 +7919,10 @@ index 000000000..4f8342cdf
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..3a4a36dc7
+index 000000000..54da34352
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,108 @@
 +#pragma once
 +#include <functional>
 +#include <string>
@@ -7932,6 +7967,9 @@ index 000000000..3a4a36dc7
 +		f32 angvel[3] = {};    // rad/s
 +		f32 angaccel[3] = {};  // rad/s^2
 +		f32 disp[3] = {};      // mm, quick hand movement (slow drift removed)
++		// Real grabbing: the hand's ray in room space (origin + direction), for future 3D item pickup.
++		f32 ray_origin[3] = {};
++		f32 ray_dir[3] = {0.f, 0.f, -1.f};
 +		f32 acc_dev[3] = {0.f, 0.f, 1.f}; // accelerometer in device axes, G (gravity included)
 +		f32 gyro_dev[3] = {};  // gyroscope in device axes, rad/s
 +	};
@@ -8849,10 +8887,10 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_lobby.inl b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
 new file mode 100644
-index 000000000..42ab556f1
+index 000000000..092b70139
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
-@@ -0,0 +1,531 @@
+@@ -0,0 +1,543 @@
 +// Order Up VR: the lobby is one of the game's own restaurants, rebuilt at start-up from the player's own game files
 +// (nothing of the game is shipped with the mod).
 +//
@@ -8874,7 +8912,8 @@ index 000000000..42ab556f1
 +
 +	struct vert { f32 p[3]; f32 uv[2]; f32 c[4]; };
 +	struct batch { u32 first = 0, count = 0; int tex = -1; u8 blend = 0; };   // blend: 0 opaque, 1 cut-out, 2 alpha, 3 additive
-+	struct picture { u32 w = 0, h = 0; std::vector<u8> rgba; };
++	// kind: how the picture is drawn, read from its own alpha: 0 solid, 1 cut-out (a clear on/off mask), 2 see-through
++	struct picture { u32 w = 0, h = 0; std::vector<u8> rgba; u8 kind = 0; };
 +
 +	struct restaurant
 +	{
@@ -9103,6 +9142,11 @@ index 000000000..42ab556f1
 +				pic.w = t.w; pic.h = t.h;
 +				if (t.fmt == 0x18) decode_dxt1(raw.data() + start, t.w, t.h, pic.rgba);
 +				else decode_dxt5(raw.data() + start, t.w, t.h, pic.rgba);
++				// Solid, cut-out or see-through, from the alpha the picture really has (the material flags were not it)
++				usz lo = 0, hi = 0, n = pic.rgba.size() / 4;
++				for (usz i = 0; i < n; i++) { const u8 a = pic.rgba[i * 4 + 3]; lo += a < 64; hi += a > 192; }
++				const f32 flo = n ? static_cast<f32>(lo) / n : 0.f, fhi = n ? static_cast<f32>(hi) / n : 1.f;
++				pic.kind = fhi >= 0.97f ? 0 : (flo >= 0.05f && flo + fhi >= 0.85f) ? 1 : 2;
 +			}
 +		}
 +
@@ -9139,7 +9183,10 @@ index 000000000..42ab556f1
 +			if (rd16be(&scene[s + 0x32]) != 0) parts_list.back().draw.push_back(&sg - segs.data());
 +		}
 +
-+		static const char* skip_words[] = {"sphere", "sky", "exterior", "aofakery", "downgrade", "splats", "street", "sidewalk", "building", "overlay", "decal", "shadow"};
++		// sky, outside, fake-shadow overlays, and the run-down look the game shows only in a neglected restaurant
++		static const char* skip_words[] = {"sphere", "sky", "exterior", "aofakery", "downgrade", "splat", "street", "sidewalk", "building", "overlay", "decal",
++			"shadow", "stain", "cobweb", "web_", "dirt", "rust", "scratch", "filthy", "destroyed", "broken", "mop", "fallen", "can_open", "t_can",
++			"bag_brown", "wetfloor", "kitchen_ao", "ao_overlay", "plate_dirty"};
 +		std::map<std::pair<int, u8>, std::vector<u32>> by_batch;   // (picture, blend) -> indices
 +		usz pi_next = 0;
 +		int parts_bad = 0;
@@ -9164,7 +9211,10 @@ index 000000000..42ab556f1
 +				if (ti == mats.end()) continue;
 +				const auto pi = pic_of_image.find(ti->second.image);
 +				if (pi == pic_of_image.end() || r.pics[pi->second].rgba.empty()) continue;
-+				const u8 blend = (mat_flags[m] & 0x80) ? 3 : mat_alpha[m] == 1 ? 2 : ti->second.fmt == 0x20 ? 1 : 0;
++				// Glows (light pools under lamps, lamp cones: black around a bright spot) add light; the rest is solid, cut-out
++				// or see-through as its own picture's alpha says
++				const u8 blend = (mat_flags[m] & 0x80) ? 3 : r.pics[pi->second].kind;
++				(void)mat_alpha;
 +				const xform& x = wi->second;
 +				for (usz di : pt.draw)
 +				{
