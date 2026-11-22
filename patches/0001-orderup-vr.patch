@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..7e624c25b
+index 000000000..00d9713df
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7555 @@
+@@ -0,0 +1,7644 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -782,6 +782,8 @@ index 000000000..7e624c25b
 +			hud_panel panels[4]; // the VR HUD layout (player frame, metres)
 +			bool deep_log = false; // Experimental: detailed logs (draw tables every 5 s)
 +			bool fixed_unit = false;   // the player set a world scale by hand: no automatic scale
++			// The plate and the trash as things in your kitchen (player frame, metres): [0] plate on the counter, [1] bin
++			hud_panel spots[4];
 +			// Real grabbing: you are holding food (GRIP inside the game), where your hand is (LOCAL) and the pointer (ndc)
 +			bool holding = false;
 +			vec3 hand_local{};
@@ -811,6 +813,8 @@ index 000000000..7e624c25b
 +			f32 floor_lev = 0.f;
 +			u32 place_id = 0;
 +			int hud_seen[4]{};         // HUD draws last frame in: rail, clipboard, side, dialog
++			bool spot_seen[4]{};       // the plate / trash pictures were drawn last frame
++			f32 spot_nx[4]{}, spot_ny[4]{};   // where the game shows them (ndc), for dropping onto them
 +			f32 food_d = 0.f;          // where the doneness meters and pop-ups go (game units in front of the camera)
 +		};
 +		cam_info g_cam;         // guarded by g_state_mutex
@@ -901,6 +905,12 @@ index 000000000..7e624c25b
 +			std::vector<held_part> held;
 +			mat4 P = ident(), Pi = ident();   // the game camera's projection and its inverse (scene draws)
 +			u32 held_drawn = 0;
++			// The plate and the trash: their spots, which HUD pictures they are, and where the game showed them
++			hud_panel spots[4];
++			std::shared_ptr<const std::unordered_map<u32, u8>> labels;
++			int spot_cnt[4]{};
++			bool spot_seen[4]{};
++			f32 spot_nx[4]{}, spot_ny[4]{};
 +			u64 moves = 0, resets = 0, matched = 0, solved = 0;
 +			f32 pred_err = 0.f;
 +			u64 eye_flip = 0;
@@ -1144,6 +1154,9 @@ index 000000000..7e624c25b
 +			bool hud_locked = false, menu_locked = false, menu_was_up = false;
 +			hud_panel hud_room[4];
 +			bool touch_press = false;  // a fingertip pushed into a HUD panel this frame (the game's select button)
++			bool touch_was = false;
++			bool over_spot = false;
++			hud_panel spot_room[4];   // the plate and trash spots in room space (placed with the HUD)    // (for a small buzz when a press starts)
 +			// Real grabbing: holding food with GRIP inside the game, the grabbing hand's grab point, the pointer (ndc)
 +			bool hold_now = false, hold_prev = false;
 +			vec3 hold_hand{};
@@ -4296,6 +4309,22 @@ index 000000000..7e624c25b
 +				const f32 side_hw = 0.11f;   // the side strips (30% of the width, 77.5% of the height)
 +				set(xr.hud_room[1], head + fwd * 0.45f - right * 0.42f + vec3{0.f, -0.25f, 0.f}, head, side_hw, side_hw * (0.775f / 0.3f) / aspect);
 +				set(xr.hud_room[2], head + fwd * 0.45f + right * 0.42f + vec3{0.f, -0.25f, 0.f}, head, side_hw, side_hw * (0.775f / 0.3f) / aspect);
++				// The plate lies on the counter in front of you, a little to the left; the trash bin stands by your right leg
++				{
++					auto& pl = xr.spot_room[0];
++					pl.on = true; pl.P = head + fwd * 0.42f - right * 0.20f + vec3{0.f, -0.55f, 0.f};
++					pl.A = right; pl.B = fwd; pl.hw = pl.hh = 0.13f;
++					auto& tr = xr.spot_room[1];
++					tr.on = true; tr.P = head + fwd * 0.35f + right * 0.42f + vec3{0.f, -0.85f, 0.f};
++					tr.A = right; tr.B = {0.f, 1.f, 0.f}; tr.hw = tr.hh = 0.12f;
++					// the oven on your left and the food processor on your right, at waist height, facing you
++					auto& ov = xr.spot_room[2];
++					ov.on = true; ov.P = head + fwd * 0.40f - right * 0.48f + vec3{0.f, -0.45f, 0.f};
++					ov.A = normalize(right + fwd * 0.6f); ov.B = {0.f, 1.f, 0.f}; ov.hw = ov.hh = 0.13f;
++					auto& fp = xr.spot_room[3];
++					fp.on = true; fp.P = head + fwd * 0.40f + right * 0.48f + vec3{0.f, -0.45f, 0.f};
++					fp.A = normalize(right - fwd * 0.6f); fp.B = {0.f, 1.f, 0.f}; fp.hw = fp.hh = 0.13f;
++				}
 +				xr.hud_locked = true;
 +			}
 +			// Cards and menus: each time one opens, in front of you at arm's length
@@ -4990,6 +5019,8 @@ index 000000000..7e624c25b
 +				out.trigger = grip[hand];
 +				out.t = grip[hand] > 0.5f;
 +				out.move = trig[hand] > 0.5f || xr.touch_press;
++				if (xr.touch_press && !xr.touch_was) buzz(xr, hand, 0.35f, 15);   // you feel the button go in
++				xr.touch_was = xr.touch_press;
 +				xr.touch_press = false;   // used once: a press only counts while the fingertip is in the panel this frame
 +				// Real grabbing: while GRIP holds food inside the game, the renderer draws it at this hand; a short buzz when
 +				// you pick it up and when you let go
@@ -5000,6 +5031,21 @@ index 000000000..7e624c25b
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
 +						xr.hold_hand = hg.grab;
 +					}
++					// Holding food over the plate or the bin: the game's pointer goes to that picture, so letting go drops it there
++					if (xr.hold_now)
++						for (int k = 0; k < 4; k++)
++						{
++							if (!cam.spot_seen[k] || !xr.spot_room[k].on) continue;
++							const vec3 d = xr.hold_hand - xr.spot_room[k].P;
++							if (dot(d, d) > 0.2f * 0.2f) continue;
++							out.x = (cam.spot_nx[k] + 1.f) * 0.5f;
++							out.y = (1.f - cam.spot_ny[k]) * 0.5f;
++							out.on_screen = true;
++							if (!xr.over_spot) { buzz(xr, hand, 0.25f, 12); vr_log("Drop spot: over the %s", k == 0 ? "plate" : k == 1 ? "trash" : k == 2 ? "oven" : "food processor"); }
++							xr.over_spot = true;
++							break;
++						}
++					if (!xr.hold_now) xr.over_spot = false;
 +					xr.hold_nx = out.x * 2.f - 1.f;
 +					xr.hold_ny = 1.f - out.y * 2.f;
 +					if (xr.hold_now != xr.hold_prev)
@@ -5045,11 +5091,12 @@ index 000000000..7e624c25b
 +			}
 +
 +			write_status(xr);
++			// the game's UI: which HUD pictures are the plate and the trash (and in Experimental the whole tree, logged)
++			if (xr.mode3d && GetTickCount64() - uitree::g.last_labels >= 1000) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir(), xr.channel == "beta");
 +			if (xr.channel == "beta")
 +			{
 +				track_log(xr, out);
 +				// the game's live UI tree (names, positions, sizes, textures), every 3 s
-+				if (GetTickCount64() - uitree::g.last_dump >= 3000) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir());
 +			}
 +
 +			// Real grabbing: expose the active hand's ray to the game-facing code.
@@ -5144,6 +5191,14 @@ index 000000000..7e624c25b
 +				g_views.deep_log = xr.channel == "beta";
 +				g_views.fixed_unit = xr.fixed_unit;
 +				g_views.holding = xr.hold_now;
++				for (int k = 0; k < 4; k++)
++				{
++					g_views.spots[k] = xr.spot_room[k];
++					g_views.spots[k].P = to_player(xr, xr.spot_room[k].P);
++					g_views.spots[k].A = rotate(qconj(yaw_q(xr.player_yaw)), xr.spot_room[k].A);
++					g_views.spots[k].B = rotate(qconj(yaw_q(xr.player_yaw)), xr.spot_room[k].B);
++					g_views.spots[k].on = xr.spot_room[k].on && xr.live3d;
++				}
 +				g_views.hand_local = xr.hold_hand;
 +				g_views.ptr_nx = xr.hold_nx;
 +				g_views.ptr_ny = xr.hold_ny;
@@ -5984,8 +6039,12 @@ index 000000000..7e624c25b
 +			if (!s.hold_picked && !s.hold_cands.empty())
 +			{
 +				// The object nearest the pointer, and the parts drawn right around it
-+				const auto best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [](const auto& a, const auto& b) { return a.nd < b.nd; });
-+				if (best->nd < 0.15f)
++				// The object nearest your hand in 3D (your hand is where the food is in VR); without a hand position, the
++				// one nearest the pointer on the game's screen
++				const bool by_hand = s.hand_view_ok;
++				const auto score = [&](const auto& c) { if (!by_hand) return c.nd; const vec3 d = c.o - s.hand_view; return std::sqrt(dot(d, d)); };
++				const auto best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [&](const auto& a, const auto& b) { return score(a) < score(b); });
++				if (by_hand ? score(*best) < 0.6f : best->nd < 0.15f)
 +				{
 +					const vec3 o = best->o;
 +					for (const auto& c : s.hold_cands)
@@ -5995,7 +6054,7 @@ index 000000000..7e624c25b
 +					}
 +					vr_log("Grab: %zu parts in your hand (pointer %.2f %.2f, %.2f units away)", s.held.size(), s.ptr_nx, s.ptr_ny, -o.z);
 +				}
-+				else vr_log("Grab: nothing under the pointer to hold (nearest %.2f)", best->nd);
++				else vr_log("Grab: nothing at your hand to hold (nearest %.2f %s)", score(*best), by_hand ? "units" : "on screen");
 +				s.hold_picked = true;
 +			}
 +			s.hold_cands.clear();
@@ -6036,6 +6095,11 @@ index 000000000..7e624c25b
 +			for (int k = 0; k < 4; k++) s.panels[k] = v.panels[k];
 +			for (int k = 0; k < 4; k++) { s.hud_seen[k] = s.hud_cnt[k]; s.hud_cnt[k] = 0; }
 +			rv_hold_frame(v);
++			for (int k = 0; k < 4; k++) { s.spots[k] = v.spots[k]; s.spot_seen[k] = s.spot_cnt[k] > 0; s.spot_cnt[k] = 0; }
++			{
++				std::lock_guard lock(uitree::labels_mutex);
++				s.labels = uitree::labels;
++			}
 +			s.fixed_unit = v.fixed_unit;
 +			s.vms.clear();
 +			s.near_depths.clear();
@@ -6648,6 +6712,7 @@ index 000000000..7e624c25b
 +				g_cam.floor_lev = s.floor_lev;
 +				g_cam.place_id = s.place_id;
 +				for (int k = 0; k < 4; k++) g_cam.hud_seen[k] = s.hud_seen[k];
++				for (int k = 0; k < 4; k++) { g_cam.spot_seen[k] = s.spot_seen[k]; g_cam.spot_nx[k] = s.spot_nx[k]; g_cam.spot_ny[k] = s.spot_ny[k]; }
 +				g_cam.food_d = s.hud_depth > 0.f ? s.hud_depth / 0.92f : s.depth * 0.9f;
 +			}
 +
@@ -7620,6 +7685,25 @@ index 000000000..7e624c25b
 +			{
 +				const f32 cxn = (x0 + x1) * 0.5f, cyn = (y0 + y1) * 0.5f, wn = x1 - x0, hn = y1 - y0;
 +				int region = -1;
++				// The plate and the trash: drawn as things in your kitchen (their own picture on their own spot)
++				if (s.labels && tex_count && s.enabled && s.cam.valid)
++				{
++					const auto lit = s.labels->find(static_cast<u32>(tex_keys[0]));
++					const int k = lit != s.labels->end() ? lit->second - 1 : -1;
++					if (k >= 0 && k < 4 && s.spots[k].on)
++					{
++						mat4 base;
++						if (rv_base(content_gen, base))
++						{
++							const hud_region own{cxn, cyn, std::max(wn * 0.5f, 0.01f), std::max(hn * 0.5f, 0.01f)};
++							const mat4 X = mmul(base, hud_panel_matrix(own, s.spots[k]));
++							std::memcpy(x, X.m, sizeof(f32) * 16);
++							s.spot_cnt[k]++;
++							s.spot_nx[k] = cxn; s.spot_ny[k] = cyn;
++							return 7;
++						}
++					}
++				}
 +				const bool menu_up = s.hud_seen[3] > 0;   // a card or menu was on screen last frame: keep the whole HUD together
 +				if (menu_up || (wn > 0.7f && hn > 0.7f)) region = 3;                       // cards, menus, overlays: in front
 +				else if (cyn > 0.55f) region = 0;                                           // tickets along the top: the rail
@@ -7631,7 +7715,12 @@ index 000000000..7e624c25b
 +					mat4 base;
 +					if (rv_base(content_gen, base))
 +					{
-+						const mat4 X = mmul(base, hud_panel_matrix(hud_regions[region], s.panels[region]));
++						// Depth: each piece the game draws on this panel (background, panels, buttons, text, in drawing order)
++						// floats a few millimetres in front of the one before it, so menus and tickets read as stacked objects
++						hud_panel pn = s.panels[region];
++						const vec3 pnn = normalize(cross(pn.A, pn.B));
++						pn.P = pn.P + pnn * (0.004f * static_cast<f32>(std::min(s.hud_cnt[region], 12)));
++						const mat4 X = mmul(base, hud_panel_matrix(hud_regions[region], pn));
 +						std::memcpy(x, X.m, sizeof(f32) * 16);
 +						return 7 + region;
 +					}
@@ -10127,10 +10216,10 @@ index 000000000..6bb2773ba
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 new file mode 100644
-index 000000000..04967067c
+index 000000000..935613b2b
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,175 @@
 +// Order Up VR: the game's own UI, read live from its memory (BLES01470 only).
 +//
 +// Found in the game's code (EBOOT, see docs/VR_AUDIT.md "Menu system"):
@@ -10156,6 +10245,11 @@ index 000000000..04967067c
 +		{0x683d2dae, 0xd2ad5bc3}, {0x683d2dae, 0x08db88cf},
 +	};
 +
++	// Which HUD pictures are which game element: a word of the element's texture object (its GPU address) -> role
++	enum role : u8 { R_NONE = 0, R_PLATE = 1, R_TRASH = 2, R_OVEN = 3, R_PROCESSOR = 4 };
++	inline std::mutex labels_mutex;
++	inline std::shared_ptr<const std::unordered_map<u32, u8>> labels;   // published (guarded by labels_mutex)
++
 +	struct state
 +	{
 +		std::unordered_map<u32, std::string> names;   // ~crc32(name) -> name
@@ -10163,6 +10257,8 @@ index 000000000..04967067c
 +		u64 last_dump = 0;
 +		std::FILE* f = nullptr;
 +		bool f_tried = false;
++		u64 last_labels = 0;
++		std::unordered_map<u32, u8> building;
 +	};
 +	inline state g;
 +
@@ -10200,52 +10296,86 @@ index 000000000..04967067c
 +	u32 rd32(u32 a) { const u8* p = static_cast<const u8*>(vm::base(a)); return rd32be(p); }
 +	f32 rdf(u32 a) { return std::bit_cast<f32>(rd32(a)); }
 +
-+	void walk(u32 e, int depth, int& count)
++	void walk(u32 e, int depth, int& count, bool log)
 +	{
 +		if (count > 600 || depth > 12 || !readable(e, 0x1a0)) return;
 +		count++;
 +		const u32 vt = rd32(e), nh = rd32(e + 0x14c);
 +		const u8 flags = static_cast<const u8*>(vm::base(e + 0x180))[0];
 +		const auto it = g.names.find(nh);
-+		std::fprintf(g.f, "%*s%s [%08x] vt %08x flags %02x%s pos %.1f %.1f %.1f dims %.1f %.1f off %.1f %.1f",
++		if (log) std::fprintf(g.f, "%*s%s [%08x] vt %08x flags %02x%s pos %.1f %.1f %.1f dims %.1f %.1f off %.1f %.1f",
 +			depth * 2, "", it != g.names.end() ? it->second.c_str() : "?", nh, vt, flags, (flags & 4) ? " HIDDEN" : "",
 +			rdf(e + 0x50), rdf(e + 0x54), rdf(e + 0x58), rdf(e + 0x78), rdf(e + 0x7c), rdf(e + 0xd0), rdf(e + 0xd4));
 +		const u32 head = e + 0x18c, first = rd32(head);
 +		if (vt == 0x343748)
 +		{
 +			// an image: its texture object (the first words, to tie it to what the renderer draws)
-+			std::fprintf(g.f, " tex %08x", first);
-+			if (readable(first, 0x40)) for (int k = 0; k < 16; k++) std::fprintf(g.f, " %08x", rd32(first + k * 4));
-+			std::fprintf(g.f, "\n");
++			if (log) std::fprintf(g.f, " tex %08x", first);
++			if (readable(first, 0x80))
++			{
++				if (log) for (int k = 0; k < 16; k++) std::fprintf(g.f, " %08x", rd32(first + k * 4));
++				// the plate and the trash: remember their texture's words (one is where the GPU reads the picture)
++				u8 role = R_NONE;
++				if (it != g.names.end())
++				{
++					std::string lower = it->second;
++					for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++					if (lower.find("plate") != std::string::npos && lower.find("thermometer") == std::string::npos) role = R_PLATE;
++					else if (lower.find("trash") != std::string::npos) role = R_TRASH;
++					else if (lower.find("timer") == std::string::npos && lower.find("ingredient") == std::string::npos)
++					{
++						if (lower.find("oven") != std::string::npos) role = R_OVEN;
++						else if (lower.find("processor") != std::string::npos) role = R_PROCESSOR;
++					}
++				}
++				if (role && !(flags & 4))
++					for (int k = 0; k < 32; k++)
++					{
++						const u32 w = rd32(first + k * 4);
++						if (w >= 0x1000 && w < 0x10000000) { g.building[w] = role; g.building[w | 0xc0000000u] = role; }
++						else if (w >= 0xc0000000u && w < 0xd0000000u) { g.building[w] = role; g.building[w & 0x0fffffffu] = role; }
++					}
++			}
++			if (log) std::fprintf(g.f, "\n");
 +			return;
 +		}
-+		std::fprintf(g.f, "\n");
++		if (log) std::fprintf(g.f, "\n");
 +		// children (a circular list back to the head), if this is a container
 +		u32 node = first;
 +		for (int n = 0; n < 256 && node != head && readable(node, 8); n++)
 +		{
-+			walk(rd32(node + 4), depth + 1, count);
++			walk(rd32(node + 4), depth + 1, count, log);
 +			node = rd32(node);
 +		}
 +	}
 +
-+	// Experimental: every 3 s while the game runs, the whole UI tree to log/orderup_ui.log (size-capped)
-+	void tick(const std::string& usrdir)
++	// Every second while the game runs: which HUD pictures are the plate and the trash (for the VR drop spots); in
++	// Experimental also the whole UI tree to log/orderup_ui.log every 3 s (size-capped)
++	void tick(const std::string& usrdir, bool experimental)
 +	{
 +		if (!g_game_known) return;
 +		const u64 now = GetTickCount64();
-+		if (now - g.last_dump < 3000) return;
-+		g.last_dump = now;
++		if (now - g.last_labels < 1000) return;
++		g.last_labels = now;
 +		if (!g.names_tried && !usrdir.empty()) load_names(usrdir);
-+		if (!g.f && !g.f_tried) { g.f_tried = true; g.f = std::fopen((fs::get_log_dir() + "orderup_ui.log").c_str(), "w"); }
-+		if (!g.f || std::ftell(g.f) > 12 * 1024 * 1024) return;
++		bool log = false;
++		if (experimental && now - g.last_dump >= 3000)
++		{
++			g.last_dump = now;
++			if (!g.f && !g.f_tried) { g.f_tried = true; g.f = std::fopen((fs::get_log_dir() + "orderup_ui.log").c_str(), "w"); }
++			log = g.f && std::ftell(g.f) < 12 * 1024 * 1024;
++		}
 +		constexpr u32 sys_ptr = 0x0036df0c;
 +		if (!readable(sys_ptr, 4)) return;
 +		const u32 sys = rd32(sys_ptr);
 +		if (!readable(sys, 0x80)) return;
-+		SYSTEMTIME t;
-+		GetLocalTime(&t);
-+		std::fprintf(g.f, "==== %02d:%02d:%02d menu system %08x\n", t.wHour, t.wMinute, t.wSecond, sys);
++		if (log)
++		{
++			SYSTEMTIME t;
++			GetLocalTime(&t);
++			std::fprintf(g.f, "==== %02d:%02d:%02d menu system %08x\n", t.wHour, t.wMinute, t.wSecond, sys);
++		}
++		g.building.clear();
 +		const u32 head = sys + 0x2c;
 +		u32 node = rd32(head);
 +		int count = 0;
@@ -10254,12 +10384,15 @@ index 000000000..04967067c
 +			const u32 menu = rd32(node + 4);
 +			if (readable(menu, 0x20))
 +			{
-+				std::fprintf(g.f, "-- menu %08x root %08x\n", menu, rd32(menu + 0x10));
-+				walk(rd32(menu + 0x10), 1, count);
++				if (log) std::fprintf(g.f, "-- menu %08x root %08x\n", menu, rd32(menu + 0x10));
++				walk(rd32(menu + 0x10), 1, count, log);
 +			}
 +			node = rd32(node);
 +		}
-+		std::fflush(g.f);
++		if (log) std::fflush(g.f);
++		auto fresh = std::make_shared<const std::unordered_map<u32, u8>>(g.building);
++		std::lock_guard lock(labels_mutex);
++		labels = std::move(fresh);
 +	}
 +}
 diff --git a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp

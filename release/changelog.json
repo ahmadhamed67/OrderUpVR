@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.16.0",
+    "channel": "beta",
+    "date": "2026-11-22",
+    "simple": [
+      "The kitchen's drop targets are real things in VR now: the plate lies on the counter in front of you, the trash bin stands by your right leg, the oven is on your left and the food processor on your right. Carry food over one and let go to drop it there (a small buzz tells you you're over it).",
+      "Grabbing picks up what is at your hand, not something across the room.",
+      "Menus and tickets have depth: each layer floats a little in front of the one behind, and you feel a small buzz when your fingertip presses a button."
+    ],
+    "notes": [
+      "The mod reads the game's live UI tree every second (menu system *(0x0036df0c)), finds the elements named plate / trash / oven / processor (names from the game's UI scripts, ~crc32) and the words of their texture objects; HUD draws whose first texture matches are drawn on their own spot (their own screen rectangle mapped onto the spot), and while you hold food within 20 cm of a spot the game's pointer is put on that picture, so releasing drops it there.",
+      "Spots are placed with the HUD when you are placed: plate on the counter 42 cm ahead, 55 cm below your eyes; bin 85 cm below; oven / food processor 48 cm to each side at waist height.",
+      "Grab: the held object is the 3D draw nearest your hand (within 0.6 units); before, the nearest to the pointer on screen.",
+      "HUD panels: each draw on a panel is offset 4 mm towards you per drawing step (up to 12); haptic tick on a fingertip press."
+    ]
+  },
+  {
     "version": "0.15.4",
     "channel": "beta",
     "date": "2026-11-22",
