@@ -1,0 +1,47 @@
+# CodeQL: the launcher is a Windows WPF app (.NET Framework 4.8) built by launcher/Build.ps1 with the C# compiler
+# that ships with Windows, so C# is analysed on Windows with a real build (on Linux without a build CodeQL cannot
+# resolve the WPF types and reports compilation errors). Python tools are analysed without a build.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  csharp:
+    name: Analyze (csharp)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          build-mode: manual
+      - name: Build the launcher
+        shell: pwsh
+        run: ./launcher/Build.ps1 -Version 0.0.0 -Out "$env:RUNNER_TEMP/OrderUpVR-Setup.exe"
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:csharp
+
+  python:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python
