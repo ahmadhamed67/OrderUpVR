@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..b7ab3d2a0
+index 000000000..daefa3a8c
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7526 @@
+@@ -0,0 +1,7539 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -690,6 +690,7 @@ index 000000000..b7ab3d2a0
 +
 +#include "OrderUpVR_chef.inl"
 +#include "OrderUpVR_lobby.inl"
++#include "OrderUpVR_uitree.inl"
 +#include "OrderUpVR_ui.inl"
 +
 +		struct mat4 { f32 m[16]{}; };
@@ -3951,7 +3952,7 @@ index 000000000..b7ab3d2a0
 +			auto& g = g_gfx;
 +			const f32 u = xr.unit, extra = 4.f / u;
 +			const f32 x0 = c.bx0 - extra, x1 = c.bx1 + extra, z0 = c.bz0 - extra, z1 = c.bz1 + extra;
-+			const f32 y = c.floor_lev + 4.0f;   // game units: above the 3.6-unit doors
++			const f32 y = std::max(c.floor_lev + 4.0f, xr.eye_off.y + 0.6f / u);   // game units: above the doors, and above your eyes
 +			const XrQuaternionf py = yaw_q(xr.player_yaw);
 +			const vec3 R = rotate(py, {1.f, 0.f, 0.f}), Z = rotate(py, {0.f, 0.f, 1.f}), Up{0.f, 1.f, 0.f};
 +			const auto local = [&](f32 lx, f32 ly, f32 lz) { return from_player(xr, vec3{lx, ly, lz} * u); };
@@ -4129,7 +4130,8 @@ index 000000000..b7ab3d2a0
 +			// Where the game camera looks, in the room
 +			const vec3 look_v = xform(cam.D, {0.f, 0.f, -cam.depth});
 +			const vec3 tgt = from_player(xr, level(cam.up_a, look_v) * xr.unit);
-+			const auto heading = [&](vec3 p) { const vec3 v = p - xr.last_head; return std::atan2(-v.x, -v.z); };
++			const vec3 pivot = xr.last_head - rotate(yaw_q(xr.player_yaw), vec3{xr.eye_off.x, 0.f, xr.eye_off.z} * xr.unit);   // the game camera's spot
++			const auto heading = [&](vec3 p) { const vec3 v = p - pivot; return std::atan2(-v.x, -v.z); };
 +			const bool settled = cam.still >= 18;
 +
 +			const auto start = [&](int btn, bool automatic)
@@ -4587,13 +4589,15 @@ index 000000000..b7ab3d2a0
 +						}
 +						else
 +						{
-+							const f32 rr = std::sqrt(h.x * h.x + h.z * h.z), lim = 1.5f;
-+							if (rr > lim) xr.player_pos = xr.player_pos + rotate(yaw_q(xr.player_yaw), vec3{h.x, 0.f, h.z} * (1.f - lim / rr));
++							// (from where you were placed: your eyes stand ahead of the game camera)
++							const vec3 h0 = h - vec3{xr.eye_off.x * xr.unit, 0.f, xr.eye_off.z * xr.unit};
++							const f32 rr = std::sqrt(h0.x * h0.x + h0.z * h0.z), lim = 1.5f;
++							if (rr > lim) xr.player_pos = xr.player_pos + rotate(yaw_q(xr.player_yaw), vec3{h0.x, 0.f, h0.z} * (1.f - lim / rr));
 +						}
 +					}
 +					// Walking out of the play area for real: the view darkens at the edges
 +					{
-+						const vec3 h = to_player(xr, xr.last_head);
++						const vec3 h = to_player(xr, xr.last_head) - vec3{xr.eye_off.x * xr.unit, 0.f, xr.eye_off.z * xr.unit};
 +						if (h.x * h.x + h.z * h.z > 1.3f * 1.3f) xr.moving = true;
 +					}
 +					const auto turn_by = [&](f32 rad)
@@ -4756,6 +4760,8 @@ index 000000000..b7ab3d2a0
 +							}
 +						}
 +					}
++					vec3 hand_aim{};
++					bool hand_aimed = false;
 +					if (have) {}
 +					// Hands: always your hand (it used to switch to the laser when the scene was far away, which made
 +					// reaching for food impossible in big restaurants)
@@ -4764,6 +4770,7 @@ index 000000000..b7ab3d2a0
 +						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
 +						// What your eye sees behind your hand, on the plane of the food (your eyes are not at the game camera)
 +						vec3 aim_pt = hg.grab;
++						hand_aimed = true;
 +						{
 +							const vec3 eye = xr.last_head, plane = to_local(0.f, 0.f);
 +							const f32 dy = hg.grab.y - eye.y;
@@ -4773,6 +4780,7 @@ index 000000000..b7ab3d2a0
 +								if (t > 1.f && t < 6.f) aim_pt = eye + (hg.grab - eye) * t;
 +							}
 +						}
++						hand_aim = aim_pt;
 +						const vec3 gp = xform(Di, level(cam.up_a, to_player(xr, aim_pt) * (1.f / xr.unit), -1.f));
 +						if (gp.z < -0.05f)
 +						{
@@ -4811,7 +4819,7 @@ index 000000000..b7ab3d2a0
 +							out.y = xr.fy;
 +						}
 +						xr.aim_origin = origin;
-+						xr.aim_hit = on_hud ? from_player(xr, level(cam.up_a, hud_q) * xr.unit) : to_local(out.x * 2.f - 1.f, 1.f - out.y * 2.f);
++						xr.aim_hit = on_hud ? from_player(xr, level(cam.up_a, hud_q) * xr.unit) : hand_aimed ? hand_aim : to_local(out.x * 2.f - 1.f, 1.f - out.y * 2.f);
 +					}
 +					else
 +					{
@@ -5021,7 +5029,12 @@ index 000000000..b7ab3d2a0
 +			}
 +
 +			write_status(xr);
-+			if (xr.channel == "beta") track_log(xr, out);
++			if (xr.channel == "beta")
++			{
++				track_log(xr, out);
++				// the game's live UI tree (names, positions, sizes, textures), every 3 s
++				if (GetTickCount64() - uitree::g.last_dump >= 3000) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir());
++			}
 +
 +			// Real grabbing: expose the active hand's ray to the game-facing code.
 +			const int ah = xr.active_hand;
@@ -9025,10 +9038,10 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_lobby.inl b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
 new file mode 100644
-index 000000000..092b70139
+index 000000000..28a8b0576
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_lobby.inl
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,577 @@
 +// Order Up VR: the lobby is one of the game's own restaurants, rebuilt at start-up from the player's own game files
 +// (nothing of the game is shipped with the mod).
 +//
@@ -9069,8 +9082,9 @@ index 000000000..092b70139
 +	// The restaurants with a dining room (package hash in Chef.wad, name)
 +	struct place_def { u32 wad; const char* name; bool lobby; };   // lobby: checked to look right where you stand
 +	constexpr place_def places[] = {
-+		{0xcca045da, "Gravy Chug", true}, {0x2d1cd440, "El Fuego", true}, {0xb95ae814, "Stuffolini", false},
-+		{0xbaa69b86, "Chez Haute", true}, {0x906a2b6d, "Kung Fusion", false}, {0x4a13fc83, "Burger joint", false},
++		{0xcca045da, "Gravy Chug kitchen", false}, {0x2d1cd440, "El Fuego", true}, {0xb95ae814, "Stuffolini", false},
++		{0xbaa69b86, "Chez Haute", true}, {0x906a2b6d, "Kung Fusion", true}, {0x4a13fc83, "Burger joint", false},
++		{0xbdad35ad, "Gravy Chug", true},
 +	};
 +
 +	// A whole nested package, decompressed once
@@ -9164,6 +9178,7 @@ index 000000000..092b70139
 +
 +		// Find the scene (the biggest model with many materials), the layout and the material files
 +		std::span<const u8> scene, layout;
++		std::vector<std::span<const u8>> mat_files;
 +		std::unordered_map<u32, tex_ref> mats;
 +		for (const auto& [fh, e] : pkg.table)
 +		{
@@ -9172,7 +9187,7 @@ index 000000000..092b70139
 +			const u32 a = rd32be(&m[0]), b = rd32be(&m[4]);
 +			if (a == 1 && b > 20 && b < 1000 && m.size() > scene.size()) scene = m;
 +			else if (a == 1 && b == 0 && m.size() > 64 && (m[12] < 64 && ((m[13] >= 'A' && m[13] <= 'z') || (m[12] == 0 && m[14] >= 'A' && m[14] <= 'z'))) && m.size() > layout.size()) layout = m;
-+			else if (a == 2) parse_materials(m, mats);
++			else if (a == 2) mat_files.push_back(m);
 +		}
 +		if (scene.empty() || layout.empty()) { r.error = "scene or layout not found"; return false; }
 +
@@ -9240,6 +9255,22 @@ index 000000000..092b70139
 +		}
 +		const u32 nmat = static_cast<u32>(mat_lib.size());
 +		if (!nmat) { r.error = "no materials"; return false; }
++		// Material files: other models' files define some of the same materials with other pictures. The scene's own file
++		// (the one defining most of its materials) wins; the others only fill gaps
++		{
++			const std::unordered_set<u32> used(mat_lib.begin(), mat_lib.end());
++			std::vector<std::unordered_map<u32, tex_ref>> parsed(mat_files.size());
++			usz own = 0, own_hits = 0;
++			for (usz k = 0; k < mat_files.size(); k++)
++			{
++				parse_materials(mat_files[k], parsed[k]);
++				usz hits = 0;
++				for (const auto& [h, t] : parsed[k]) hits += used.count(h);
++				if (hits > own_hits) { own_hits = hits; own = k; }
++			}
++			for (usz k = 0; k < parsed.size(); k++) if (k != own) mats.insert(parsed[k].begin(), parsed[k].end());
++			if (!parsed.empty()) for (const auto& [h, t] : parsed[own]) mats[h] = t;
++		}
 +
 +		// Pictures: the package that holds them (found by the first one's name)
 +		std::unordered_map<u32, int> pic_of_image;
@@ -9318,7 +9349,7 @@ index 000000000..092b70139
 +			const auto mi = s >= 0x198 ? mat_index.find(rd32be(&scene[s - 0x198])) : mat_index.end();
 +			if (mi != mat_index.end()) { parts_list.emplace_back(); parts_list.back().mat = mi->second; }
 +			if (parts_list.empty()) continue;
-+			if (rd16be(&scene[s + 0x32]) != 0) parts_list.back().draw.push_back(&sg - segs.data());
++			if (rd32be(&scene[s + 0x30]) != 0) parts_list.back().draw.push_back(&sg - segs.data());
 +		}
 +
 +		// sky, outside, fake-shadow overlays, and the run-down look the game shows only in a neglected restaurant
@@ -9351,8 +9382,8 @@ index 000000000..092b70139
 +				if (pi == pic_of_image.end() || r.pics[pi->second].rgba.empty()) continue;
 +				// Glows (light pools under lamps, lamp cones: black around a bright spot) add light; the rest is solid, cut-out
 +				// or see-through as its own picture's alpha says
-+				const u8 blend = (mat_flags[m] & 0x80) ? 3 : r.pics[pi->second].kind;
-+				(void)mat_alpha;
++				const u8 blend = mat_alpha[m] == 2 ? 3 : r.pics[pi->second].kind;   // +0x60 == 2: added light (lamp pools, light shafts)
++				(void)mat_flags;   // 0x80 only marks thin two-sided cloth, leaves and webs
 +				const xform& x = wi->second;
 +				for (usz di : pt.draw)
 +				{
@@ -9381,10 +9412,26 @@ index 000000000..092b70139
 +					if (ix.empty()) { parts_bad++; continue; }
 +					// vertices
 +					const usz po = st + isz;
-+					const u32 attr_size = rd16be(&scene[s + 0x32]);
++					// positions (f32 x3), the attribute block (u32 size at +0x30), then its Edge stream description: u8 count,
++					// u8 stride, u8 blocks, pad[5], per attribute (offset, format 2 = f32, components, id 2 normal / 3 tangent /
++					// 5 UV / 9 colour, size, slot)
++					const u32 attr_size = rd32be(&scene[s + 0x30]);
 +					const u32 stride = attr_size / sg.nv;
 +					const usz ao = po + pad16(usz{sg.nv} * 12);
-+					if ((stride != 24 && stride != 36) || attr_size != stride * sg.nv || ao + usz{sg.nv} * stride > scene.size()) { parts_bad++; continue; }
++					const usz dsc = ao + pad16(usz{attr_size});
++					int col_off = -1, uv_off = -1;
++					if (stride && attr_size == stride * sg.nv && dsc + 8 <= scene.size() && scene[dsc + 1] == stride && scene[dsc] >= 1 && scene[dsc] <= 8 &&
++						dsc + 8 + usz{scene[dsc]} * 8 <= scene.size())
++					{
++						for (u32 ai = 0; ai < scene[dsc]; ai++)
++						{
++							const u8* b = &scene[dsc + 8 + usz{ai} * 8];
++							if (b[1] != 2 || u32{b[0]} + b[4] > stride) continue;
++							if (b[3] == 9 && b[2] == 4) col_off = b[0];
++							else if (b[3] == 5 && b[2] == 2) uv_off = b[0];
++						}
++					}
++					if (col_off < 0 || uv_off < 0 || ao + usz{sg.nv} * stride > scene.size()) { parts_bad++; continue; }
 +					const u32 base = static_cast<u32>(r.v.size());
 +					bool sane = true;
 +					for (u32 i = 0; i < sg.nv; i++)
@@ -9393,11 +9440,11 @@ index 000000000..092b70139
 +						if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || std::fabs(p.x) > 500.f || std::fabs(p.y) > 500.f || std::fabs(p.z) > 500.f) sane = false;
 +						p = {p.x * x.scale.x, p.y * x.scale.y, p.z * x.scale.z};
 +						p = qrot(x.rot, p) + x.pos;
-+						const u8* a = &scene[ao + i * stride + (stride == 36 ? 12 : 0)];
++						const u8* a = &scene[ao + usz{i} * stride];
 +						vert vv{};
 +						vv.p[0] = p.x; vv.p[1] = p.y; vv.p[2] = p.z;
-+						for (int c = 0; c < 4; c++) vv.c[c] = std::clamp(rdf32be(a + c * 4), 0.f, 1.f);
-+						vv.uv[0] = rdf32be(a + 16); vv.uv[1] = rdf32be(a + 20);
++						for (int c = 0; c < 4; c++) vv.c[c] = std::clamp(rdf32be(a + col_off + c * 4), 0.f, 1.f);
++						vv.uv[0] = rdf32be(a + uv_off); vv.uv[1] = rdf32be(a + uv_off + 4);
 +						if (!std::isfinite(vv.uv[0]) || !std::isfinite(vv.uv[1])) { vv.uv[0] = vv.uv[1] = 0.f; }
 +						r.v.push_back(vv);
 +					}
@@ -10060,6 +10107,143 @@ index 000000000..6bb2773ba
 +		rel(enc);
 +		rel(st);
 +		return ok;
++	}
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
+new file mode 100644
+index 000000000..a196d015a
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
+@@ -0,0 +1,131 @@
++// Order Up VR: the game's own UI, read live from its memory (BLES01470 only).
++//
++// Found in the game's code (EBOOT, see docs/VR_AUDIT.md "Menu system"):
++//  - The menu system is *(u32*)0x0036df0c. Its open menus are a circular list at +0x2c (node: +0 next, +4 the menu).
++//  - A menu's root element is at menu+0x10.
++//  - An element: +0 vtable; +0x14c name hash (~crc32 of the name the scripts give it); +0x50 position (x y z w,
++//    ElementSetPosition); +0x78/+0x7c base width/height (ElementSetBaseDimensions); +0xd0 offset (x y z w);
++//    +0x180 flags (bit 2: hidden, bit 3: needs layout); containers keep their children at +0x18c (a circular list:
++//    node +0 next, +4 child); image elements (vtable 0x343748) keep their texture there instead.
++//  - The scripts build every screen with MenuNewElement{name=, type=sprite/image/text/button/panel/..., pos=, dims=,
++//    image=, focusable=, events={selected=script}}: the names come from those scripts in the player's Chef.wad.
++// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, after the chef.
++
++namespace uitree
++{
++	using namespace chef;
++
++	// The UI scripts (package, file) that build menus and the kitchen HUD (found by their MenuNewElement calls)
++	constexpr std::pair<u32, u32> ui_scripts[] = {
++		{0x8c524289, 0x7a10e624}, {0x8c524289, 0xa0f78525}, {0x683d2dae, 0x11eeba16}, {0xefcbf845, 0x81265d83},
++		{0x683d2dae, 0x1fa9e7cc}, {0xefcbf845, 0xb1350865}, {0x683d2dae, 0xba6cbc9f}, {0xefcbf845, 0xebb11886},
++		{0xefcbf845, 0x23fafb4d}, {0x8c524289, 0x26ed19d6}, {0x6ce6f2f7, 0xd5f6dc64}, {0x8c524289, 0x011e8ede},
++		{0x683d2dae, 0xd2ad5bc3}, {0x683d2dae, 0x08db88cf},
++	};
++
++	struct state
++	{
++		std::unordered_map<u32, std::string> names;   // ~crc32(name) -> name
++		bool names_tried = false;
++		u64 last_dump = 0;
++		std::FILE* f = nullptr;
++		bool f_tried = false;
++	};
++	inline state g;
++
++	// Every string in the UI scripts' string pools (the element names among them)
++	void load_names(const std::string& usrdir)
++	{
++		g.names_tried = true;
++		wad_reader w;
++		if (!w.open(usrdir + "Chef.wad")) return;
++		for (const auto& [pkg, file] : ui_scripts)
++		{
++			std::vector<u8> b;
++			if (!w.nested_file(pkg, file, b)) continue;
++			static const char mod[] = "<module>";
++			const auto it = std::search(b.begin(), b.end(), mod, mod + 8);
++			if (it == b.end()) continue;
++			usz p = static_cast<usz>(it - b.begin()) + 9;
++			while (p < b.size())
++			{
++				while (p < b.size() && b[p] == 0) p++;
++				usz e = p;
++				while (e < b.size() && b[e] != 0) e++;
++				if (e > p && e - p < 96)
++				{
++					const std::string s(reinterpret_cast<const char*>(&b[p]), e - p);
++					g.names.emplace(crc_name(s), s);
++				}
++				p = e + 1;
++			}
++		}
++		vr_log("UI tree: %zu names from the game's UI scripts", g.names.size());
++	}
++
++	bool readable(u32 a, u32 n) { return a >= 0x10000 && a < 0x30000000 && vm::check_addr(a, vm::page_readable, n); }
++	u32 rd32(u32 a) { const u8* p = static_cast<const u8*>(vm::base(a)); return rd32be(p); }
++	f32 rdf(u32 a) { return std::bit_cast<f32>(rd32(a)); }
++
++	void walk(u32 e, int depth, int& count)
++	{
++		if (count > 600 || depth > 12 || !readable(e, 0x1a0)) return;
++		count++;
++		const u32 vt = rd32(e), nh = rd32(e + 0x14c);
++		const u8 flags = static_cast<const u8*>(vm::base(e + 0x180))[0];
++		const auto it = g.names.find(nh);
++		std::fprintf(g.f, "%*s%s [%08x] vt %08x flags %02x%s pos %.1f %.1f %.1f dims %.1f %.1f off %.1f %.1f",
++			depth * 2, "", it != g.names.end() ? it->second.c_str() : "?", nh, vt, flags, (flags & 4) ? " HIDDEN" : "",
++			rdf(e + 0x50), rdf(e + 0x54), rdf(e + 0x58), rdf(e + 0x78), rdf(e + 0x7c), rdf(e + 0xd0), rdf(e + 0xd4));
++		const u32 head = e + 0x18c, first = rd32(head);
++		if (vt == 0x343748)
++		{
++			// an image: its texture object (the first words, to tie it to what the renderer draws)
++			std::fprintf(g.f, " tex %08x", first);
++			if (readable(first, 0x40)) for (int k = 0; k < 16; k++) std::fprintf(g.f, " %08x", rd32(first + k * 4));
++			std::fprintf(g.f, "\n");
++			return;
++		}
++		std::fprintf(g.f, "\n");
++		// children (a circular list back to the head), if this is a container
++		u32 node = first;
++		for (int n = 0; n < 256 && node != head && readable(node, 8); n++)
++		{
++			walk(rd32(node + 4), depth + 1, count);
++			node = rd32(node);
++		}
++	}
++
++	// Experimental: every 3 s while the game runs, the whole UI tree to log/orderup_ui.log (size-capped)
++	void tick(const std::string& usrdir)
++	{
++		if (!g_game_known) return;
++		const u64 now = GetTickCount64();
++		if (now - g.last_dump < 3000) return;
++		g.last_dump = now;
++		if (!g.names_tried && !usrdir.empty()) load_names(usrdir);
++		if (!g.f && !g.f_tried) { g.f_tried = true; g.f = std::fopen((fs::get_log_dir() + "orderup_ui.log").c_str(), "w"); }
++		if (!g.f || std::ftell(g.f) > 12 * 1024 * 1024) return;
++		constexpr u32 sys_ptr = 0x0036df0c;
++		if (!readable(sys_ptr, 4)) return;
++		const u32 sys = rd32(sys_ptr);
++		if (!readable(sys, 0x80)) return;
++		SYSTEMTIME t;
++		GetLocalTime(&t);
++		std::fprintf(g.f, "==== %02d:%02d:%02d menu system %08x\n", t.wHour, t.wMinute, t.wSecond, sys);
++		const u32 head = sys + 0x2c;
++		u32 node = rd32(head);
++		int count = 0;
++		for (int n = 0; n < 64 && node != head && readable(node, 8); n++)
++		{
++			const u32 menu = rd32(node + 4);
++			if (readable(menu, 0x20))
++			{
++				std::fprintf(g.f, "-- menu %08x root %08x\n", menu, rd32(menu + 0x10));
++				walk(rd32(menu + 0x10), 1, count);
++			}
++			node = rd32(node);
++		}
++		std::fflush(g.f);
 +	}
 +}
 diff --git a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp
