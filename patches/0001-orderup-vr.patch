@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..00d9713df
+index 000000000..767d2170a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7644 @@
+@@ -0,0 +1,7690 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -815,6 +815,9 @@ index 000000000..00d9713df
 +			int hud_seen[4]{};         // HUD draws last frame in: rail, clipboard, side, dialog
 +			bool spot_seen[4]{};       // the plate / trash pictures were drawn last frame
 +			f32 spot_nx[4]{}, spot_ny[4]{};   // where the game shows them (ndc), for dropping onto them
++			bool pan_ok[4]{};          // a panel showed a matched game UI group: point at it through that group's rectangle
++			hud_region pan_reg[4]{};
++			f32 pan_hw[4]{}, pan_hh[4]{};
 +			f32 food_d = 0.f;          // where the doneness meters and pop-ups go (game units in front of the camera)
 +		};
 +		cam_info g_cam;         // guarded by g_state_mutex
@@ -907,7 +910,10 @@ index 000000000..00d9713df
 +			u32 held_drawn = 0;
 +			// The plate and the trash: their spots, which HUD pictures they are, and where the game showed them
 +			hud_panel spots[4];
-+			std::shared_ptr<const std::unordered_map<u32, u8>> labels;
++			std::shared_ptr<const std::vector<uitree::elem>> elems;   // the game's visible UI elements (from its UI tree)
++			hud_region pan_reg[4]{};   // the group rectangle each panel showed this frame (for pointing at it)
++			int pan_reg_n[4]{};
++			f32 pan_hw[4]{}, pan_hh[4]{};
 +			int spot_cnt[4]{};
 +			bool spot_seen[4]{};
 +			f32 spot_nx[4]{}, spot_ny[4]{};
@@ -1100,7 +1106,7 @@ index 000000000..00d9713df
 +			bool stereo = true;       // depth (eyes alternate) or one image for both eyes
 +			f32 unit = seated_eye_m / chef_eye_u;   // metres per game unit (set when you are placed)
 +			vec3 eye_off{};           // your eyes relative to the game camera (player frame, game units), set when placed
-+			f32 eye_drop = 1.8f, reach = 0.55f, max_step = 1.5f;   // metres: most your eyes go below the camera; reach; step
++			f32 eye_drop = 12.f, reach = 0.55f, max_step = 1.5f;   // metres: most your eyes go below the camera; reach; step
 +			vec3 player_pos{};        // where the game camera sits in the room
 +			f32 player_yaw = 0.f;
 +			XrSwapchain eye_sc[2]{};
@@ -3468,6 +3474,7 @@ index 000000000..00d9713df
 +			std::vector<std::vector<u8>> sig[2];
 +			u64 last = 0;
 +			int scans = 0;
++			bool logged_found = false;
 +		};
 +		chef_detect_t g_detect;
 +
@@ -3552,8 +3559,12 @@ index 000000000..00d9713df
 +				// One chef clearly present (a profile's chef stays in video memory while its career is shown)
 +				if (hits[1] >= 2 && hits[1] > hits[0] + 1) { dd.chosen = 1; dd.found = true; }
 +				else if (hits[0] >= 2 && hits[0] > hits[1] + 1) { dd.chosen = 0; dd.found = true; }
-+				if (dd.chosen.load() != was || dd.scans++ == 0)
-+					vr_log("Chef: the game uses the %s chef (texture pieces found: male %d, female %d)", dd.chosen.load() ? "female" : "male", hits[0], hits[1]);
++				const bool found_now = dd.found.load();
++				if (dd.chosen.load() != was || dd.scans++ == 0 || (found_now && !dd.logged_found))
++				{
++					vr_log("Chef: the game uses the %s chef%s (texture pieces found: male %d, female %d)", dd.chosen.load() ? "female" : "male", found_now ? "" : " (not seen yet: your menu chef)", hits[0], hits[1]);
++					if (found_now) dd.logged_found = true;
++				}
 +				dd.busy = false;
 +			});
 +		}
@@ -3585,7 +3596,7 @@ index 000000000..00d9713df
 +			auto& c = g_chef;
 +			auto& g = g_gfx;
 +			c.posed = false;
-+			chef_detect_tick();
++			if (xr.live3d) chef_detect_tick();   // never on menus: the load menu shows the default (male) chef
 +			const int want = !xr.comfort.body ? -1 : g_detect.found.load() ? g_detect.chosen.load() : (xr.comfort.menu_female ? 1 : 0);
 +			if (want < 0 || !g.cvs || c.state == 1) return;
 +			if (want != c.which)
@@ -4759,6 +4770,7 @@ index 000000000..00d9713df
 +					{
 +						hud_panel pans[4];
 +						layout_hud(xr, pans);
++						for (int k = 0; k < 4; k++) if (cam.pan_ok[k] && cam.pan_hw[k] > 0.f) { pans[k].hw = cam.pan_hw[k]; pans[k].hh = cam.pan_hh[k]; }
 +						if (xr.pointing_laser)
 +						{
 +							const vec3 po = to_player(xr, origin), pd = rotate(qconj(yaw_q(xr.player_yaw)), dir);
@@ -4766,7 +4778,7 @@ index 000000000..00d9713df
 +							{
 +								if (!cam.hud_seen[k]) continue;
 +								vec3 hp{};
-+								if (hit_panel(pans[k], hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); xr.ptr_panel = k; }
++								if (hit_panel(pans[k], cam.pan_ok[k] ? cam.pan_reg[k] : hud_regions[k], po, pd, nx, ny, hp)) { have = on_hud = true; hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f); xr.ptr_panel = k; }
 +							}
 +						}
 +						else if (xr.hand_valid[hand])
@@ -4781,7 +4793,7 @@ index 000000000..00d9713df
 +								const f32 dist = dot(tip - pans[k].P, n);
 +								if (dist > 0.06f || dist < -0.08f) continue;
 +								vec3 hp{};
-+								if (hit_panel(pans[k], hud_regions[k], tip + n * 0.2f, n * -1.f, nx, ny, hp))
++								if (hit_panel(pans[k], cam.pan_ok[k] ? cam.pan_reg[k] : hud_regions[k], tip + n * 0.2f, n * -1.f, nx, ny, hp))
 +								{
 +									have = on_hud = true;
 +									hud_q = level(cam.up_a, hp * (1.f / xr.unit), -1.f);
@@ -5092,7 +5104,7 @@ index 000000000..00d9713df
 +
 +			write_status(xr);
 +			// the game's UI: which HUD pictures are the plate and the trash (and in Experimental the whole tree, logged)
-+			if (xr.mode3d && GetTickCount64() - uitree::g.last_labels >= 1000) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir(), xr.channel == "beta");
++			if (xr.mode3d && GetTickCount64() - uitree::g.last_labels >= 200) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir(), xr.channel == "beta");
 +			if (xr.channel == "beta")
 +			{
 +				track_log(xr, out);
@@ -6097,8 +6109,8 @@ index 000000000..00d9713df
 +			rv_hold_frame(v);
 +			for (int k = 0; k < 4; k++) { s.spots[k] = v.spots[k]; s.spot_seen[k] = s.spot_cnt[k] > 0; s.spot_cnt[k] = 0; }
 +			{
-+				std::lock_guard lock(uitree::labels_mutex);
-+				s.labels = uitree::labels;
++				std::lock_guard lock(uitree::elems_mutex);
++				s.elems = uitree::elems;
 +			}
 +			s.fixed_unit = v.fixed_unit;
 +			s.vms.clear();
@@ -6712,6 +6724,7 @@ index 000000000..00d9713df
 +				g_cam.floor_lev = s.floor_lev;
 +				g_cam.place_id = s.place_id;
 +				for (int k = 0; k < 4; k++) g_cam.hud_seen[k] = s.hud_seen[k];
++				for (int k = 0; k < 4; k++) { g_cam.pan_ok[k] = s.pan_reg_n[k] > 0; g_cam.pan_reg[k] = s.pan_reg[k]; g_cam.pan_hw[k] = s.pan_hw[k]; g_cam.pan_hh[k] = s.pan_hh[k]; s.pan_reg_n[k] = 0; }
 +				for (int k = 0; k < 4; k++) { g_cam.spot_seen[k] = s.spot_seen[k]; g_cam.spot_nx[k] = s.spot_nx[k]; g_cam.spot_ny[k] = s.spot_ny[k]; }
 +				g_cam.food_d = s.hud_depth > 0.f ? s.hud_depth / 0.92f : s.depth * 0.9f;
 +			}
@@ -7685,22 +7698,55 @@ index 000000000..00d9713df
 +			{
 +				const f32 cxn = (x0 + x1) * 0.5f, cyn = (y0 + y1) * 0.5f, wn = x1 - x0, hn = y1 - y0;
 +				int region = -1;
-+				// The plate and the trash: drawn as things in your kitchen (their own picture on their own spot)
-+				if (s.labels && tex_count && s.enabled && s.cam.valid)
++				// The VR UI framework: this piece of the game's HUD is matched to the game's own UI element it draws (from the
++				// live UI tree: same rectangle on the 1280x720 screen), and goes to that element's place in VR: tickets on the
++				// rail, the plate / trash / oven / food processor at their spots in your kitchen, assistants left, utensils and
++				// gestures right, whole menus on the menu board. Its group keeps its own layout there, at its own shape, and each
++				// level of the game's UI tree stands a little in front of its parent.
++				if (s.elems && s.enabled && s.cam.valid && surface_w && surface_h && std::max({std::fabs(s.hv_x0), std::fabs(s.hv_x1)}) > 1.05f)
 +				{
-+					const auto lit = s.labels->find(static_cast<u32>(tex_keys[0]));
-+					const int k = lit != s.labels->end() ? lit->second - 1 : -1;
-+					if (k >= 0 && k < 4 && s.spots[k].on)
++					const f32 ky = 720.f / static_cast<f32>(surface_h), kx = 1280.f / static_cast<f32>(surface_w);
++					const f32 dx0 = s.hv_x0 * kx, dx1 = s.hv_x1 * kx, dy0 = s.hv_y0 * ky, dy1 = s.hv_y1 * ky;
++					const f32 da = std::max((dx1 - dx0) * (dy1 - dy0), 1.f);
++					const uitree::elem* best = nullptr;
++					f32 best_iou = 0.5f;
++					for (const auto& e : *s.elems)
 +					{
++						if (!e.cat || e.cat == uitree::C_METER) continue;
++						const f32 ix = std::min(dx1, e.x1) - std::max(dx0, e.x0), iy = std::min(dy1, e.y1) - std::max(dy0, e.y0);
++						if (ix <= 0.f || iy <= 0.f) continue;
++						const f32 inter = ix * iy, ea = (e.x1 - e.x0) * (e.y1 - e.y0);
++						const f32 iou = inter / (da + ea - inter);
++						if (iou > best_iou || (best && std::fabs(iou - best_iou) < 1e-3f && ea < (best->x1 - best->x0) * (best->y1 - best->y0))) { best_iou = iou; best = &e; }
++					}
++					if (best)
++					{
++						const int c = best->cat;
++						hud_panel pn{};
++						int panel_k = -1, spot_k = -1;
++						if (c == uitree::C_TICKETS) panel_k = 0;
++						else if (c == uitree::C_LEFT) panel_k = 1;
++						else if (c == uitree::C_RIGHT) panel_k = 2;
++						else if (c == uitree::C_MENU) panel_k = 3;
++						else if (c >= uitree::C_PLATE && c <= uitree::C_PROC) spot_k = c - uitree::C_PLATE;
++						if (panel_k >= 0 && s.panels[panel_k].on) pn = s.panels[panel_k];
++						else if (spot_k >= 0 && s.spots[spot_k].on) pn = s.spots[spot_k];
 +						mat4 base;
-+						if (rv_base(content_gen, base))
++						if (pn.on && rv_base(content_gen, base))
 +						{
-+							const hud_region own{cxn, cyn, std::max(wn * 0.5f, 0.01f), std::max(hn * 0.5f, 0.01f)};
-+							const mat4 X = mmul(base, hud_panel_matrix(own, s.spots[k]));
++							// the group's rectangle (a whole menu: the whole screen), in the game's ndc
++							f32 gx0 = best->rx0, gy0 = best->ry0, gx1 = best->rx1, gy1 = best->ry1;
++							if (c == uitree::C_MENU) { gx0 = 0.f; gy0 = 0.f; gx1 = 1280.f; gy1 = 720.f; }
++							const hud_region grp{(gx0 + gx1) / 1280.f - 1.f, 1.f - (gy0 + gy1) / 720.f, (gx1 - gx0) / 1280.f, (gy1 - gy0) / 720.f};
++							// its own shape on the anchor (no stretching), and its depth in the UI tree
++							const f32 aspect = std::max(gy1 - gy0, 1.f) / std::max(gx1 - gx0, 1.f);
++							if (aspect * pn.hw > pn.hh) pn.hw = pn.hh / aspect; else pn.hh = pn.hw * aspect;
++							pn.P = pn.P + normalize(cross(pn.A, pn.B)) * (0.006f * static_cast<f32>(std::min<int>(best->depth, 10)));
++							const mat4 X = mmul(base, hud_panel_matrix(grp, pn));
 +							std::memcpy(x, X.m, sizeof(f32) * 16);
-+							s.spot_cnt[k]++;
-+							s.spot_nx[k] = cxn; s.spot_ny[k] = cyn;
-+							return 7;
++							if (panel_k >= 0) { s.hud_cnt[panel_k]++; s.pan_reg[panel_k] = grp; s.pan_reg_n[panel_k]++; s.pan_hw[panel_k] = pn.hw; s.pan_hh[panel_k] = pn.hh; }
++							if (spot_k >= 0) { s.spot_cnt[spot_k]++; s.spot_nx[spot_k] = grp.cx; s.spot_ny[spot_k] = grp.cy; }
++							return 7 + std::max(panel_k, 0);
 +						}
 +					}
 +				}
@@ -10216,10 +10262,10 @@ index 000000000..6bb2773ba
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 new file mode 100644
-index 000000000..935613b2b
+index 000000000..cc463791c
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,188 @@
 +// Order Up VR: the game's own UI, read live from its memory (BLES01470 only).
 +//
 +// Found in the game's code (EBOOT, see docs/VR_AUDIT.md "Menu system"):
@@ -10245,10 +10291,11 @@ index 000000000..935613b2b
 +		{0x683d2dae, 0xd2ad5bc3}, {0x683d2dae, 0x08db88cf},
 +	};
 +
-+	// Which HUD pictures are which game element: a word of the element's texture object (its GPU address) -> role
-+	enum role : u8 { R_NONE = 0, R_PLATE = 1, R_TRASH = 2, R_OVEN = 3, R_PROCESSOR = 4 };
-+	inline std::mutex labels_mutex;
-+	inline std::shared_ptr<const std::unordered_map<u32, u8>> labels;   // published (guarded by labels_mutex)
++	// What each visible game UI element is in VR (its category), and where it is on the game's 1280x720 screen
++	enum category : u8 { C_NONE = 0, C_PLATE, C_TRASH, C_OVEN, C_PROC, C_TICKETS, C_METER, C_LEFT, C_RIGHT, C_MENU };
++	struct elem { f32 x0, y0, x1, y1; f32 rx0, ry0, rx1, ry1; u8 cat, depth; };   // own rectangle; its group's rectangle
++	inline std::mutex elems_mutex;
++	inline std::shared_ptr<const std::vector<elem>> elems;   // published (guarded by elems_mutex)
 +
 +	struct state
 +	{
@@ -10258,7 +10305,7 @@ index 000000000..935613b2b
 +		std::FILE* f = nullptr;
 +		bool f_tried = false;
 +		u64 last_labels = 0;
-+		std::unordered_map<u32, u8> building;
++		std::vector<elem> out;
 +	};
 +	inline state g;
 +
@@ -10296,66 +10343,78 @@ index 000000000..935613b2b
 +	u32 rd32(u32 a) { const u8* p = static_cast<const u8*>(vm::base(a)); return rd32be(p); }
 +	f32 rdf(u32 a) { return std::bit_cast<f32>(rd32(a)); }
 +
-+	void walk(u32 e, int depth, int& count, bool log)
++	// The game's element classes (vtables seen in the live tree): panel, image, text, button, sprites
++	bool is_element_vt(u32 vt)
 +	{
-+		if (count > 600 || depth > 12 || !readable(e, 0x1a0)) return;
++		switch (vt)
++		{
++		case 0x342c40: case 0x342e00: case 0x342fc0: case 0x343238: case 0x343748: case 0x343880: case 0x343af0: return true;
++		default: return false;
++		}
++	}
++
++	// What an element is in VR, from its own name or the nearest parent with a telling name
++	u8 category_of(const std::string& name)
++	{
++		std::string n = name;
++		for (char& ch : n) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++		const auto has = [&](const char* w) { return n.find(w) != std::string::npos; };
++		if (has("trash")) return C_TRASH;
++		if (has("plate") && !has("thermometer") && !has("meal")) return C_PLATE;
++		if (has("processor") && !has("timer")) return C_PROC;
++		if (has("oven") && !has("timer")) return C_OVEN;
++		if (has("order_reel") || has("big_ticket") || has("orderbig")) return C_TICKETS;
++		if (has("meter") || has("power") || has("thermometer")) return C_METER;
++		if (has("asstchef") || has("assistant")) return C_LEFT;
++		if (has("gesture") || has("utensil") || has("spice")) return C_RIGHT;
++		if (has("pause") || has("newspaper") || has("worldmap") || has("frontmenu") || has("mainmenu") || has("endofday") || has("saveload") ||
++			has("payphone") || has("option") || has("menu_") || has("_menu") || has("character") || has("profile") || has("dialog") || has("popup"))
++			return C_MENU;
++		return C_NONE;
++	}
++
++	void walk(u32 e, int depth, int& count, bool log, f32 px, f32 py, u8 cat, f32 rx0, f32 ry0, f32 rx1, f32 ry1)
++	{
++		if (count > 900 || depth > 14 || !readable(e, 0x1a0)) return;
++		const u32 vt = rd32(e);
++		if (!is_element_vt(vt)) return;
 +		count++;
-+		const u32 vt = rd32(e), nh = rd32(e + 0x14c);
++		const u32 nh = rd32(e + 0x14c);
 +		const u8 flags = static_cast<const u8*>(vm::base(e + 0x180))[0];
 +		const auto it = g.names.find(nh);
-+		if (log) std::fprintf(g.f, "%*s%s [%08x] vt %08x flags %02x%s pos %.1f %.1f %.1f dims %.1f %.1f off %.1f %.1f",
-+			depth * 2, "", it != g.names.end() ? it->second.c_str() : "?", nh, vt, flags, (flags & 4) ? " HIDDEN" : "",
-+			rdf(e + 0x50), rdf(e + 0x54), rdf(e + 0x58), rdf(e + 0x78), rdf(e + 0x7c), rdf(e + 0xd0), rdf(e + 0xd4));
-+		const u32 head = e + 0x18c, first = rd32(head);
-+		if (vt == 0x343748)
++		const f32 x = px + rdf(e + 0x50) + rdf(e + 0xd0), y = py + rdf(e + 0x54) + rdf(e + 0xd4);
++		const f32 w = rdf(e + 0x78), h = rdf(e + 0x7c);
++		if (log) std::fprintf(g.f, "%*s%s [%08x] vt %08x flags %02x%s at %.1f %.1f size %.1f %.1f",
++			depth * 2, "", it != g.names.end() ? it->second.c_str() : "?", nh, vt, flags, (flags & 4) ? " HIDDEN" : "", x, y, w, h);
++		if (flags & 4) { if (log) std::fprintf(g.f, "\n"); return; }   // hidden: neither it nor its children are drawn
++		// a telling name starts a group: this element's rectangle is the group's (it keeps its layout on its VR anchor)
++		if (it != g.names.end())
 +		{
-+			// an image: its texture object (the first words, to tie it to what the renderer draws)
-+			if (log) std::fprintf(g.f, " tex %08x", first);
-+			if (readable(first, 0x80))
-+			{
-+				if (log) for (int k = 0; k < 16; k++) std::fprintf(g.f, " %08x", rd32(first + k * 4));
-+				// the plate and the trash: remember their texture's words (one is where the GPU reads the picture)
-+				u8 role = R_NONE;
-+				if (it != g.names.end())
-+				{
-+					std::string lower = it->second;
-+					for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-+					if (lower.find("plate") != std::string::npos && lower.find("thermometer") == std::string::npos) role = R_PLATE;
-+					else if (lower.find("trash") != std::string::npos) role = R_TRASH;
-+					else if (lower.find("timer") == std::string::npos && lower.find("ingredient") == std::string::npos)
-+					{
-+						if (lower.find("oven") != std::string::npos) role = R_OVEN;
-+						else if (lower.find("processor") != std::string::npos) role = R_PROCESSOR;
-+					}
-+				}
-+				if (role && !(flags & 4))
-+					for (int k = 0; k < 32; k++)
-+					{
-+						const u32 w = rd32(first + k * 4);
-+						if (w >= 0x1000 && w < 0x10000000) { g.building[w] = role; g.building[w | 0xc0000000u] = role; }
-+						else if (w >= 0xc0000000u && w < 0xd0000000u) { g.building[w] = role; g.building[w & 0x0fffffffu] = role; }
-+					}
-+			}
-+			if (log) std::fprintf(g.f, "\n");
-+			return;
++			const u8 c = category_of(it->second);
++			if (c && c != cat && std::isfinite(w) && w > 4.f && h > 4.f) { cat = c; rx0 = x; ry0 = y; rx1 = x + w; ry1 = y + h; }
 +		}
-+		if (log) std::fprintf(g.f, "\n");
-+		// children (a circular list back to the head), if this is a container
-+		u32 node = first;
++		if (log) std::fprintf(g.f, " cat %d\n", cat);
++		if (std::isfinite(x) && std::isfinite(y) && std::isfinite(w) && std::isfinite(h) && w > 0.5f && h > 0.5f && g.out.size() < 1200)
++			g.out.push_back({x, y, x + w, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255))});
++		// children: a circular list at +0x18c, only when it holds elements (images keep their texture there)
++		const u32 head = e + 0x18c;
++		u32 node = rd32(head);
 +		for (int n = 0; n < 256 && node != head && readable(node, 8); n++)
 +		{
-+			walk(rd32(node + 4), depth + 1, count, log);
++			const u32 child = rd32(node + 4);
++			if (!readable(child, 4) || !is_element_vt(rd32(child))) break;
++			walk(child, depth + 1, count, log, x, y, cat, rx0, ry0, rx1, ry1);
 +			node = rd32(node);
 +		}
 +	}
 +
-+	// Every second while the game runs: which HUD pictures are the plate and the trash (for the VR drop spots); in
-+	// Experimental also the whole UI tree to log/orderup_ui.log every 3 s (size-capped)
++	// About 5 times a second while the game runs: the game's visible UI elements with their screen rectangles and what
++	// they are in VR (published for the renderer); in Experimental also the whole tree to log/orderup_ui.log every 3 s
 +	void tick(const std::string& usrdir, bool experimental)
 +	{
 +		if (!g_game_known) return;
 +		const u64 now = GetTickCount64();
-+		if (now - g.last_labels < 1000) return;
++		if (now - g.last_labels < 200) return;
 +		g.last_labels = now;
 +		if (!g.names_tried && !usrdir.empty()) load_names(usrdir);
 +		bool log = false;
@@ -10375,7 +10434,7 @@ index 000000000..935613b2b
 +			GetLocalTime(&t);
 +			std::fprintf(g.f, "==== %02d:%02d:%02d menu system %08x\n", t.wHour, t.wMinute, t.wSecond, sys);
 +		}
-+		g.building.clear();
++		g.out.clear();
 +		const u32 head = sys + 0x2c;
 +		u32 node = rd32(head);
 +		int count = 0;
@@ -10385,14 +10444,14 @@ index 000000000..935613b2b
 +			if (readable(menu, 0x20))
 +			{
 +				if (log) std::fprintf(g.f, "-- menu %08x root %08x\n", menu, rd32(menu + 0x10));
-+				walk(rd32(menu + 0x10), 1, count, log);
++				walk(rd32(menu + 0x10), 1, count, log, 0.f, 0.f, C_NONE, 0.f, 0.f, 1280.f, 720.f);
 +			}
 +			node = rd32(node);
 +		}
 +		if (log) std::fflush(g.f);
-+		auto fresh = std::make_shared<const std::unordered_map<u32, u8>>(g.building);
-+		std::lock_guard lock(labels_mutex);
-+		labels = std::move(fresh);
++		auto fresh = std::make_shared<const std::vector<elem>>(g.out);
++		std::lock_guard lock(elems_mutex);
++		elems = std::move(fresh);
 +	}
 +}
 diff --git a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp

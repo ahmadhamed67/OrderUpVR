@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.17.0",
+    "channel": "beta",
+    "date": "2026-11-22",
+    "simple": [
+      "New VR UI framework: the mod now reads the game's own menus and HUD (every element, its name and where it is) and puts each one in its place in VR, instead of showing the game's screen pieces on flat panels.",
+      "Order tickets sit on the ticket rail at the counter; the plate, trash bin, oven and food processor are things in your kitchen you drop food on; the assistant chefs stand on your left, utensils, gestures and spices on your right; whole menus (pause, newspaper, map, front menu, profiles) appear on the menu board in front of you. Everything keeps its own shape, and buttons and cards stand out from their backgrounds.",
+      "Your body stays the chef you chose: the load menu shows the default male chef, which used to switch you to male.",
+      "You always see from the chef's eye height, also in places where the game's camera is very high (you were floating several metres up)."
+    ],
+    "notes": [
+      "UI tree reader (OrderUpVR_uitree.inl), 5 times a second: element classes 0x342c40/0x342e00/0x342fc0/0x343238/0x343748/0x343880/0x343af0; children only when +0x18c holds a list of elements (images keep their texture there, class 0x343880); hidden subtrees (+0x180 bit 2) skipped; absolute rectangle = sum of +0x50 position and +0xd0 offset up the tree, size +0x78/+0x7c (1280x720, matches the HUD draws on the 1280x736 surface). Categories from the element's or its group's name (trash, plate, oven, processor, order_reel/ticket, meter, assistant, gesture/utensil/spice, menus).",
+      "Renderer: each 2D HUD draw is matched to the visible element with the best rectangle overlap (IoU > 0.5) and drawn on its category's anchor (rail / left / right / menu board panels, or the four kitchen spots), mapping its group's rectangle onto the anchor at the group's own aspect and 6 mm per tree level towards you; unmatched draws and meters keep the old routing. Pointing and touch use the same group rectangle and shape.",
+      "Chef detection only while the game shows its 3D scene; each decision logged.",
+      "eye_drop 12 m: eyes always at the chef's eye height above the restaurant floor.",
+      "Audit: no open code-scanning or Dependabot alerts; history contains only our releases."
+    ]
+  },
+  {
     "version": "0.16.0",
     "channel": "beta",
     "date": "2026-11-22",
