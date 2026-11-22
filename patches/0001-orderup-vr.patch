@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..3b94d61c6
+index 000000000..c9c39b948
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7715 @@
+@@ -0,0 +1,7771 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -757,12 +757,15 @@ index 000000000..3b94d61c6
 +			{0.f, 0.f, 1.f, 1.f},            // 3 the whole screen: cards, menus, the pause menu (upright, in front)
 +		};
 +		struct hud_panel { bool on = false; vec3 P{}, A{}, B{}; f32 hw = 0.f, hh = 0.f; };
++		struct vr_button { f32 x0, y0, x1, y1; u8 depth; };   // a button of the open game menu (ndc of the game's screen, y up)
 +
 +		// The headset side publishes where the eyes are; the renderer side reads it once per game frame.
 +		// One scale for everything: your eyes are the chef's eyes. Metres per game unit = your eye height / the chef's
 +		// eye height (the chef model and the restaurants share the game's units). Seated: you see as a standing chef.
 +		constexpr f32 chef_eye_u = 1.45f;   // the chef's eyes above its feet (game units; chef::model eye_y)
 +		constexpr f32 seated_eye_m = 1.6f;  // a seated player sees from this height
++		constexpr f32 counter_k = 0.56f;    // a kitchen counter is at about 56% of your eye height (0.92 m for eyes at 1.65 m)
++		constexpr f32 eye_over_counter_k = 0.44f;   // and your eyes are 44% of their height above it
 +
 +		struct view_snapshot
 +		{
@@ -1162,6 +1165,14 @@ index 000000000..3b94d61c6
 +			bool touch_press = false;  // a fingertip pushed into a HUD panel this frame (the game's select button)
 +			bool touch_was = false;
 +			bool over_spot = false;
++			int over_k = -1;           // which drop spot the food you hold is over
++			// The VR UI framework (OrderUpVR_vrui.inl): the open menu's buttons as keys, the panels in room space
++			std::vector<vr_button> vr_btns;
++			hud_region vr_board_rg{0.f, 0.f, 1.f, 1.f};
++			int btn_hover = -1, btn_hover_prev = -1;
++			bool btn_pressed = false, btn_pressed_prev = false;
++			hud_panel vr_pan[4];
++			bool vr_pan_ok[4]{};
 +			hud_panel spot_room[4];   // the plate and trash spots in room space (placed with the HUD)    // (for a small buzz when a press starts)
 +			// Real grabbing: holding food with GRIP inside the game, the grabbing hand's grab point, the pointer (ndc)
 +			bool hold_now = false, hold_prev = false;
@@ -2126,8 +2137,18 @@ index 000000000..3b94d61c6
 +				vr_log("Camera height: %.2f units from the game's camera%s, %.2f from the scene estimate", cam_mem, mem_ok ? "" : " (not readable)", -c.floor_lev);
 +				if ((mem_ok || c.bounds) && cam_u > 1.f && cam_u < 20.f)
 +				{
-+					const f32 eye_u = std::clamp(cam_u - xr.eye_drop / u, std::min(chef_eye_u, cam_u), cam_u);
++					f32 eye_u = std::clamp(cam_u - xr.eye_drop / u, std::min(chef_eye_u, cam_u), cam_u);
 +					const vec3 lv = level(c.up_a, xform(c.D, vec3{0.f, 0.f, -(c.food_d > 0.05f ? c.food_d : c.depth)}));
++					// The game's counter (where the camera looks at the food) goes to your counter's height: your eyes are as
++					// far above the game's counter as a real counter is below your eyes. Neither too high nor underground.
++					{
++						const f32 counter_u = cam_u + lv.y;
++						if (lv.y < -0.3f && counter_u > 0.3f && counter_u < cam_u - 0.3f)
++						{
++							eye_u = std::clamp(counter_u + eye_over_counter_k * eye_m / u, counter_u + 0.3f, cam_u);
++							vr_log("Height: the game's counter is %.2f units up; your eyes go %.2f units above it (%.2f m, as at a real counter)", counter_u, eye_u - counter_u, (eye_u - counter_u) * u);
++						}
++					}
 +					const f32 lh = std::sqrt(lv.x * lv.x + lv.z * lv.z);
 +					const f32 k = lh > 1e-3f ? std::clamp(lh - xr.reach / u, 0.f, xr.max_step / u) / lh : 0.f;
 +					xr.eye_off = {lv.x * k, eye_u - cam_u, lv.z * k};
@@ -4003,6 +4024,8 @@ index 000000000..3b94d61c6
 +					gfx_draw(xr, g.box, m_cols(R * 0.7f, Up * 0.02f, Z * 0.7f, local(lx, y, lz) - Up * 0.01f), {1.f, 0.90f, 0.72f}, 4.f);
 +		}
 +
++#include "OrderUpVR_vrui.inl"
++
 +		// Draws the room (env) and the body with hands for both eyes. Returns false if nothing could be drawn.
 +		bool gfx_render(xr_state& xr, bool want_env, bool want_body)
 +		{
@@ -4086,6 +4109,7 @@ index 000000000..3b94d61c6
 +								}
 +							}
 +							draw_exit_button(xr);
++							vrui::draw(xr);   // the menu board's keys, the stations, the ticket rail
 +						}
 +						release(g.body_sc[e]);
 +					}
@@ -4332,21 +4356,25 @@ index 000000000..3b94d61c6
 +				const f32 side_hw = 0.11f;   // the side strips (30% of the width, 77.5% of the height)
 +				set(xr.hud_room[1], head + fwd * 1.00f - right * 0.55f + vec3{0.f, -0.20f, 0.f}, head, side_hw * 1.6f, side_hw * 1.6f * (0.775f / 0.3f) / aspect);
 +				set(xr.hud_room[2], head + fwd * 1.00f + right * 0.55f + vec3{0.f, -0.20f, 0.f}, head, side_hw * 1.6f, side_hw * 1.6f * (0.775f / 0.3f) / aspect);
-+				// The plate lies on the counter in front of you, a little to the left; the trash bin stands by your right leg
++				// The stations at your counter (56% of your eye height): the plate lies on it in front of you, a little to the
++				// left; the trash bin stands on the floor by your right leg; the oven under the counter on your left, its
++				// controls on the counter's edge; the food processor on the counter on your right. All within reach (0.4-0.7 m).
 +				{
++					const f32 cy = vrui::counter_y(xr);
++					const auto at = [&](f32 f, f32 r, f32 y) { vec3 p = head + fwd * f + right * r; p.y = y; return p; };
 +					auto& pl = xr.spot_room[0];
-+					pl.on = true; pl.P = head + fwd * 0.42f - right * 0.20f + vec3{0.f, -0.55f, 0.f};
++					pl.on = true; pl.P = at(0.42f, -0.18f, cy + 0.01f);
 +					pl.A = right; pl.B = fwd; pl.hw = pl.hh = 0.13f;
 +					auto& tr = xr.spot_room[1];
-+					tr.on = true; tr.P = head + fwd * 0.35f + right * 0.42f + vec3{0.f, -0.85f, 0.f};
-+					tr.A = right; tr.B = {0.f, 1.f, 0.f}; tr.hw = tr.hh = 0.12f;
-+					// the oven on your left and the food processor on your right, at waist height, facing you
++					tr.on = true; tr.hw = tr.hh = 0.10f; tr.P = at(0.36f, 0.45f, cy - 0.10f);
++					tr.A = right; tr.B = {0.f, 1.f, 0.f};
 +					auto& ov = xr.spot_room[2];
-+					ov.on = true; ov.P = head + fwd * 0.40f - right * 0.48f + vec3{0.f, -0.45f, 0.f};
-+					ov.A = normalize(right + fwd * 0.6f); ov.B = {0.f, 1.f, 0.f}; ov.hw = ov.hh = 0.13f;
++					ov.on = true; ov.hw = ov.hh = 0.11f; ov.P = at(0.45f, -0.50f, cy + 0.02f + 0.11f);
++					ov.A = normalize(right + fwd * 0.6f); ov.B = {0.f, 1.f, 0.f};
 +					auto& fp = xr.spot_room[3];
-+					fp.on = true; fp.P = head + fwd * 0.40f + right * 0.48f + vec3{0.f, -0.45f, 0.f};
-+					fp.A = normalize(right - fwd * 0.6f); fp.B = {0.f, 1.f, 0.f}; fp.hw = fp.hh = 0.13f;
++					fp.on = true; fp.hw = fp.hh = 0.10f; fp.P = at(0.45f, 0.50f, cy + 0.24f + 0.10f);
++					fp.A = normalize(right - fwd * 0.6f); fp.B = {0.f, 1.f, 0.f};
++					vr_log("Stations: counter at %.2f m (floor %s), plate, bin, oven and food processor placed around you", cy - xr.floor_y, xr.floor_known ? "known" : "guessed");
 +				}
 +				xr.hud_locked = true;
 +			}
@@ -4779,6 +4807,7 @@ index 000000000..3b94d61c6
 +					// The HUD panels (tickets rail, order card on your left hand, stations on your right, a dialog in
 +					// front): pointing at one gives the game that spot on its screen. Otherwise the 3D scene below.
 +					xr.touch_press = false;
++					vrui::collect_buttons(xr, cam);
 +					{
 +						hud_panel pans[4];
 +						layout_hud(xr, pans);
@@ -4828,6 +4857,9 @@ index 000000000..3b94d61c6
 +							}
 +						}
 +					}
++					// On the menu board: the pointer goes to the centre of the game's button under it (the press lands on it)
++					if (have && on_hud && xr.ptr_panel == 3) vrui::snap_to_button(xr, nx, ny);
++					else xr.btn_hover = -1;
 +					vec3 hand_aim{};
 +					bool hand_aimed = false;
 +					if (have) {}
@@ -5058,6 +5090,13 @@ index 000000000..3b94d61c6
 +				out.move = trig[hand] > 0.5f || xr.touch_press;
 +				if (xr.touch_press && !xr.touch_was) buzz(xr, hand, 0.4f, 100);   // you feel the button go in
 +				xr.touch_was = xr.touch_press;
++				// Menu keys: a light tick when you point at a new one, a firm one when it goes in
++				xr.btn_pressed = xr.btn_hover >= 0 && out.move;
++				if (xr.btn_hover >= 0 && xr.btn_hover != xr.btn_hover_prev) buzz(xr, hand, 0.15f, 40);
++				if (xr.btn_pressed && !xr.btn_pressed_prev && !xr.touch_press) buzz(xr, hand, 0.5f, 100);
++				if (xr.btn_pressed && !xr.btn_pressed_prev) vr_log("Menu: key %d of %zu pressed", xr.btn_hover, xr.vr_btns.size());
++				xr.btn_hover_prev = xr.btn_hover;
++				xr.btn_pressed_prev = xr.btn_pressed;
 +				xr.touch_press = false;   // used once: a press only counts while the fingertip is in the panel this frame
 +				// Real grabbing: while GRIP holds food inside the game, the renderer draws it at this hand; a short buzz when
 +				// you pick it up and when you let go
@@ -5080,9 +5119,10 @@ index 000000000..3b94d61c6
 +							out.on_screen = true;
 +							if (!xr.over_spot) { buzz(xr, hand, 0.35f, 120); vr_log("Drop spot: over the %s", k == 0 ? "plate" : k == 1 ? "trash" : k == 2 ? "oven" : "food processor"); }
 +							xr.over_spot = true;
++							xr.over_k = k;
 +							break;
 +						}
-+					if (!xr.hold_now) xr.over_spot = false;
++					if (!xr.hold_now) { xr.over_spot = false; xr.over_k = -1; }
 +					xr.hold_nx = out.x * 2.f - 1.f;
 +					xr.hold_ny = 1.f - out.y * 2.f;
 +					if (xr.hold_now != xr.hold_prev)
@@ -5200,6 +5240,22 @@ index 000000000..3b94d61c6
 +			{
 +				hud_panel hud_layout[4];
 +				layout_hud(xr, hud_layout);   // (takes the state lock itself: before the lock below)
++				{
++					cam_info cc;
++					{
++						std::lock_guard lock(g_state_mutex);
++						cc = g_cam;
++					}
++					const XrQuaternionf py = yaw_q(xr.player_yaw);
++					for (int k = 0; k < 4; k++)
++					{
++						hud_panel p = hud_layout[k];
++						if (cc.pan_ok[k] && cc.pan_hw[k] > 0.f) { p.hw = cc.pan_hw[k]; p.hh = cc.pan_hh[k]; }
++						p.P = from_player(xr, p.P); p.A = rotate(py, p.A); p.B = rotate(py, p.B);
++						xr.vr_pan[k] = p;
++						xr.vr_pan_ok[k] = p.on && cc.hud_seen[k] > 0;
++					}
++				}
 +				XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
 +				li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 +				li.displayTime = frame_state.predictedDisplayTime;
@@ -10287,10 +10343,10 @@ index 000000000..6bb2773ba
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 new file mode 100644
-index 000000000..cc463791c
+index 000000000..3053d9e36
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,200 @@
 +// Order Up VR: the game's own UI, read live from its memory (BLES01470 only).
 +//
 +// Found in the game's code (EBOOT, see docs/VR_AUDIT.md "Menu system"):
@@ -10318,7 +10374,7 @@ index 000000000..cc463791c
 +
 +	// What each visible game UI element is in VR (its category), and where it is on the game's 1280x720 screen
 +	enum category : u8 { C_NONE = 0, C_PLATE, C_TRASH, C_OVEN, C_PROC, C_TICKETS, C_METER, C_LEFT, C_RIGHT, C_MENU };
-+	struct elem { f32 x0, y0, x1, y1; f32 rx0, ry0, rx1, ry1; u8 cat, depth; };   // own rectangle; its group's rectangle
++	struct elem { f32 x0, y0, x1, y1; f32 rx0, ry0, rx1, ry1; u8 cat, depth; bool btn; };   // btn: a button you press   // own rectangle; its group's rectangle
 +	inline std::mutex elems_mutex;
 +	inline std::shared_ptr<const std::vector<elem>> elems;   // published (guarded by elems_mutex)
 +
@@ -10398,6 +10454,18 @@ index 000000000..cc463791c
 +		return C_NONE;
 +	}
 +
++	// A button of a menu, from its name in the game's scripts (the scripts name them for what they do)
++	bool is_button_name(const std::string& name)
++	{
++		std::string n = name;
++		for (char& ch : n) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++		if (n.find("background") != std::string::npos || n.find("_bg") != std::string::npos || n.find("shadow") != std::string::npos || n.find("title") != std::string::npos) return false;
++		static const char* words[] = {"button", "btn", "option", "item", "choice", "tab", "yes", "no_", "_no", "back", "ok", "confirm", "cancel",
++			"continue", "play", "start", "select", "arrow", "next", "prev", "slot", "quit", "resume", "retry", "restart", "accept", "skip", "icon_", "restaurant", "dish", "recipe"};
++		for (const char* w : words) if (n.find(w) != std::string::npos) return true;
++		return n == "no";
++	}
++
 +	void walk(u32 e, int depth, int& count, bool log, f32 px, f32 py, u8 cat, f32 rx0, f32 ry0, f32 rx1, f32 ry1)
 +	{
 +		if (count > 900 || depth > 14 || !readable(e, 0x1a0)) return;
@@ -10418,9 +10486,9 @@ index 000000000..cc463791c
 +			const u8 c = category_of(it->second);
 +			if (c && c != cat && std::isfinite(w) && w > 4.f && h > 4.f) { cat = c; rx0 = x; ry0 = y; rx1 = x + w; ry1 = y + h; }
 +		}
-+		if (log) std::fprintf(g.f, " cat %d\n", cat);
++		if (log) std::fprintf(g.f, " cat %d%s\n", cat, it != g.names.end() && is_button_name(it->second) ? " BUTTON" : "");
 +		if (std::isfinite(x) && std::isfinite(y) && std::isfinite(w) && std::isfinite(h) && w > 0.5f && h > 0.5f && g.out.size() < 1200)
-+			g.out.push_back({x, y, x + w, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255))});
++			g.out.push_back({x, y, x + w, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255)), it != g.names.end() && is_button_name(it->second)});
 +		// children: a circular list at +0x18c, only when it holds elements (images keep their texture there)
 +		const u32 head = e + 0x18c;
 +		u32 node = rd32(head);
@@ -10477,6 +10545,246 @@ index 000000000..cc463791c
 +		auto fresh = std::make_shared<const std::vector<elem>>(g.out);
 +		std::lock_guard lock(elems_mutex);
 +		elems = std::move(fresh);
++	}
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_vrui.inl b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
+new file mode 100644
+index 000000000..0446b3f63
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
+@@ -0,0 +1,234 @@
++// Order Up VR: the VR UI framework, the 3D side (BLES01470).
++//
++// The game's own UI is read live from its memory (OrderUpVR_uitree.inl); the renderer moves each of the game's HUD
++// pictures to its place in your kitchen (stereo_draw_transform). This file builds the physical things around them:
++//  - the menu board: a wooden board with a real key for every button of the open menu (from the game's UI tree). The
++//    key lights up when you point at it, goes in when you press, and the press goes to that button in the game
++//    (the game's pointer is put on the button's centre, then the game's select button is pressed);
++//  - the plate on the counter, the trash bin by your leg, the oven and the food processor: real objects at your
++//    counter's height, with the game's live picture of each standing on them as their sign; they glow while food you
++//    hold is over them;
++//  - the ticket rail: a steel rail the game's tickets hang from.
++// Everything is in your room (world-locked), sized in metres from your own height.
++//
++// The 3D layer is composited over the game's picture without a shared depth, so nothing here is drawn where a game
++// picture is seen through it: the objects stand in front of and below their signs, keys are frames around buttons.
++//
++// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, before gfx_render.
++
++namespace vrui
++{
++	const vec3 wood{0.36f, 0.22f, 0.12f}, wood_dark{0.24f, 0.14f, 0.07f}, brass{0.80f, 0.62f, 0.28f}, glow{1.f, 0.86f, 0.35f},
++		go{0.45f, 1.f, 0.55f}, steel{0.70f, 0.72f, 0.76f}, dark{0.16f, 0.17f, 0.18f}, ceramic{0.94f, 0.94f, 0.91f};
++
++	vec3 mix(vec3 a, vec3 b, f32 t) { return a + (b - a) * t; }
++
++	// A rectangular frame around a rectangle (centre c, axes A right, B up, N towards you): bars t thick, d deep
++	void frame(xr_state& xr, vec3 c, vec3 A, vec3 B, vec3 N, f32 hw, f32 hh, f32 t, f32 d, vec3 col)
++	{
++		const vec3 cf = c + N * (d * 0.5f);
++		draw_boxo(xr, cf + B * (hh + t * 0.5f), A, B, N, {2.f * (hw + t), t, d}, col);
++		draw_boxo(xr, cf - B * (hh + t * 0.5f), A, B, N, {2.f * (hw + t), t, d}, col);
++		draw_boxo(xr, cf + A * (hw + t * 0.5f), A, B, N, {t, 2.f * hh, d}, col);
++		draw_boxo(xr, cf - A * (hw + t * 0.5f), A, B, N, {t, 2.f * hh, d}, col);
++	}
++
++	// A ring of short bars (a rim) in the plane of A and B
++	void ring(xr_state& xr, vec3 c, vec3 A, vec3 B, f32 r, f32 thick, vec3 col, int n = 24)
++	{
++		for (int i = 0; i < n; i++)
++		{
++			const f32 a0 = 6.2831853f * i / n, a1 = 6.2831853f * (i + 1) / n;
++			draw_limb(xr, c + (A * std::cos(a0) + B * std::sin(a0)) * r, c + (A * std::cos(a1) + B * std::sin(a1)) * r, thick, thick, col);
++		}
++	}
++
++	// The game's buttons of the open menu, as keys on the board (ndc of the game's screen, y up)
++	void collect_buttons(xr_state& xr, const cam_info& cam)
++	{
++		xr.vr_btns.clear();
++		if (!cam.hud_seen[3] || !xr.mode3d) return;
++		std::shared_ptr<const std::vector<uitree::elem>> el;
++		{
++			std::lock_guard lock(uitree::elems_mutex);
++			el = uitree::elems;
++		}
++		if (!el) return;
++		const hud_region rg = cam.pan_ok[3] ? cam.pan_reg[3] : hud_regions[3];
++		for (const auto& e : *el)
++		{
++			if (!e.btn || (e.cat != uitree::C_MENU && e.cat != uitree::C_NONE)) continue;
++			const f32 w = e.x1 - e.x0, h = e.y1 - e.y0;
++			if (w < 16.f || h < 10.f || w > 1000.f || h > 420.f) continue;
++			const vr_button b{e.x0 / 640.f - 1.f, 1.f - e.y1 / 360.f, e.x1 / 640.f - 1.f, 1.f - e.y0 / 360.f, e.depth};
++			const f32 cx = (b.x0 + b.x1) * 0.5f, cy = (b.y0 + b.y1) * 0.5f;
++			if (std::fabs((cx - rg.cx) / rg.hx) > 1.f || std::fabs((cy - rg.cy) / rg.hy) > 1.f) continue;
++			bool dup = false;
++			for (const auto& o : xr.vr_btns)
++				if (std::fabs(o.x0 - b.x0) + std::fabs(o.x1 - b.x1) + std::fabs(o.y0 - b.y0) + std::fabs(o.y1 - b.y1) < 0.03f) { dup = true; break; }
++			if (!dup) xr.vr_btns.push_back(b);
++			if (xr.vr_btns.size() >= 40) break;
++		}
++		xr.vr_board_rg = rg;
++	}
++
++	// The pointer on the board snaps to the button under it (the press lands on that button in the game)
++	void snap_to_button(xr_state& xr, f32& nx, f32& ny)
++	{
++		xr.btn_hover = -1;
++		for (usz i = 0; i < xr.vr_btns.size(); i++)
++		{
++			const auto& b = xr.vr_btns[i];
++			if (nx < b.x0 - 0.01f || nx > b.x1 + 0.01f || ny < b.y0 - 0.01f || ny > b.y1 + 0.01f) continue;
++			// the smallest button under the pointer (a list item inside a list)
++			if (xr.btn_hover >= 0)
++			{
++				const auto& o = xr.vr_btns[xr.btn_hover];
++				if ((o.x1 - o.x0) * (o.y1 - o.y0) <= (b.x1 - b.x0) * (b.y1 - b.y0)) continue;
++			}
++			xr.btn_hover = static_cast<int>(i);
++		}
++		if (xr.btn_hover >= 0)
++		{
++			const auto& b = xr.vr_btns[xr.btn_hover];
++			nx = (b.x0 + b.x1) * 0.5f;
++			ny = (b.y0 + b.y1) * 0.5f;
++		}
++	}
++
++	// Where your counter is (room space y): standing, from your real floor and height; seated, below your eyes
++	f32 counter_y(const xr_state& xr)
++	{
++		if (!xr.comfort.seated && xr.floor_known) return xr.floor_y + counter_k * (xr.last_head.y - xr.floor_y);
++		return xr.last_head.y - 0.48f;
++	}
++	f32 floor_or(const xr_state& xr, f32 fallback) { return !xr.comfort.seated && xr.floor_known ? xr.floor_y : fallback; }
++
++	void draw_board(xr_state& xr)
++	{
++		if (!xr.vr_pan_ok[3]) return;
++		const hud_panel& pn = xr.vr_pan[3];
++		const vec3 N = normalize(cross(pn.A, pn.B));
++		// The board: a thick wooden frame with a brass edge
++		frame(xr, pn.P, pn.A, pn.B, N, pn.hw + 0.012f, pn.hh + 0.012f, 0.035f, 0.03f, wood);
++		frame(xr, pn.P + N * 0.031f, pn.A, pn.B, N, pn.hw + 0.012f, pn.hh + 0.012f, 0.006f, 0.004f, brass);
++		// Two chains up to the ceiling
++		for (int s = -1; s <= 1; s += 2)
++		{
++			const vec3 top = pn.P + pn.B * (pn.hh + 0.047f) + pn.A * (s * pn.hw * 0.8f);
++			draw_limb(xr, top, top + vec3{0.f, 0.6f, 0.f}, 0.004f, 0.004f, steel);
++		}
++		// The keys
++		const hud_region rg = xr.vr_board_rg;
++		const u64 now = GetTickCount64();
++		for (usz i = 0; i < xr.vr_btns.size(); i++)
++		{
++			const auto& b = xr.vr_btns[i];
++			const f32 u0 = (b.x0 - rg.cx) / rg.hx, u1 = (b.x1 - rg.cx) / rg.hx, v0 = (b.y0 - rg.cy) / rg.hy, v1 = (b.y1 - rg.cy) / rg.hy;
++			const vec3 c = pn.P + pn.A * ((u0 + u1) * 0.5f * pn.hw) + pn.B * ((v0 + v1) * 0.5f * pn.hh) + N * (0.006f * std::min<int>(b.depth, 10));
++			const f32 hw = std::fabs(u1 - u0) * 0.5f * pn.hw + 0.003f, hh = std::fabs(v1 - v0) * 0.5f * pn.hh + 0.003f;
++			const bool hover = xr.btn_hover == static_cast<int>(i);
++			const bool down = hover && xr.btn_pressed;
++			const f32 pulse = hover ? 0.5f + 0.5f * std::sin(now * 0.012f) : 0.f;
++			const vec3 col = down ? go : hover ? mix(brass, glow, 0.6f + 0.4f * pulse) : mix(wood_dark, brass, 0.35f);
++			// raised 12 mm, pushed in to 3 mm while pressed
++			frame(xr, c, pn.A, pn.B, N, hw, hh, hover ? 0.007f : 0.005f, down ? 0.003f : 0.012f, col);
++		}
++	}
++
++	void draw_rail(xr_state& xr)
++	{
++		if (!xr.vr_pan_ok[0]) return;
++		const hud_panel& pn = xr.vr_pan[0];
++		const vec3 N = normalize(cross(pn.A, pn.B));
++		const vec3 top = pn.P + pn.B * (pn.hh + 0.014f) + N * 0.012f;
++		const vec3 a = top - pn.A * (pn.hw + 0.05f), b = top + pn.A * (pn.hw + 0.05f);
++		draw_limb(xr, a, b, 0.009f, 0.009f, steel);
++		// brackets back to the wall, and the clips along the rail
++		for (const vec3 e : {a, b}) draw_limb(xr, e, e - N * 0.06f + vec3{0.f, 0.03f, 0.f}, 0.006f, 0.006f, steel);
++		for (int i = 0; i <= 8; i++)
++		{
++			const vec3 p = top - pn.A * pn.hw + pn.A * (2.f * pn.hw * i / 8.f) + N * 0.004f;
++			draw_boxo(xr, p - pn.B * 0.012f, pn.A, pn.B, N, {0.012f, 0.02f, 0.004f}, dark);
++		}
++	}
++
++	// The plate, the trash bin, the oven and the food processor, standing in front of and below their signs
++	void draw_stations(xr_state& xr, const cam_info& cam)
++	{
++		const u64 now = GetTickCount64();
++		for (int k = 0; k < 4; k++)
++		{
++			const hud_panel& s = xr.spot_room[k];
++			if (!s.on || !cam.spot_seen[k]) continue;
++			const bool hot = xr.over_spot && xr.over_k == k;
++			const bool near_hand = xr.hold_now && dot(xr.hold_hand - s.P, xr.hold_hand - s.P) < 0.35f * 0.35f;
++			const f32 pulse = hot ? 0.5f + 0.5f * std::sin(now * 0.015f) : 0.f;
++			const vec3 hi = hot ? mix(go, vec3{1.f, 1.f, 1.f}, pulse * 0.4f) : near_hand ? glow : vec3{};
++			const bool lit = hot || near_hand;
++			vec3 N = normalize(cross(s.A, s.B));
++			if (k == 0)
++			{
++				// The plate lies flat: a ceramic rim around the game's picture, a wooden board under the rim
++				const f32 r = std::max(s.hw, s.hh) * 1.10f;
++				ring(xr, s.P, s.A, s.B, r, 0.008f, lit ? hi : ceramic);
++				ring(xr, s.P - vec3{0.f, 0.006f, 0.f}, s.A, s.B, r + 0.02f, 0.010f, wood, 28);
++				continue;
++			}
++			// Upright signs: N points at you
++			const f32 bottom = s.P.y - s.hh - 0.02f;
++			const vec3 base{s.P.x, 0.f, s.P.z};
++			if (k == 1)
++			{
++				// A bin on the floor in front of its sign, with a lid rim
++				const f32 r = std::max(s.hw * 0.95f, 0.10f);
++				const f32 fl = floor_or(xr, bottom - 0.5f);
++				const vec3 ax = s.P + N * (r + 0.01f);
++				const vec3 b0{ax.x, fl, ax.z}, b1{ax.x, bottom - 0.01f, ax.z};
++				if (b1.y - b0.y > 0.05f)
++				{
++					draw_limb(xr, b0, b1, r * 0.88f, r, lit ? mix(dark, hi, 0.5f) : vec3{0.20f, 0.30f, 0.22f});
++					ring(xr, b1, s.A, N, r * 1.03f, 0.008f, lit ? hi : steel);
++				}
++			}
++			else if (k == 2)
++			{
++				// An oven under the counter: steel box, dark door window, a handle; its sign is the control panel
++				const f32 w = std::max(s.hw * 1.3f, 0.2f), h = 0.34f, d = 0.30f;
++				const vec3 c = s.P - s.B * (s.hh + 0.03f + h * 0.5f) + N * (d * 0.5f + 0.005f);
++				draw_boxo(xr, c, s.A, s.B, N, {2.f * w, h, d}, steel);
++				draw_boxo(xr, c + N * (d * 0.5f + 0.002f) - s.B * 0.02f, s.A, s.B, N, {2.f * w * 0.75f, h * 0.55f, 0.004f}, lit ? mix(dark, hi, 0.45f) : vec3{0.10f, 0.08f, 0.07f});
++				const vec3 hc = c + N * (d * 0.5f + 0.03f) + s.B * (h * 0.32f);
++				draw_limb(xr, hc - s.A * (w * 0.6f), hc + s.A * (w * 0.6f), 0.008f, 0.008f, lit ? hi : brass);
++			}
++			else
++			{
++				// The food processor on the counter in front of its sign: a base, a clear-ish jar, a lid
++				const f32 r = std::max(s.hw * 0.7f, 0.07f);
++				const vec3 ax = s.P + N * (r + 0.02f);
++				const f32 y0 = bottom - 0.21f;
++				const vec3 p0{ax.x, y0, ax.z}, p1{ax.x, y0 + 0.07f, ax.z}, p2{ax.x, bottom - 0.02f, ax.z};
++				draw_limb(xr, p0, p1, r, r * 1.05f, lit ? mix(dark, hi, 0.4f) : vec3{0.85f, 0.20f, 0.18f});
++				draw_limb(xr, p1, p2, r * 0.8f, r * 0.85f, vec3{0.55f, 0.65f, 0.70f});
++				ring(xr, p2, s.A, N, r * 0.86f, 0.007f, lit ? hi : dark);
++			}
++			(void)base;
++		}
++	}
++
++	void draw(xr_state& xr)
++	{
++		if (!xr.mode3d) return;
++		cam_info cam;
++		{
++			std::lock_guard lock(g_state_mutex);
++			cam = g_cam;
++		}
++		if (cam.hud_seen[3]) draw_board(xr);
++		if (xr.live3d && xr.mode3d)
++		{
++			if (cam.hud_seen[0]) draw_rail(xr);
++			draw_stations(xr, cam);
++		}
 +	}
 +}
 diff --git a/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp b/rpcs3/Emu/RSX/NV47/FW/draw_call.hpp
