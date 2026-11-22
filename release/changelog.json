@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.15.4",
+    "channel": "beta",
+    "date": "2026-11-22",
+    "simple": [
+      "SteamVR: pause the game by holding the right stick in for half a second (the left MENU button stays SteamVR's). A quick click is still Select, and clicking both sticks still works.",
+      "Fixed: the game's menu layout log stayed empty."
+    ],
+    "notes": [
+      "SteamVR pause: right stick click held >= 500 ms = Start (logged 'SteamVR: pause (right stick held)'); on SteamVR, Select is a 120 ms pulse on a release under 450 ms; holding it 2 s shows the controls card. Help card: 'HOLD R-STICK - Pause the game'.",
+      "UI tree reader: the game's heap is above 0x30000000; the address check now allows up to 0xc0000000 (it rejected every UI object, so orderup_ui.log was empty)."
+    ]
+  },
+  {
     "version": "0.15.3",
     "channel": "beta",
     "date": "2026-11-22",

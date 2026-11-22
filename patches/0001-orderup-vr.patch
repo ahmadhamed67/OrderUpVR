@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..daefa3a8c
+index 000000000..7e624c25b
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7539 @@
+@@ -0,0 +1,7555 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1110,6 +1110,8 @@ index 000000000..daefa3a8c
 +			u64 xb_since = 0, xb_squeeze_since = 0, xb_puff_tick = 0;
 +			vec3 xb_pos{}, xb_puff_pos{};
 +			bool sticks_chord = false;   // SteamVR: both sticks pressed together (pause), not a recentre
++			u64 rstick_since = 0, select_pulse_until = 0;   // SteamVR: right stick held = pause, a quick click = Select
++			bool rstick_paused = false;
 +			u64 stick_down_since = 0; // left stick click: short = recentre, hold = switch 3D / screen
 +			bool snap_armed = true;
 +			f32 lower = 0.f;          // how far below the game camera the player stands (metres; right stick up/down)
@@ -1754,7 +1756,7 @@ index 000000000..daefa3a8c
 +				{L"GRIP", L"Grab and hold food"},
 +				{L"A  B", L"Cross and Circle"},
 +				{L"X  Y", L"Square (pink) and Triangle"},
-+				{g_steamvr ? L"BOTH STICKS" : L"MENU", g_steamvr ? L"Click both together: pause" : L"Pause the game"},
++				{g_steamvr ? L"HOLD R-STICK" : L"MENU", L"Pause the game"},
 +				{L"FLIP", L"Hold GRIP, flick your wrist up"},
 +				{L"LEFT STICK", L"Walk"},
 +				{L"STICK CLICK", L"Recenter you"},
@@ -1763,7 +1765,7 @@ index 000000000..daefa3a8c
 +				{L"BOTH GRIPS", L"Move the menu board"},
 +				{L"LEFT SHOULDER", L"GRIP: EXIT button, touch it"},
 +			};
-+			c.tip = g_steamvr ? L"Hold both sticks in for 2 seconds to see this again." : L"Hold the left MENU button for 2 seconds to see this again.";
++			c.tip = g_steamvr ? L"Hold the right stick in for 2 seconds to see this again." : L"Hold the left MENU button for 2 seconds to see this again.";
 +			return c;
 +		}
 +
@@ -4962,7 +4964,21 @@ index 000000000..daefa3a8c
 +				}
 +
 +				// Hold Left MENU for 2 seconds: show the controls card
-+				const bool menu_btn = g_steamvr ? both_sticks : get_bool(xr, xr.btn_menu);
++				// SteamVR keeps the left MENU button for its own menu: pause = hold the right stick in (half a second) or
++				// click both sticks; a quick right-stick click is still Select
++				bool rhold = false;
++				if (g_steamvr)
++				{
++					if (rclick) { if (!xr.rstick_since) { xr.rstick_since = now_ms; xr.rstick_paused = false; } }
++					else if (xr.rstick_since)
++					{
++						if (!xr.rstick_paused && !xr.sticks_chord && now_ms - xr.rstick_since < 450) xr.select_pulse_until = now_ms + 120;
++						xr.rstick_since = 0;
++					}
++					if (rclick && !xr.rstick_paused && now_ms - xr.rstick_since >= 500) { xr.rstick_paused = true; vr_log("SteamVR: pause (right stick held)"); }
++					rhold = rclick && xr.rstick_paused;
++				}
++				const bool menu_btn = g_steamvr ? (both_sticks || rhold) : get_bool(xr, xr.btn_menu);
 +				if (menu_btn)
 +				{
 +					if (!xr.menu_down_since) xr.menu_down_since = now_ms;
@@ -5002,7 +5018,7 @@ index 000000000..daefa3a8c
 +				out.triangle = get_bool(xr, xr.btn_y);
 +				if (out.cross || out.circle || out.square || out.triangle || out.move || out.t || out.start) xr.input_tick = now_ms;
 +				out.start = menu_btn;
-+				out.select = rclick && !xr.sticks_chord;
++				out.select = g_steamvr ? now_ms < xr.select_pulse_until : (rclick && !xr.sticks_chord);
 +
 +				update_exit_button(xr, now_ms);
 +				// The hand holding or squeezing the EXIT button does not grab food
@@ -10111,7 +10127,7 @@ index 000000000..6bb2773ba
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 new file mode 100644
-index 000000000..a196d015a
+index 000000000..04967067c
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 @@ -0,0 +1,131 @@
@@ -10180,7 +10196,7 @@ index 000000000..a196d015a
 +		vr_log("UI tree: %zu names from the game's UI scripts", g.names.size());
 +	}
 +
-+	bool readable(u32 a, u32 n) { return a >= 0x10000 && a < 0x30000000 && vm::check_addr(a, vm::page_readable, n); }
++	bool readable(u32 a, u32 n) { return a >= 0x10000 && a < 0xc0000000 &&   /* the game heap lives above 0x30000000 */ vm::check_addr(a, vm::page_readable, n); }
 +	u32 rd32(u32 a) { const u8* p = static_cast<const u8*>(vm::base(a)); return rd32be(p); }
 +	f32 rdf(u32 a) { return std::bit_cast<f32>(rd32(a)); }
 +
