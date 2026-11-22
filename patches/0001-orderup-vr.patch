@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..a5b77e33f
+index 000000000..b7ab3d2a0
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7388 @@
+@@ -0,0 +1,7526 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -781,6 +781,10 @@ index 000000000..a5b77e33f
 +			hud_panel panels[4]; // the VR HUD layout (player frame, metres)
 +			bool deep_log = false; // Experimental: detailed logs (draw tables every 5 s)
 +			bool fixed_unit = false;   // the player set a world scale by hand: no automatic scale
++			// Real grabbing: you are holding food (GRIP inside the game), where your hand is (LOCAL) and the pointer (ndc)
++			bool holding = false;
++			vec3 hand_local{};
++			f32 ptr_nx = 0.f, ptr_ny = 0.f;
 +		};
 +		view_snapshot g_views;  // guarded by g_state_mutex
 +
@@ -882,6 +886,20 @@ index 000000000..a5b77e33f
 +			mat4 D = ident(), Dpred = ident(), step_inv = ident();
 +			vec3 up_a{0.f, 1.f, 0.f};
 +			int still = 0, fails = 0;
++			// Real grabbing: the food you hold is drawn at your hand. When you grip, the 3D objects under the pointer are
++			// picked (the nearest one and its parts); each frame they are found again (same picture, near where they were)
++			// and moved, in the game camera's space, to your hand.
++			bool holding = false, hold_picked = false;
++			vec3 hand_local{};
++			f32 ptr_nx = 0.f, ptr_ny = 0.f;
++			vec3 hand_view{};
++			bool hand_view_ok = false;
++			struct hold_cand { u64 tex; vec3 o; f32 nd; };
++			std::vector<hold_cand> hold_cands;
++			struct held_part { u64 tex; vec3 o; vec3 off; vec3 o0; bool carried = false; };   // carried: the game moves it (follows your pointer)
++			std::vector<held_part> held;
++			mat4 P = ident(), Pi = ident();   // the game camera's projection and its inverse (scene draws)
++			u32 held_drawn = 0;
 +			u64 moves = 0, resets = 0, matched = 0, solved = 0;
 +			f32 pred_err = 0.f;
 +			u64 eye_flip = 0;
@@ -1123,6 +1141,11 @@ index 000000000..a5b77e33f
 +			bool hud_locked = false, menu_locked = false, menu_was_up = false;
 +			hud_panel hud_room[4];
 +			bool touch_press = false;  // a fingertip pushed into a HUD panel this frame (the game's select button)
++			// Real grabbing: holding food with GRIP inside the game, the grabbing hand's grab point, the pointer (ndc)
++			bool hold_now = false, hold_prev = false;
++			vec3 hold_hand{};
++			f32 hold_nx = 0.f, hold_ny = 0.f;
++			XrAction haptic = XR_NULL_HANDLE;
 +			// Tickets and side panels anchored in the game's own world (game units), where the game shows them: over the
 +			// counter at the food's distance. They stay on the counter through station changes and camera cuts.
 +			bool hud_world_ok = false;
@@ -1389,6 +1412,7 @@ index 000000000..a5b77e33f
 +			xr.btn_x = make_action(xr, "button_x", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
 +			xr.btn_y = make_action(xr, "button_y", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
 +			xr.btn_menu = make_action(xr, "button_menu", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
++			xr.haptic = make_action(xr, "haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, true);
 +
 +			// Quest / Rift Touch controllers
 +			{
@@ -1410,6 +1434,8 @@ index 000000000..a5b77e33f
 +					{xr.btn_b, to_path(xr, "/user/hand/right/input/b/click")},
 +					{xr.btn_x, to_path(xr, "/user/hand/left/input/x/click")},
 +					{xr.btn_y, to_path(xr, "/user/hand/left/input/y/click")},
++					{xr.haptic, to_path(xr, "/user/hand/left/output/haptic")},
++					{xr.haptic, to_path(xr, "/user/hand/right/output/haptic")},
 +					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},   // last: left out on SteamVR
 +				};
 +				XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
@@ -1431,6 +1457,8 @@ index 000000000..a5b77e33f
 +					{xr.trigger, to_path(xr, "/user/hand/left/input/select/click")},
 +					{xr.trigger, to_path(xr, "/user/hand/right/input/select/click")},
 +					{xr.btn_a, to_path(xr, "/user/hand/right/input/menu/click")},
++					{xr.haptic, to_path(xr, "/user/hand/left/output/haptic")},
++					{xr.haptic, to_path(xr, "/user/hand/right/output/haptic")},
 +					{xr.btn_menu, to_path(xr, "/user/hand/left/input/menu/click")},   // last: left out on SteamVR
 +				};
 +				XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
@@ -4216,6 +4244,20 @@ index 000000000..a5b77e33f
 +		vec3 game_to_view(const game_view& v, vec3 w) { return {dot(v.r[0], w) + v.t.x, dot(v.r[1], w) + v.t.y, dot(v.r[2], w) + v.t.z}; }
 +		vec3 view_to_game(const game_view& v, vec3 q) { return v.r[0] * (q.x - v.t.x) + v.r[1] * (q.y - v.t.y) + v.r[2] * (q.z - v.t.z); }
 +
++		// A short buzz in one controller
++		void buzz(xr_state& xr, int hand, f32 amplitude, int ms)
++		{
++			if (xr.haptic == XR_NULL_HANDLE || xr.session == XR_NULL_HANDLE) return;
++			XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
++			info.action = xr.haptic;
++			info.subactionPath = xr.hand_path[hand];
++			XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION};
++			v.amplitude = amplitude;
++			v.duration = static_cast<XrDuration>(ms) * 1000000;
++			v.frequency = XR_FREQUENCY_UNSPECIFIED;
++			xrApplyHapticFeedback(xr.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&v));
++		}
++
 +		void layout_hud(xr_state& xr, hud_panel out[4])
 +		{
 +			cam_info c;
@@ -4925,15 +4967,22 @@ index 000000000..a5b77e33f
 +				out.t = grip[hand] > 0.5f;
 +				out.move = trig[hand] > 0.5f || xr.touch_press;
 +				xr.touch_press = false;   // used once: a press only counts while the fingertip is in the panel this frame
-+				// Real grabbing: record when the player starts/stops holding an item (GRIP), as the first step toward
-+				// calling the game's own drag handlers with a 3D ray from the hand.
++				// Real grabbing: while GRIP holds food inside the game, the renderer draws it at this hand; a short buzz when
++				// you pick it up and when you let go
 +				{
-+					static bool prev_t = false;
-+					if (out.t != prev_t)
++					xr.hold_now = out.t && xr.live3d && xr.mode3d && xr.hand_valid[hand];
++					if (xr.hand_valid[hand])
 +					{
-+						vr_log("Grab: %s (hand %s, on_screen=%d, x=%.2f y=%.2f)", out.t ? "start" : "end",
-+							hand ? "right" : "left", out.on_screen, out.x, out.y);
-+						prev_t = out.t;
++						const hand_geo hg = make_hand(xr.hand_pose[hand], hand, grip[hand], trig[hand]);
++						xr.hold_hand = hg.grab;
++					}
++					xr.hold_nx = out.x * 2.f - 1.f;
++					xr.hold_ny = 1.f - out.y * 2.f;
++					if (xr.hold_now != xr.hold_prev)
++					{
++						vr_log("Grab: %s (hand %s, pointer %.2f %.2f%s)", xr.hold_now ? "picked up" : "let go", hand ? "right" : "left", out.x, out.y, out.on_screen ? "" : ", off screen");
++						buzz(xr, hand, xr.hold_now ? 0.55f : 0.3f, xr.hold_now ? 40 : 25);
++						xr.hold_prev = xr.hold_now;
 +					}
 +				}
 +				apply_flip_assist(xr, out);
@@ -5065,6 +5114,10 @@ index 000000000..a5b77e33f
 +				for (int k = 0; k < 4; k++) g_views.panels[k] = hud_layout[k];
 +				g_views.deep_log = xr.channel == "beta";
 +				g_views.fixed_unit = xr.fixed_unit;
++				g_views.holding = xr.hold_now;
++				g_views.hand_local = xr.hold_hand;
++				g_views.ptr_nx = xr.hold_nx;
++				g_views.ptr_ny = xr.hold_ny;
 +			}
 +			const u64 now_tick = GetTickCount64();
 +			const bool was3d = xr.live3d;
@@ -5880,6 +5933,51 @@ index 000000000..a5b77e33f
 +			return L;
 +		}
 +
++		// Real grabbing, once per game frame: pick what was grabbed (from last frame's candidates), and where your hand is
++		// in the game camera's space this frame
++		void rv_hold_frame(const view_snapshot& v)
++		{
++			auto& s = g_rv;
++			const bool was = s.holding;
++			s.holding = v.holding && v.mode3d;
++			s.hand_local = v.hand_local;
++			s.ptr_nx = v.ptr_nx;
++			s.ptr_ny = v.ptr_ny;
++			if (!s.holding)
++			{
++				if (was && s.hold_picked) vr_log("Grab: let go (%u parts were in your hand)", static_cast<u32>(s.held.size()));
++				s.held.clear();
++				s.hold_picked = false;
++				s.hold_cands.clear();
++				s.hand_view_ok = false;
++				return;
++			}
++			if (!s.hold_picked && !s.hold_cands.empty())
++			{
++				// The object nearest the pointer, and the parts drawn right around it
++				const auto best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [](const auto& a, const auto& b) { return a.nd < b.nd; });
++				if (best->nd < 0.15f)
++				{
++					const vec3 o = best->o;
++					for (const auto& c : s.hold_cands)
++					{
++						const vec3 d = c.o - o;
++						if (dot(d, d) < 0.35f * 0.35f && s.held.size() < 8) s.held.push_back({c.tex, c.o, d, c.o, false});
++					}
++					vr_log("Grab: %zu parts in your hand (pointer %.2f %.2f, %.2f units away)", s.held.size(), s.ptr_nx, s.ptr_ny, -o.z);
++				}
++				else vr_log("Grab: nothing under the pointer to hold (nearest %.2f)", best->nd);
++				s.hold_picked = true;
++			}
++			s.hold_cands.clear();
++			// Your hand: room -> player frame -> levelled anchor space -> this frame's game camera space
++			const vec3 pp = rotate(qconj(yaw_q(v.player_yaw)), s.hand_local - v.player_pos) * (1.f / std::max(v.unit, 0.05f));
++			const vec3 up_here = s.anchored ? s.up_a : (s.have_up ? s.up : vec3{0.f, 1.f, 0.f});
++			const vec3 a = level(up_here, pp, -1.f);
++			s.hand_view = s.anchored ? xform(rigid_inv(s.Dpred), a) : a;
++			s.hand_view_ok = std::isfinite(s.hand_view.x) && s.hand_view.z < -0.05f;
++		}
++
 +		void rv_begin_frame()
 +		{
 +			auto& s = g_rv;
@@ -5908,6 +6006,7 @@ index 000000000..a5b77e33f
 +			s.wide_pref = v.wide;
 +			for (int k = 0; k < 4; k++) s.panels[k] = v.panels[k];
 +			for (int k = 0; k < 4; k++) { s.hud_seen[k] = s.hud_cnt[k]; s.hud_cnt[k] = 0; }
++			rv_hold_frame(v);
 +			s.fixed_unit = v.fixed_unit;
 +			s.vms.clear();
 +			s.near_depths.clear();
@@ -6023,6 +6122,8 @@ index 000000000..a5b77e33f
 +				mat4 Pi;
 +				if (!minv(P, Pi)) return false;
 +				s.X3 = mmul(room, Pi);
++				s.P = P;
++				s.Pi = Pi;
 +				s.x3_ready = true;
 +			}
 +			else
@@ -7542,6 +7643,43 @@ index 000000000..a5b77e33f
 +			return 5;
 +		}
 +		if (!rv_build(kind == 1, kind == 1 ? gen : content_gen, kind == 3)) return 0;
++		if (kind == 1 && s.holding && consts)
++		{
++			// This object's origin in the game camera's view space
++			const f32* m = consts + 4;
++			const auto& c = s.cam;
++			const vec3 o{(m[3] + c.cx * m[15]) / c.sx, (m[7] + c.cy * m[15]) / c.sy, -m[15]};
++			const u64 tex = tex_count ? tex_keys[0] : 0;
++			if (!s.hold_picked)
++			{
++				if (o.z < -0.05f && s.hold_cands.size() < 4096)
++				{
++					// where it is on the game's screen, against the pointer
++					const f32 nx = (c.sx * o.x + c.cx * o.z) / -o.z, ny = (c.sy * o.y + c.cy * o.z) / -o.z;
++					s.hold_cands.push_back({tex, o, std::hypot(nx - s.ptr_nx, ny - s.ptr_ny)});
++				}
++			}
++			else if (s.hand_view_ok)
++			{
++				for (auto& h : s.held)
++				{
++					const vec3 d = o - h.o;
++					if (h.tex != tex || dot(d, d) > 1.2f * 1.2f) continue;
++					h.o = o;   // found again this frame
++					// Only what the game itself carries (it follows your pointer) goes to your hand: a counter or plate the
++					// game does not let you pick up stays where it is
++					if (!h.carried) { const vec3 mv = o - h.o0; h.carried = dot(mv, mv) > 0.05f * 0.05f; }
++					if (!h.carried) break;
++					const vec3 delta = s.hand_view + h.off - o;
++					mat4 T = ident();
++					T.m[3] = delta.x; T.m[7] = delta.y; T.m[11] = delta.z;
++					const mat4 X = mmul(s.X3, mmul(s.P, mmul(T, s.Pi)));
++					std::memcpy(x, X.m, sizeof(f32) * 16);
++					s.held_drawn++;
++					return kind;
++				}
++			}
++		}
 +		std::memcpy(x, (kind == 1 ? s.X3 : kind == 3 ? s.X2b : s.X2).m, sizeof(f32) * 16);
 +		return kind;
 +	}

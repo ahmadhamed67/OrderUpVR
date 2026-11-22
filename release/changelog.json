@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.15.1",
+    "channel": "beta",
+    "date": "2026-11-22",
+    "simple": [
+      "Real grabbing: reach for food and squeeze GRIP. What you picked up now sits in your hand and moves with it until you let go, then the game puts it where you dropped it.",
+      "A short buzz in the controller when you pick something up and when you let go.",
+      "Either hand can grab: the hand you grip with becomes the one the game follows."
+    ],
+    "notes": [
+      "Renderer: when GRIP (the game's T button) starts inside the game, the 3D draws of the next frame are scored by how close their origin is to the pointer on the game's screen; the nearest (within 0.15 ndc) and the draws within 0.35 units of it are remembered by first texture and view-space origin. Each frame a draw with the same texture within 1.2 units of its last origin is the same part; once the game has moved it by more than 0.05 units (so it is really being carried, not a counter or plate), it is translated in the game camera's view space to your hand (X = X3 * P * T * P^-1). Hand: room -> player frame / unit -> levelled -> rigid_inv(Dpred).",
+      "Haptics: a vibration action on both hands (Touch and simple profiles), 40 ms at 0.55 on pick up, 25 ms at 0.3 on let go.",
+      "Log: 'Grab: picked up / let go', 'Grab: N parts in your hand' or 'nothing under the pointer to hold'."
+    ]
+  },
+  {
     "version": "0.15.0",
     "channel": "beta",
     "date": "2026-11-22",
