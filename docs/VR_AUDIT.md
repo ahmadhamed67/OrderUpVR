@@ -97,3 +97,25 @@ on an easel). The panels themselves are still the game's own HUD pixels mapped o
 Next: the UI art (ticket cards, meters, menu buttons) lives in the same packages as `images/imgdat` pictures referenced
 by the UI csl scripts; reading those scripts (same bytecode as the scene script, see the lobby's interpreter notes)
 gives the button layouts and the actions they call, so menus can be rebuilt as 3D buttons that send the same input.
+
+## Menu system (found in the EBOOT, BLES01470)
+
+The game builds every menu and the kitchen HUD from its UI scripts (`kitchen_ui.csl`, `ticket_reel.csl`,
+`spice_rack.csl`, `worldmapmenu*.csl`, `restaurantfrontmenu*.csl`, `restaurantnewspaper_ui.csl`, ...) through
+natives such as `MenuNewElement{name, parent, type, pos, dims, image, hilite_image, focusable, events{selected=script}}`,
+`ElementSetPosition`, `MenuHide`, `MenuSetFocus`, `MenuSendMessage`.
+
+- Natives: binding table entries (name string, OPD, 0); e.g. ElementSetPosition 0x1b4124, MenuHide 0x1b8080,
+  ElementSetBaseDimensions 0x1bbb74, ElementSetImage 0x1b4f04, MenuSetFocusById 0x1ad778.
+- Menu system: `*(u32*)0x0036df0c`; open menus: circular list at +0x2c (node +0 next, +4 menu); root element menu+0x10.
+- Find element by name: 0x1e2fb0 (each menu root, vtable slot 0x120 compares +0x14c, recurses into +0x18c children).
+- Element: +0 vtable (base 0x342c40, panel 0x342e00, image 0x343748); +0x14c name hash = ~crc32(name);
+  +0x50 position x y z w (ElementSetPosition -> slot 0xd0 -> 0x1e9548); +0x78/+0x7c base size (slot 0xb0);
+  +0xd0 offset (slot 0xe0); +0x40 another vec4 (slot 0xc8); +0x180 flags (bit 2 hidden: slot 0x48; bit 3 dirty);
+  +0x18c children list (containers) or texture pointer (images).
+- Element types are hashed the same way: sprite 0xcae27061, image 0x3ac2fba0, text 0xc4745838, button 0xc5f953c2,
+  panel 0x5d522cf0, slider 0x3038eff8, checkbox 0xe184f712, progress_bar 0x002fba55, model 0x286a8d26.
+- The mod (Experimental) logs the live tree to log/orderup_ui.log every 3 s (OrderUpVR_uitree.inl).
+Next: from one log, how positions add up to screen pixels and which GPU texture each image draws with; then each
+element (plate, trash, oven, food processor, tickets, menu buttons) becomes a 3D object at its kitchen spot, and
+touching or dropping on it drives the game's pointer to that element.

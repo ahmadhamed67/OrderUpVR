@@ -1748,7 +1748,7 @@ namespace OrderUpVR
                 string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OrderUpVR_logs_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tmp);
                 foreach (string rel in new[] { @"log\orderup_vr.log", @"log\RPCS3.log", @"log\RPCS3.log.gz", @"log\TTY.log", @"config\custom_configs\config_" + Core.TitleId + ".yml", @"config\config.yml", @"config\vfs.yml", @"log\orderup_research.log", @"log\orderup_camdump.bin.z", @"config\orderupvr_state.txt", "orderupvr_state.txt",
-                    @"log\orderup_draws.log", @"log\orderup_track.log", @"log\orderup_status.txt", @"log\orderup_vr.prev1.log", @"log\orderup_vr.prev2.log", @"log\orderup_draws.prev1.log",
+                    @"log\orderup_draws.log", @"log\orderup_track.log", @"log\orderup_ui.log", @"log\orderup_status.txt", @"log\orderup_vr.prev1.log", @"log\orderup_vr.prev2.log", @"log\orderup_draws.prev1.log",
                     @"config\orderupvr_comfort.txt", @"config\orderupvr_channel.txt" })
                 {
                     string p = System.IO.Path.Combine(emu, rel);
