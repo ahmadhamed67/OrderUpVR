@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..6526faffe
+index 000000000..065cbf223
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7937 @@
+@@ -0,0 +1,8032 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -704,6 +704,7 @@ index 000000000..6526faffe
 +
 +#include "OrderUpVR_chef.inl"
 +#include "OrderUpVR_lobby.inl"
++#include "OrderUpVR_interior.inl"
 +#include "OrderUpVR_uitree.inl"
 +#include "OrderUpVR_live.inl"
 +#include "OrderUpVR_ui.inl"
@@ -771,7 +772,7 @@ index 000000000..6526faffe
 +			{0.7f, -0.225f, 0.3f, 0.775f},   // 2 right side (stations, assistants, done)
 +			{0.f, 0.f, 1.f, 1.f},            // 3 the whole screen: cards, menus, the pause menu (upright, in front)
 +		};
-+		struct hud_panel { bool on = false; vec3 P{}, A{}, B{}; f32 hw = 0.f, hh = 0.f; };
++		struct hud_panel { bool on = false; vec3 P{}, A{}, B{}; f32 hw = 0.f, hh = 0.f; bool real = false; };   // real: at the kitchen's own 3D object (its 2D sign is not drawn)
 +		struct vr_button { f32 x0, y0, x1, y1; u8 depth; };   // a button of the open game menu (ndc of the game's screen, y up)
 +
 +		// The headset side publishes where the eyes are; the renderer side reads it once per game frame.
@@ -1208,6 +1209,8 @@ index 000000000..6526faffe
 +			// Tickets and side panels anchored in the game's own world (game units), where the game shows them: over the
 +			// counter at the food's distance. They stay on the counter through station changes and camera cuts.
 +			bool hud_world_ok = false;
++			vec3 spot_world[4]{};       // stations at the kitchen's own trash can / oven (game world)
++			bool spot_world_ok[4]{};
 +			vec3 hud_world[3]{};
 +			bool prev_press[4]{};     // grip and trigger of both hands last frame (events in the log)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
@@ -2131,6 +2134,8 @@ index 000000000..6526faffe
 +
 +		// The game camera's height above the restaurant floor, from the game's own camera (its world position is kept at
 +		// 0x00382218, next to its view matrix; the restaurants' floors are at about y = 0 in game units)
++		bool kitchen_camera_height(f32 look_d, f32& cam_u, u32& pkg);   // below, after the game camera reader
++
 +		bool game_camera_height(f32& h)
 +		{
 +			if (!g_game_known || !vm::check_addr(0x00382218, vm::page_readable, 12)) return false;
@@ -2170,9 +2175,13 @@ index 000000000..6526faffe
 +				const f32 u = xr.unit;
 +				f32 cam_mem = 0.f;
 +				const bool mem_ok = game_camera_height(cam_mem);
-+				const f32 cam_u = mem_ok ? cam_mem : -c.floor_lev;   // the game camera above the restaurant's floor (game units)
++				f32 cam_u = mem_ok ? cam_mem : -c.floor_lev;   // the game camera above the restaurant's floor (game units)
++				// In a kitchen the game files tell where its floor is: measured against that, exactly
++				u32 kpkg = 0;
++				const bool kitchen_floor = kitchen_camera_height(c.food_d > 0.05f ? c.food_d : c.depth, cam_u, kpkg);
++				if (kitchen_floor) vr_log("Height: kitchen %08x from the game files: the game camera is %.2f units above its floor", kpkg, cam_u);
 +				vr_log("Camera height: %.2f units from the game's camera%s, %.2f from the scene estimate", cam_mem, mem_ok ? "" : " (not readable)", -c.floor_lev);
-+				if ((mem_ok || c.bounds) && cam_u > 1.f && cam_u < 20.f)
++				if ((mem_ok || c.bounds || kitchen_floor) && cam_u > 1.f && cam_u < 20.f)
 +				{
 +					f32 eye_u = std::clamp(cam_u - xr.eye_drop / u, std::min(chef_eye_u, cam_u), cam_u);
 +					const vec3 lv = level(c.up_a, xform(c.D, vec3{0.f, 0.f, -(c.food_d > 0.05f ? c.food_d : c.depth)}));
@@ -2180,7 +2189,7 @@ index 000000000..6526faffe
 +					// far above the game's counter as a real counter is below your eyes. Neither too high nor underground.
 +					{
 +						const f32 counter_u = cam_u + lv.y;
-+						if (lv.y < -0.3f && counter_u > 0.3f && counter_u < cam_u - 0.3f)
++						if (!kitchen_floor && lv.y < -0.3f && counter_u > 0.3f && counter_u < cam_u - 0.3f)
 +						{
 +							eye_u = std::clamp(counter_u + eye_over_counter_k * eye_m / u, counter_u + 0.3f, cam_u);
 +							vr_log("Height: the game's counter is %.2f units up; your eyes go %.2f units above it (%.2f m, as at a real counter)", counter_u, eye_u - counter_u, (eye_u - counter_u) * u);
@@ -4353,6 +4362,21 @@ index 000000000..6526faffe
 +		vec3 game_to_view(const game_view& v, vec3 w) { return {dot(v.r[0], w) + v.t.x, dot(v.r[1], w) + v.t.y, dot(v.r[2], w) + v.t.z}; }
 +		vec3 view_to_game(const game_view& v, vec3 q) { return v.r[0] * (q.x - v.t.x) + v.r[1] * (q.y - v.t.y) + v.r[2] * (q.z - v.t.z); }
 +
++		// The game camera's height above the floor of the kitchen it looks at (from the kitchen's layout in the game files)
++		bool kitchen_camera_height(f32 look_d, f32& cam_u, u32& pkg)
++		{
++			game_view gv;
++			if (!read_game_view(gv)) return false;
++			const vec3 cw = view_to_game(gv, {0.f, 0.f, 0.f}), look = view_to_game(gv, {0.f, 0.f, -std::max(look_d, 0.5f)});
++			const interior::kitchen* k = interior::pick(look);
++			if (!k) return false;
++			const f32 h = cw.y - k->floor_y;
++			if (!(h > 1.f && h < 20.f)) return false;
++			cam_u = h;
++			pkg = k->pkg;
++			return true;
++		}
++
 +		// A short buzz in one controller
 +		void buzz(xr_state& xr, int hand, f32 amplitude, int ms)
 +		{
@@ -4383,6 +4407,7 @@ index 000000000..6526faffe
 +
 +		void layout_hud(xr_state& xr, hud_panel out[4])
 +		{
++			if (g_game_known && interior::state.load() == 0) interior::start(game_usrdir());
 +			const auto to_pf = [&](const hud_panel& p) { return to_pf_impl(xr, p); };
 +			const auto from_pf = [&](const hud_panel& p) { return from_pf_impl(xr, p); };
 +			cam_info c;
@@ -4475,6 +4500,32 @@ index 000000000..6526faffe
 +				};
 +				for (int i = 0; i < 3; i++) xr.hud_world[i] = view_to_game(gv, q[i]);
 +				xr.hud_world_ok = true;
++				for (bool& b : xr.spot_world_ok) b = false;
++				// The kitchen itself (from the game files): the ticket rail over the far side of its station line, the trash
++				// and the oven where this kitchen has them
++				f32 kd = 0.f;
++				if (const interior::kitchen* kt = interior::pick(view_to_game(gv, {0.f, 0.f, -d}), &kd))
++				{
++					const vec3 cw = view_to_game(gv, {0.f, 0.f, 0.f});
++					const vec3 mid = (kt->line0 + kt->line1) * 0.5f;
++					vec3 away = mid - cw;
++					away.y = 0.f;
++					away = dot(away, away) > 1e-6f ? normalize(away) : vec3{0.f, 0.f, -1.f};
++					xr.hud_world[0] = {mid.x + away.x * 0.7f, kt->top_y + 0.85f, mid.z + away.z * 0.7f};
++					if (const interior::inode* t = interior::find(*kt, {"trash"}, {"sidewalk", "garbage", "stain"}))
++					{
++						xr.spot_world[1] = {t->pos.x, kt->top_y + 0.15f, t->pos.z};
++						xr.spot_world_ok[1] = true;
++					}
++					if (const interior::inode* o = interior::find(*kt, {"oven"}, {"station", "ceiling", "hood"}))
++					{
++						xr.spot_world[2] = {o->pos.x, kt->top_y + 0.15f, o->pos.z};
++						xr.spot_world_ok[2] = true;
++					}
++					vr_log("Interior: kitchen %08x (%.2f units from where the camera looks): ticket rail at %.2f %.2f %.2f, trash %s, oven %s",
++						kt->pkg, kd, xr.hud_world[0].x, xr.hud_world[0].y, xr.hud_world[0].z, xr.spot_world_ok[1] ? "at the kitchen's trash can" : "beside you",
++						xr.spot_world_ok[2] ? "at the kitchen's oven" : "beside you");
++				}
 +				vr_log("HUD: tickets and side panels anchored in the restaurant (food %.2f units away; tickets at %.2f %.2f %.2f)", d, xr.hud_world[0].x, xr.hud_world[0].y, xr.hud_world[0].z);
 +			}
 +			if (view_ok && xr.hud_world_ok)
@@ -4491,6 +4542,21 @@ index 000000000..6526faffe
 +					out[i].P = pp;
 +					out[i].A = normalize(cross(vec3{0.f, 1.f, 0.f}, n));
 +					out[i].B = {0.f, 1.f, 0.f};
++				}
++				// the stations the kitchen has: at its trash can and oven, facing you
++				for (int k = 1; k < 3; k++)
++				{
++					if (!xr.spot_world_ok[k] || !xr.spot_pf[k].on) continue;
++					const vec3 pp = level(c.up_a, xform(c.D, game_to_view(gv, xr.spot_world[k]))) * xr.unit;
++					const vec3 rel = pp - head_p;
++					if (!std::isfinite(pp.x) || dot(rel, rel) > 25.f) continue;
++					vec3 n = head_p - pp;
++					n.y = 0.f;
++					n = dot(n, n) > 1e-6f ? normalize(n) : vec3{0.f, 0.f, 1.f};
++					xr.spot_pf[k].P = pp;
++					xr.spot_pf[k].A = normalize(cross(vec3{0.f, 1.f, 0.f}, n));
++					xr.spot_pf[k].B = {0.f, 1.f, 0.f};
++					xr.spot_room[k] = from_pf(xr.spot_pf[k]);
 +				}
 +			}
 +		}
@@ -5407,6 +5473,7 @@ index 000000000..6526faffe
 +					g_views.spots[k].A = rotate(qconj(yaw_q(xr.player_yaw)), xr.spot_room[k].A);
 +					g_views.spots[k].B = rotate(qconj(yaw_q(xr.player_yaw)), xr.spot_room[k].B);
 +					g_views.spots[k].on = xr.spot_room[k].on && xr.live3d;
++					g_views.spots[k].real = xr.spot_world_ok[k];
 +				}
 +				g_views.hand_local = xr.hold_hand;
 +				g_views.ptr_nx = xr.hold_nx;
@@ -7977,6 +8044,33 @@ index 000000000..6526faffe
 +						mat4 base;
 +						if (pn.on && rv_base(content_gen, base))
 +						{
++							// Tickets: each order ticket is its own card hanging from the steel rail on a clip, tilted toward you and
++							// swaying a little, at its place along the reel. The reel's own background band is not drawn.
++							if (c == uitree::C_TICKETS && best->kx1 - best->kx0 > 4.f && best->rx1 - best->rx0 > 4.f)
++							{
++								const bool band = std::fabs(best->kx0 - best->rx0) < 1.f && std::fabs(best->kx1 - best->rx1) < 1.f && std::fabs(best->ky0 - best->ry0) < 1.f && std::fabs(best->ky1 - best->ry1) < 1.f;
++								if (band && best->depth == best->kdepth) { std::memset(x, 0, sizeof(f32) * 16); s.hud_cnt[0]++; return 7; }
++								const f32 mpp = 2.f * pn.hw / std::max(best->rx1 - best->rx0, 1.f);   // metres per screen pixel along the rail
++								const f32 cw = (best->kx1 - best->kx0) * mpp, ch = (best->ky1 - best->ky0) * mpp;
++								const vec3 N = normalize(cross(pn.A, pn.B));
++								const vec3 hinge = pn.P - pn.A * pn.hw + pn.A * (((best->kx0 + best->kx1) * 0.5f - best->rx0) * mpp) + pn.B * pn.hh
++									- pn.B * ((best->ky0 - best->ry0) * mpp) + N * 0.012f;
++								const f32 kcx = (best->kx0 + best->kx1) * 0.5f;
++								const f32 tilt = 0.22f + 0.035f * std::sin(GetTickCount64() * 0.0013f + kcx * 0.05f);
++								const vec3 B2 = pn.B * std::cos(tilt) - N * std::sin(tilt);
++								const vec3 N2 = normalize(cross(pn.A, B2));
++								hud_panel card{};
++								card.on = true;
++								card.A = pn.A; card.B = B2;
++								card.hw = cw * 0.5f; card.hh = ch * 0.5f;
++								card.P = hinge - B2 * card.hh + N2 * (0.0025f * static_cast<f32>(std::min<int>(best->depth - best->kdepth, 8)));
++								const hud_region kr{(best->kx0 + best->kx1) / 1280.f - 1.f, 1.f - (best->ky0 + best->ky1) / 720.f, (best->kx1 - best->kx0) / 1280.f, (best->ky1 - best->ky0) / 720.f};
++								const mat4 X = mmul(base, hud_panel_matrix(kr, card));
++								std::memcpy(x, X.m, sizeof(f32) * 16);
++								s.hud_cnt[0]++; s.pan_reg[0] = {(best->rx0 + best->rx1) / 1280.f - 1.f, 1.f - (best->ry0 + best->ry1) / 720.f, (best->rx1 - best->rx0) / 1280.f, (best->ry1 - best->ry0) / 720.f}; s.pan_reg_n[0]++;
++								s.pan_hw[0] = pn.hw; s.pan_hh[0] = pn.hh;
++								return 7;
++							}
 +							// the group's rectangle (a whole menu: the whole screen), in the game's ndc
 +							f32 gx0 = best->rx0, gy0 = best->ry0, gx1 = best->rx1, gy1 = best->ry1;
 +							if (c == uitree::C_MENU) { gx0 = 0.f; gy0 = 0.f; gx1 = 1280.f; gy1 = 720.f; }
@@ -7989,6 +8083,7 @@ index 000000000..6526faffe
 +							std::memcpy(x, X.m, sizeof(f32) * 16);
 +							if (panel_k >= 0) { s.hud_cnt[panel_k]++; s.pan_reg[panel_k] = grp; s.pan_reg_n[panel_k]++; s.pan_hw[panel_k] = pn.hw; s.pan_hh[panel_k] = pn.hh; }
 +							if (spot_k >= 0) { s.spot_cnt[spot_k]++; s.spot_nx[spot_k] = grp.cx; s.spot_ny[spot_k] = grp.cy; }
++							if (spot_k >= 0 && pn.real) std::memset(x, 0, sizeof(f32) * 16);   // the kitchen's own trash can / oven is there
 +							return 7 + std::max(panel_k, 0);
 +						}
 +					}
@@ -9436,6 +9531,163 @@ index 000000000..5a94a5761
 +			nrm[i] = normalize(n);
 +		}
 +		(void)root;
++	}
++}
+diff --git a/rpcs3/Emu/Io/OrderUpVR_interior.inl b/rpcs3/Emu/Io/OrderUpVR_interior.inl
+new file mode 100644
+index 000000000..060e6837c
+--- /dev/null
++++ b/rpcs3/Emu/Io/OrderUpVR_interior.inl
+@@ -0,0 +1,151 @@
++// Order Up VR: every kitchen's interior, read from the player's own game files at start-up (nothing is shipped).
++//
++// Each restaurant package in Chef.wad has a layout file: named placements (name, position, rotation, scale) in the
++// restaurant's own space, which is the game's world space (the game camera's view matrix at 0x003821d8 maps it).
++// The kitchens mark their stations with named nodes on one line along x: cutting_area, grill_01/02, fryer,
++// griddle_01/02 (and cutting board, DeepFryeHook), their floor (*kitchen_floor*, y 0), the counter tops, and in
++// several kitchens the oven and the trash can. The mod measures you and places the VR things against these:
++//  - your real floor is the kitchen's floor (the chef's eyes are 1.45 units above it, yours are your eye height);
++//  - the ticket rail hangs over the far side of the station line, at its own height above the counters;
++//  - the trash and the oven are where the kitchen has them (else beside you, as before).
++// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, after the lobby.
++
++namespace interior
++{
++	using namespace chef;
++
++	struct inode { std::string name, lower; vec3 pos{}; };
++	struct kitchen
++	{
++		u32 pkg = 0;
++		std::vector<inode> n;
++		vec3 line0{}, line1{};      // the station line's two ends (world)
++		f32 floor_y = 0.f, top_y = 0.9f;
++		int stations = 0;
++	};
++
++	inline std::vector<kitchen> kitchens;   // filled once by the loader thread
++	inline std::atomic<int> state{0};       // 0 not started, 1 loading, 2 ready, 3 failed
++	inline std::thread th;
++
++	inline bool is_station(const std::string& l)
++	{
++		return l == "cutting_area" || l.rfind("grill_0", 0) == 0 || l == "fryer" || l == "fryer2" || l.rfind("griddle_0", 0) == 0 || l == "cutting_area2";
++	}
++
++	void load_all(std::string usrdir)
++	{
++		wad_reader w;
++		if (!w.open(usrdir + "Chef.wad")) { state = 3; vr_log("Interior: Chef.wad not readable"); return; }
++		std::vector<kitchen> out;
++		for (const auto& [h, e] : w.table)
++		{
++			lobby::package pkg;
++			if (!pkg.read(w, h)) continue;
++			for (const auto& [fh, fe] : pkg.table)
++			{
++				const auto m = pkg.file(fh);
++				if (m.size() < 64) continue;
++				if (rd32be(&m[0]) != 1 || rd32be(&m[4]) != 0) continue;
++				if (!(m[12] < 64 && ((m[13] >= 'A' && m[13] <= 'z') || (m[12] == 0 && m[14] >= 'A' && m[14] <= 'z')))) continue;
++				kitchen k;
++				k.pkg = h;
++				usz p = 12;
++				bool first = true;
++				while (p + 42 < m.size())
++				{
++					u32 len;
++					if (first) { len = m[p]; p += 1; first = false; }
++					else { len = u32{m[p]} << 8 | m[p + 1]; p += 2; }
++					if (!len || p + len + 40 > m.size()) break;
++					inode nd;
++					nd.name.assign(reinterpret_cast<const char*>(&m[p]), len - 1);
++					while (!nd.name.empty() && (nd.name.back() == '\t' || nd.name.back() == ' ')) nd.name.pop_back();
++					p += len;
++					nd.pos = {rdf32be(&m[p]), rdf32be(&m[p + 4]), rdf32be(&m[p + 8])};
++					p += 40;
++					nd.lower = nd.name;
++					for (char& c : nd.lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++					k.n.push_back(std::move(nd));
++				}
++				// a kitchen: its stations on a line
++				f32 x0 = 1e9f, x1 = -1e9f;
++				vec3 a{}, b{};
++				for (const auto& nd : k.n)
++				{
++					if (!is_station(nd.lower) || nd.lower == "cutting_area2" || nd.lower == "fryer2") continue;
++					k.stations++;
++					if (nd.pos.x < x0) { x0 = nd.pos.x; a = nd.pos; }
++					if (nd.pos.x > x1) { x1 = nd.pos.x; b = nd.pos; }
++				}
++				if (k.stations < 2) continue;
++				k.line0 = a; k.line1 = b;
++				for (const auto& nd : k.n)
++					if (nd.lower.find("kitchen_floor") != std::string::npos || nd.lower.find("kitchenfloor") != std::string::npos) { k.floor_y = nd.pos.y; break; }
++				// the counter top nearest the station line (its height is the counter's)
++				f32 best = 1e9f;
++				const vec3 mid = (a + b) * 0.5f;
++				for (const auto& nd : k.n)
++				{
++					if (nd.lower.find("countertop") == std::string::npos && nd.lower.find("counter_top") == std::string::npos) continue;
++					const vec3 d = nd.pos - mid;
++					const f32 dd = d.x * d.x + d.z * d.z;
++					if (dd < best && nd.pos.y > k.floor_y + 0.3f && nd.pos.y < k.floor_y + 1.6f) { best = dd; k.top_y = nd.pos.y; }
++				}
++				out.push_back(std::move(k));
++			}
++		}
++		for (const auto& k : out)
++			vr_log("Interior: kitchen %08x, %d stations from %.1f,%.1f,%.1f to %.1f,%.1f,%.1f, floor %.2f, counter top %.2f, %zu named things",
++				k.pkg, k.stations, k.line0.x, k.line0.y, k.line0.z, k.line1.x, k.line1.y, k.line1.z, k.floor_y, k.top_y, k.n.size());
++		kitchens = std::move(out);
++		state = kitchens.empty() ? 3 : 2;
++		vr_log("Interior: %zu kitchens read from the game files", kitchens.size());
++	}
++
++	void start(const std::string& usrdir)
++	{
++		if (state.load() != 0 || usrdir.empty()) return;
++		state = 1;
++		th = std::thread(load_all, usrdir);
++		th.detach();
++	}
++
++	// The kitchen the game shows: the one whose station line is nearest to where the camera looks
++	const kitchen* pick(vec3 look, f32* dist = nullptr)
++	{
++		if (state.load() != 2) return nullptr;
++		const kitchen* best = nullptr;
++		f32 bd = 1e9f;
++		for (const auto& k : kitchens)
++		{
++			// distance from the look point to the station segment
++			const vec3 ab = k.line1 - k.line0, ap = look - k.line0;
++			const f32 t = std::clamp(dot(ap, ab) / std::max(dot(ab, ab), 1e-6f), 0.f, 1.f);
++			const vec3 d = look - (k.line0 + ab * t);
++			const f32 dd = std::sqrt(dot(d, d));
++			if (dd < bd) { bd = dd; best = &k; }
++		}
++		if (dist) *dist = bd;
++		return bd < 6.f ? best : nullptr;
++	}
++
++	// The nearest named thing whose name has one of the words (and none of the excluded ones), within reach of the line
++	const inode* find(const kitchen& k, std::initializer_list<const char*> words, std::initializer_list<const char*> not_words = {}, f32 within = 12.f)
++	{
++		const vec3 mid = (k.line0 + k.line1) * 0.5f;
++		const inode* best = nullptr;
++		f32 bd = within * within;
++		for (const auto& nd : k.n)
++		{
++			bool hit = false;
++			for (const char* w : words) if (nd.lower.find(w) != std::string::npos) { hit = true; break; }
++			for (const char* w : not_words) if (nd.lower.find(w) != std::string::npos) { hit = false; break; }
++			if (!hit) continue;
++			const vec3 d = nd.pos - mid;
++			const f32 dd = dot(d, d);
++			if (dd < bd) { bd = dd; best = &nd; }
++		}
++		return best;
 +	}
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
@@ -10995,10 +11247,10 @@ index 000000000..6bb2773ba
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_uitree.inl b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
 new file mode 100644
-index 000000000..03b78a8be
+index 000000000..9fad86b87
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_uitree.inl
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,232 @@
 +// Order Up VR: the game's own UI, read live from its memory (BLES01470 only).
 +//
 +// Found in the game's code (EBOOT, see docs/VR_AUDIT.md "Menu system"):
@@ -11026,7 +11278,7 @@ index 000000000..03b78a8be
 +
 +	// What each visible game UI element is in VR (its category), and where it is on the game's 1280x720 screen
 +	enum category : u8 { C_NONE = 0, C_PLATE, C_TRASH, C_OVEN, C_PROC, C_TICKETS, C_METER, C_LEFT, C_RIGHT, C_MENU };
-+	struct elem { f32 x0, y0, x1, y1; f32 rx0, ry0, rx1, ry1; u8 cat, depth; bool btn; };   // btn: a button you press   // own rectangle; its group's rectangle
++	struct elem { f32 x0, y0, x1, y1; f32 rx0, ry0, rx1, ry1; u8 cat, depth; bool btn; f32 kx0 = 0, ky0 = 0, kx1 = 0, ky1 = 0; u8 kdepth = 0; };   // k: its card (one ticket of the reel)   // btn: a button you press   // own rectangle; its group's rectangle
 +	inline std::mutex elems_mutex;
 +	inline std::shared_ptr<const std::vector<elem>> elems;   // published (guarded by elems_mutex)
 +
@@ -11119,7 +11371,10 @@ index 000000000..03b78a8be
 +		return n == "no";
 +	}
 +
-+	void walk(u32 e, int depth, int& count, bool log, f32 pax, f32 pay, f32 paw, f32 pah, u8 cat, f32 rx0, f32 ry0, f32 rx1, f32 ry1)
++	struct card_t { f32 x0 = 0, y0 = 0, x1 = 0, y1 = 0; int gdepth = -1; int depth = 0; };
++	inline std::string ui_lines;   // named elements of this pass, for the live stream
++
++	void walk(u32 e, int depth, int& count, bool log, f32 pax, f32 pay, f32 paw, f32 pah, u8 cat, f32 rx0, f32 ry0, f32 rx1, f32 ry1, card_t card = {})
 +	{
 +		if (count > 900 || depth > 14 || !readable(e, 0x1a0)) return;
 +		const u32 vt = rd32(e);
@@ -11141,15 +11396,23 @@ index 000000000..03b78a8be
 +		if (it != g.names.end())
 +		{
 +			const u8 c = category_of(it->second);
-+			if (c && c != cat && std::isfinite(w) && w > 4.f && h > 4.f) { cat = c; rx0 = x; ry0 = y; rx1 = x + w; ry1 = y + h; }
++			if (c && c != cat && std::isfinite(w) && w > 4.f && h > 4.f) { cat = c; rx0 = x; ry0 = y; rx1 = x + w; ry1 = y + h; card = {x, y, x + w, y + h, depth, depth}; }
++			if (ui_lines.size() < 6000 && !(flags & 4))
++			{
++				char l[160];
++				std::snprintf(l, sizeof(l), "%d:%s c%d %.0f,%.0f %.0fx%.0f; ", depth, it->second.c_str(), cat, x, y, w, h);
++				ui_lines += l;
++			}
 +		}
++		// a direct child of a group is one card of it (one ticket of the reel): its pieces move together
++		if (card.gdepth >= 0 && depth == card.gdepth + 1 && std::isfinite(w) && w > 4.f && h > 4.f) card = {x, y, x + w, y + h, card.gdepth, depth};
 +		if (log) std::fprintf(g.f, " cat %d%s\n", cat, it != g.names.end() && is_button_name(it->second) ? " BUTTON" : "");
 +		if (std::isfinite(x) && std::isfinite(y) && std::isfinite(w) && std::isfinite(h) && w > 0.5f && h > 0.5f && g.out.size() < 1200)
 +		{
-+			g.out.push_back({x, y, x + w, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255)), it != g.names.end() && is_button_name(it->second)});
++			g.out.push_back({x, y, x + w, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255)), it != g.names.end() && is_button_name(it->second), card.x0, card.y0, card.x1, card.y1, static_cast<u8>(std::max(card.depth, 0))});
 +			// at offset 0 a narrower element may be centred in its parent instead (the ticket reel's picture is): both are matched
 +			if (ox == 0.f && w < paw - 1.f && g.out.size() < 1200)
-+				g.out.push_back({pax + (paw - w) * 0.5f, y, pax + (paw + w) * 0.5f, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255)), false});
++				g.out.push_back({pax + (paw - w) * 0.5f, y, pax + (paw + w) * 0.5f, y + h, rx0, ry0, rx1, ry1, cat, static_cast<u8>(std::min(depth, 255)), false, card.x0, card.y0, card.x1, card.y1, static_cast<u8>(std::max(card.depth, 0))});
 +		}
 +		// children: a circular list at +0x18c, only when it holds elements (images keep their texture there)
 +		const u32 head = e + 0x18c;
@@ -11158,7 +11421,7 @@ index 000000000..03b78a8be
 +		{
 +			const u32 child = rd32(node + 4);
 +			if (!readable(child, 4) || !is_element_vt(rd32(child))) break;
-+			walk(child, depth + 1, count, log, x, y, w, h, cat, rx0, ry0, rx1, ry1);
++			walk(child, depth + 1, count, log, x, y, w, h, cat, rx0, ry0, rx1, ry1, card);
 +			node = rd32(node);
 +		}
 +	}
@@ -11204,6 +11467,17 @@ index 000000000..03b78a8be
 +			node = rd32(node);
 +		}
 +		if (log) std::fflush(g.f);
++		{
++			static std::size_t last_hash = 0;
++			static u64 last_sent = 0;
++			const std::size_t hsh = std::hash<std::string>{}(ui_lines);
++			if (experimental && !ui_lines.empty() && hsh != last_hash && now - last_sent > 5000)
++			{
++				last_hash = hsh; last_sent = now;
++				for (std::size_t i = 0; i < ui_lines.size(); i += 900) vr_log("UI tree: %s", ui_lines.substr(i, 900).c_str());
++			}
++			ui_lines.clear();
++		}
 +		auto fresh = std::make_shared<const std::vector<elem>>(g.out);
 +		std::lock_guard lock(elems_mutex);
 +		elems = std::move(fresh);

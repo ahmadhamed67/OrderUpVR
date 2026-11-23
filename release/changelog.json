@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.17.9",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Every kitchen is read from your own game files: its floor, counters, stations, trash can and oven.",
+      "Your height is measured against the kitchen. Your real floor is the kitchen's floor and the counters are at a real counter height.",
+      "Order tickets are separate cards hanging from the steel rail, tilted toward you and swaying a little. The blue strip behind them is gone.",
+      "The ticket rail hangs over the far side of the kitchen's stations. The trash and oven drop spots sit at the kitchen's own trash can and oven, and their flat signs are gone."
+    ],
+    "notes": [
+      "New OrderUpVR_interior.inl: at start-up every layout in Chef.wad is read on a background thread. Kitchens are the layouts with station nodes (cutting_area, grill_0x, fryer, griddle_0x), 11 of them. For each: station line ends, floor (*kitchen_floor* y) and counter-top height. pick() chooses the kitchen whose station line is nearest where the game camera (0x003821d8) looks.",
+      "place_screen: cam_u = camera world y minus the kitchen floor, when the kitchen is known. The counter-distance heuristic is skipped then; eyes go to the chef's eye height above the real floor.",
+      "layout_hud: hud_world[0] is the station line's middle, 0.7 units beyond, at counter top + 0.85. spot_world[1] and spot_world[2] come from the nearest trash/oven nodes and are mapped each frame. hud_panel.real hides their flat signs, but spot_cnt/spot_nx still register so drops still work.",
+      "Tickets: uitree elements carry their card (the direct child of their group). Each card hangs at its place along the rail, hinged at the top, tilt 0.22 rad ± sway. The reel's own band is not drawn.",
+      "The named UI tree is streamed ('UI tree:' log lines) whenever it changes, at most every 5 s."
+    ]
+  },
+  {
     "version": "0.17.8",
     "channel": "beta",
     "date": "2026-11-23",
