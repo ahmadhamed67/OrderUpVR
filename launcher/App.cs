@@ -543,6 +543,9 @@ namespace OrderUpVR
             var au = Get<CheckBox>("AutoUpdateToggle");
             au.IsChecked = !s.NoAutoUpdate;
             au.Click += delegate { s.NoAutoUpdate = au.IsChecked != true; s.Save(); };
+            var lt = Get<CheckBox>("LiveToggle");
+            lt.IsChecked = !s.NoLiveStream;
+            lt.Click += delegate { s.NoLiveStream = lt.IsChecked != true; s.Save(); WriteVrFile(); };
             var mt = Get<CheckBox>("MinimizeToggle");
             mt.IsChecked = !s.KeepLauncherOpen;
             mt.Click += delegate { s.KeepLauncherOpen = mt.IsChecked != true; s.Save(); };
@@ -674,6 +677,7 @@ namespace OrderUpVR
                 sb.Append("chef=auto").AppendLine();
                 foreach (var o in VrOptions) sb.Append(o[1]).Append('=').Append(VrGet(o[1], o[4])).AppendLine();
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
+                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), "live=" + (s.NoLiveStream ? "off" : "on") + "\n");
             }
             catch { }
         }

@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.17.1",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Live testing: while you play Experimental, what you see and do goes straight to the developer (no more collecting and uploading logs). You can switch it off in Settings.",
+      "The menu board has a real key for every game button: point at it and the pointer snaps to the button, with a buzz when you hover and press.",
+      "The plate, trash bin, oven and food processor are objects at your counter height, and the tickets hang on a steel rail.",
+      "The game's counter is matched to your counter height, and you see from the game's real camera height."
+    ],
+    "notes": [
+      "Live stream (OrderUpVR_live.inl): to Sentry project orderupvr-live over WinHTTP. Every vr_log line and the 4/s track (EVENT lines included) as Sentry Logs batched each second; a 640 px JPEG of the left eye (env layer + the game's eye picture + body/hands, the flat game picture inset) every 5 s and after every press (at most every 1.5 s), as an event with attachment. Session id = trace id. Off with live=off in config/orderupvr_live.txt.",
+      "Launcher 1.22.0: Settings switch 'Experimental: share what I see and do live with the developer' (writes orderupvr_live.txt before each start).",
+      "Also released here (from the VR UI framework work after 0.17.0): real camera height from game memory, always your chosen chef, UI at Meta comfort distances, hand-ray for far panels, 100-150 ms haptics; menu board keys per game button, stations at counter height, steel ticket rail, game counter matched to your counter."
+    ]
+  },
+  {
     "version": "0.17.0",
     "channel": "beta",
     "date": "2026-11-22",

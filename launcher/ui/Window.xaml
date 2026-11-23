@@ -234,6 +234,7 @@
               <StackPanel x:Name="ChannelRows" Margin="0,0,0,18"/>
               <CheckBox x:Name="AutoUpdateToggle" Style="{StaticResource Toggle}" Content="Check for updates automatically"/>
               <CheckBox x:Name="MinimizeToggle" Style="{StaticResource Toggle}" Content="Minimize the launcher while playing" Margin="0,14,0,0"/>
+              <CheckBox x:Name="LiveToggle" Style="{StaticResource Toggle}" Content="Experimental: share what I see and do live with the developer" Margin="0,14,0,0"/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">
