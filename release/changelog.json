@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.17.8",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Your height is detected automatically. The mod learns how tall you stand from your headset and places you again at your real height, with the kitchen counter at your counter height. No button needed."
+    ],
+    "notes": [
+      "Every session logged unit 1.103 (eyes 1.6 m). The scale was set once at the first placement, often before the headset's floor (stage space) was located, and stayed until a manual recentre. Now eye_est follows head height above the stage floor: it rises fast and sinks slowly. When it differs from the scale in use by more than 4 cm (floor located for 1.5 s, not walking or gripping, at most every 20 s), place_screen runs again and uses eye_est. Logs 'Height (auto)', including when the headset gives no floor."
+    ]
+  },
+  {
     "version": "0.17.7",
     "channel": "beta",
     "date": "2026-11-23",

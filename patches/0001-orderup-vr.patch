@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..de7cced8f
+index 000000000..6526faffe
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7901 @@
+@@ -0,0 +1,7937 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1167,6 +1167,9 @@ index 000000000..de7cced8f
 +			bool body_init = false;
 +			f32 floor_y = -1.6f;      // LOCAL-space floor height
 +			bool floor_known = false;
++			f32 eye_est = 0.f;          // your standing eye height above your real floor, learned while you play (m)
++			u64 floor_since = 0, last_auto_height = 0;
++			bool height_logged = false, no_floor_logged = false;
 +			bool pointing_laser = false;  // inside the game: point with the laser instead of the hand
 +
 +			// Comfort and body settings (chosen in the launcher: config/orderupvr_comfort.txt)
@@ -2162,7 +2165,7 @@ index 000000000..de7cced8f
 +					c = g_cam;
 +				}
 +				const bool real_floor = !xr.comfort.seated && xr.floor_known;
-+				const f32 eye_m = real_floor ? xr.last_head.y - xr.floor_y : seated_eye_m;
++				const f32 eye_m = real_floor ? (xr.eye_est > 0.9f ? xr.eye_est : xr.last_head.y - xr.floor_y) : seated_eye_m;
 +				xr.unit = std::clamp(eye_m / chef_eye_u, 0.85f, 1.35f);
 +				const f32 u = xr.unit;
 +				f32 cam_mem = 0.f;
@@ -4661,10 +4664,43 @@ index 000000000..de7cced8f
 +					if (XR_SUCCEEDED(xrLocateSpace(xr.stage_space, xr.local_space, time, &sl)) && (sl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
 +					{
 +						xr.floor_y = sl.pose.position.y;
++						if (!xr.floor_known) xr.floor_since = GetTickCount64();
 +						xr.floor_known = true;
 +					}
 +				}
 +				if (!xr.floor_known) xr.floor_y = xr.last_head.y - 1.6f;
++				// Height, detected on its own: your eye height above the headset's floor, learned continuously (it rises at
++				// once to how tall you stand, and only slowly sinks when you crouch or lean). When it is first known, and
++				// whenever it differs from the scale in use by more than 4 cm while you stand still in the kitchen, you are
++				// placed again at your real height: the restaurant's counter at your counter height.
++				{
++					const u64 now_h = GetTickCount64();
++					if (xr.floor_known && !xr.comfort.seated)
++					{
++						const f32 eye = xr.last_head.y - xr.floor_y;
++						if (eye > 0.9f && eye < 2.2f)
++						{
++							if (xr.eye_est <= 0.f) xr.eye_est = eye;
++							else if (eye > xr.eye_est) xr.eye_est += (eye - xr.eye_est) * std::min(1.f, 3.f * dt);
++							else xr.eye_est -= (xr.eye_est - eye) * std::min(1.f, 0.02f * dt);
++						}
++						const f32 used = xr.unit * chef_eye_u;
++						const bool settled = now_h - xr.floor_since > 1500;
++						const bool calm = !xr.moving && xr.hand_grip[0] < 0.5f && xr.hand_grip[1] < 0.5f;
++						if (settled && xr.eye_est > 0.f && std::fabs(xr.eye_est - used) > 0.04f && calm && now_h - xr.last_auto_height > 20000)
++						{
++							xr.last_auto_height = now_h;
++							vr_log("Height (auto): your eyes are %.2f m above your floor, the scale in use was for %.2f m: placed again", xr.eye_est, used);
++							place_screen(xr);
++						}
++						if (!xr.height_logged && settled) { xr.height_logged = true; vr_log("Height (auto): floor found, your eyes %.2f m up", xr.eye_est); }
++					}
++					else if (!xr.floor_known && !xr.no_floor_logged && xr.frames > 600)
++					{
++						xr.no_floor_logged = true;
++						vr_log("Height (auto): the headset gives no floor (stage space %s): using %.2f m eyes", xr.stage_space ? "not located" : "missing", seated_eye_m);
++					}
++				}
 +				{
 +					vec3 f = xr.last_forward;
 +					f.y = 0.f;
