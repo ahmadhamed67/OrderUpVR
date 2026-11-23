@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..065cbf223
+index 000000000..b349bb06a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,8032 @@
+@@ -0,0 +1,8046 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1211,6 +1211,7 @@ index 000000000..065cbf223
 +			bool hud_world_ok = false;
 +			vec3 spot_world[4]{};       // stations at the kitchen's own trash can / oven (game world)
 +			bool spot_world_ok[4]{};
++			bool kitchen_rail = false;   // the ticket rail is at the kitchen's own spot
 +			vec3 hud_world[3]{};
 +			bool prev_press[4]{};     // grip and trigger of both hands last frame (events in the log)
 +			bool fixed_unit = false;  // world scale set by hand (persist "worldscale")
@@ -2178,8 +2179,18 @@ index 000000000..065cbf223
 +				f32 cam_u = mem_ok ? cam_mem : -c.floor_lev;   // the game camera above the restaurant's floor (game units)
 +				// In a kitchen the game files tell where its floor is: measured against that, exactly
 +				u32 kpkg = 0;
-+				const bool kitchen_floor = kitchen_camera_height(c.food_d > 0.05f ? c.food_d : c.depth, cam_u, kpkg);
-+				if (kitchen_floor) vr_log("Height: kitchen %08x from the game files: the game camera is %.2f units above its floor", kpkg, cam_u);
++				f32 cam_k = 0.f;
++				bool kitchen_floor = kitchen_camera_height(c.food_d > 0.05f ? c.food_d : c.depth, cam_k, kpkg);
++				if (kitchen_floor)
++				{
++					// Only when it agrees with what the game camera itself says (else the layout is not this camera's space)
++					const f32 ref = mem_ok ? cam_mem : -c.floor_lev;
++					const bool agrees = (mem_ok || c.bounds) && std::fabs(cam_k - ref) < 0.6f;
++					vr_log("Height: kitchen %08x says the camera is %.2f units above its floor; the camera says %.2f (%s): %s", kpkg, cam_k, ref,
++						mem_ok ? "its memory" : "the scene", agrees ? "using the kitchen's floor" : "they disagree, kitchen not used");
++					if (agrees) cam_u = cam_k;
++					else kitchen_floor = false;
++				}
 +				vr_log("Camera height: %.2f units from the game's camera%s, %.2f from the scene estimate", cam_mem, mem_ok ? "" : " (not readable)", -c.floor_lev);
 +				if ((mem_ok || c.bounds || kitchen_floor) && cam_u > 1.f && cam_u < 20.f)
 +				{
@@ -4501,6 +4512,7 @@ index 000000000..065cbf223
 +				for (int i = 0; i < 3; i++) xr.hud_world[i] = view_to_game(gv, q[i]);
 +				xr.hud_world_ok = true;
 +				for (bool& b : xr.spot_world_ok) b = false;
++				xr.kitchen_rail = false;
 +				// The kitchen itself (from the game files): the ticket rail over the far side of its station line, the trash
 +				// and the oven where this kitchen has them
 +				f32 kd = 0.f;
@@ -4512,6 +4524,7 @@ index 000000000..065cbf223
 +					away.y = 0.f;
 +					away = dot(away, away) > 1e-6f ? normalize(away) : vec3{0.f, 0.f, -1.f};
 +					xr.hud_world[0] = {mid.x + away.x * 0.7f, kt->top_y + 0.85f, mid.z + away.z * 0.7f};
++					xr.kitchen_rail = true;
 +					if (const interior::inode* t = interior::find(*kt, {"trash"}, {"sidewalk", "garbage", "stain"}))
 +					{
 +						xr.spot_world[1] = {t->pos.x, kt->top_y + 0.15f, t->pos.z};
@@ -4535,7 +4548,8 @@ index 000000000..065cbf223
 +				{
 +					const vec3 pp = level(c.up_a, xform(c.D, game_to_view(gv, xr.hud_world[i]))) * xr.unit;
 +					const vec3 rel = pp - head_p;
-+					if (!std::isfinite(pp.x) || dot(rel, rel) > 25.f) continue;   // more than 5 m away (another part of the restaurant): keep the room spot
++					if (!std::isfinite(pp.x) || dot(rel, rel) > (i == 0 && xr.kitchen_rail ? 2.5f * 2.5f : 25.f)) continue;   // too far: keep the room spot
++					if (i == 0 && xr.kitchen_rail && (pp.y < head_p.y - 0.6f || pp.y > head_p.y + 1.2f)) continue;
 +					vec3 n = head_p - pp;
 +					n.y = 0.f;
 +					n = dot(n, n) > 1e-6f ? normalize(n) : vec3{0.f, 0.f, 1.f};
@@ -4549,7 +4563,7 @@ index 000000000..065cbf223
 +					if (!xr.spot_world_ok[k] || !xr.spot_pf[k].on) continue;
 +					const vec3 pp = level(c.up_a, xform(c.D, game_to_view(gv, xr.spot_world[k]))) * xr.unit;
 +					const vec3 rel = pp - head_p;
-+					if (!std::isfinite(pp.x) || dot(rel, rel) > 25.f) continue;
++					if (!std::isfinite(pp.x) || dot(rel, rel) > 2.5f * 2.5f || pp.y < head_p.y - 1.4f || pp.y > head_p.y + 0.3f) { xr.spot_world_ok[k] = false; continue; }
 +					vec3 n = head_p - pp;
 +					n.y = 0.f;
 +					n = dot(n, n) > 1e-6f ? normalize(n) : vec3{0.f, 0.f, 1.f};

@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.17.10",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Fixed: in the kitchen you could end up outside it, below the floor, where nothing could be reached and dialogs couldn't be pressed. The kitchen's floor and spots from the game files are now used only when they agree with the game's own camera."
+    ],
+    "notes": [
+      "Session 0583488b (10:05-10:07 UTC): every 3D picture shows the kitchen box from outside or below, the pointer never reached a panel (panel -1 while front had 5-34 draws), and grabs found nothing. 0.17.9 trusted the layout floor as the camera's world space without checking.",
+      "Now cam_k from the layout is used only if it is within 0.6 units of the camera's own height (memory 0x0038221c, or the scene floor). The rail from the layout is used only within 2.5 m and between 0.6 m below and 1.2 m above your head. Trash and oven spots only within 2.5 m and between 1.4 m below and 0.3 m above your head. Every decision is logged ('Height: kitchen ... says ... the camera says ...')."
+    ]
+  },
+  {
     "version": "0.17.9",
     "channel": "beta",
     "date": "2026-11-23",
