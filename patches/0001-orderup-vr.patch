@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..895311c16
+index 000000000..7eeb80f58
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7809 @@
+@@ -0,0 +1,7816 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -6172,9 +6172,16 @@ index 000000000..895311c16
 +				// The object nearest the pointer, and the parts drawn right around it
 +				// The object nearest your hand in 3D (your hand is where the food is in VR); without a hand position, the
 +				// one nearest the pointer on the game's screen
-+				const bool by_hand = s.hand_view_ok;
++				bool by_hand = s.hand_view_ok;
 +				const auto score = [&](const auto& c) { if (!by_hand) return c.nd; const vec3 d = c.o - s.hand_view; return std::sqrt(dot(d, d)); };
-+				const auto best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [&](const auto& a, const auto& b) { return score(a) < score(b); });
++				auto best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [&](const auto& a, const auto& b) { return score(a) < score(b); });
++				// Out of reach (the live test showed food 1.4-6 units from the hand): grab what your hand points at, i.e.
++				// what is under the game's pointer, which is what the game itself picks up
++				if (by_hand && score(*best) >= 0.6f)
++				{
++					by_hand = false;
++					best = std::min_element(s.hold_cands.begin(), s.hold_cands.end(), [&](const auto& a, const auto& b) { return a.nd < b.nd; });
++				}
 +				if (by_hand ? score(*best) < 0.6f : best->nd < 0.15f)
 +				{
 +					const vec3 o = best->o;

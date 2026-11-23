@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.17.3",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Grabbing works at a distance: when the food is out of your reach, you grab what your hand points at, and it comes to your hand."
+    ],
+    "notes": [
+      "From the first live session (Sentry): nearly every grab logged 'nothing at your hand to hold' with the food 1.4-6 units from the hand. Now, when nothing is within 0.6 units of the hand, the draws nearest the game's pointer (within 0.15 ndc: what the game itself picks up) are held; they still go to the hand only once the game moves them."
+    ]
+  },
+  {
     "version": "0.17.2",
     "channel": "beta",
     "date": "2026-11-23",
