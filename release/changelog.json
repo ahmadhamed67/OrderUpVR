@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.17.11",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Dialogs and menus open within arm's reach in front of you. Touch the button or point at it and pull the trigger: both work at any distance now.",
+      "If your headset gives no floor, reach down and touch the floor once with a controller: your real height is then detected and you are placed at it."
+    ],
+    "notes": [
+      "Session 05936ab (10:34-10:37 UTC): the dialog card ('Failing to spice a dish ... OK') hung within 0.75 m. Ray hits skipped panels closer than 0.75 m, and touch only counted within 6 cm in front or 8 cm behind the card, so presses did nothing (pointer inactive in views 69-70). Now ray hits work at any distance, touch counts from 10 cm in front to 15 cm behind, and a press at 15 mm. Menus and dialogs are placed 0.75 m ahead, 0.18 m below the eyes, 0.72 m wide.",
+      "Every session so far ran at unit 1.103 (no floor). Fallback: min controller height; when it is between 1.1 and 2.2 m below the eyes it becomes the floor, and the auto height runs.",
+      "Live pictures: the game eye images are cleared when not in 3D, so stale fragments no longer show in lobby or map pictures (views 26 and 37).",
+      "Seen, not fixed yet: in the arena, pointing above the game camera's view (ptr y 1.7-1.9, views 56-65) presses nothing."
+    ]
+  },
+  {
     "version": "0.17.10",
     "channel": "beta",
     "date": "2026-11-23",
