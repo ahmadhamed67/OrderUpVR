@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..7eeb80f58
+index 000000000..a3769fd25
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7816 @@
+@@ -0,0 +1,7856 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1133,6 +1133,9 @@ index 000000000..7eeb80f58
 +			u32 eye_w[2]{}, eye_h[2]{};
 +			bool eye_has[2]{};
 +			XrPosef eye_rel[2]{};
++			u64 eye_at[2]{};        // when each eye's newest game image arrived
++			bool eyes_apart = false;  // one eye's image is stale: both eyes show the newest one
++			hud_panel hud_pf[4]{}, spot_pf[4]{};   // the panels and stations, fixed in the game's world (player frame)
 +			XrFovf eye_fov[2]{};
 +			bool mono3d = false;
 +			u64 last_3d_tick = 0;
@@ -2062,6 +2065,7 @@ index 000000000..7eeb80f58
 +
 +				const int eye = slot;
 +				if (eye == 0 && live::capturing()) live::grab_pixels(f.px.data(), f.w, f.h, f.bgra, live::g.game, live::g.game_w, live::g.game_h, live::g.game_ok);
++				if (eye == 1 && live::capturing()) live::grab_pixels(f.px.data(), f.w, f.h, f.bgra, live::g.game_r, live::g.game_r_w, live::g.game_r_h, live::g.game_r_ok);
 +				if (xr.eye_sc[eye] == XR_NULL_HANDLE || xr.eye_w[eye] != f.w || xr.eye_h[eye] != f.h)
 +				{
 +					if (!create_eye_swapchain(xr, eye, f.w, f.h)) continue;
@@ -2072,6 +2076,7 @@ index 000000000..7eeb80f58
 +				{
 +					xr.eye_has[eye] = true;
 +					xr.eye_rel[eye] = f.tag.rel;
++					xr.eye_at[eye] = now;
 +					xr.eye_fov[eye] = f.tag.fov;
 +					xr.mono3d = f.tag.eye == 2;
 +					xr.last_3d_tick = now;
@@ -4341,8 +4346,24 @@ index 000000000..7eeb80f58
 +			xrApplyHapticFeedback(xr.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&v));
 +		}
 +
++		// A panel between your room and the player frame (the game's world)
++		hud_panel to_pf_impl(const xr_state& xr, hud_panel p)
++		{
++			const XrQuaternionf inv = qconj(yaw_q(xr.player_yaw));
++			p.P = to_player(xr, p.P); p.A = rotate(inv, p.A); p.B = rotate(inv, p.B);
++			return p;
++		}
++		hud_panel from_pf_impl(const xr_state& xr, hud_panel p)
++		{
++			const XrQuaternionf q = yaw_q(xr.player_yaw);
++			p.P = from_player(xr, p.P); p.A = rotate(q, p.A); p.B = rotate(q, p.B);
++			return p;
++		}
++
 +		void layout_hud(xr_state& xr, hud_panel out[4])
 +		{
++			const auto to_pf = [&](const hud_panel& p) { return to_pf_impl(xr, p); };
++			const auto from_pf = [&](const hud_panel& p) { return from_pf_impl(xr, p); };
 +			cam_info c;
 +			{
 +				std::lock_guard lock(g_state_mutex);
@@ -4396,6 +4417,9 @@ index 000000000..7eeb80f58
 +					vr_log("Stations: counter at %.2f m (floor %s), plate, bin, oven and food processor placed around you", cy - xr.floor_y, xr.floor_known ? "known" : "guessed");
 +				}
 +				xr.hud_locked = true;
++				// fixed in the game's world from now on: walking or turning with the stick no longer carries them along
++				for (int k = 0; k < 3; k++) xr.hud_pf[k] = to_pf(xr.hud_room[k]);
++				for (int k = 0; k < 4; k++) xr.spot_pf[k] = to_pf(xr.spot_room[k]);
 +			}
 +			// Cards and menus: each time one opens, in front of you at arm's length
 +			const bool menu_up = c.hud_seen[3] > 0;
@@ -4403,17 +4427,17 @@ index 000000000..7eeb80f58
 +			{
 +				const f32 hw = 0.55f;   // a menu board about 1.1 m wide at 1.3 m (about 46 degrees)
 +				set(xr.hud_room[3], head + fwd * 1.30f + vec3{0.f, -0.05f, 0.f}, head, hw, hw / aspect);
++				xr.hud_pf[3] = to_pf(xr.hud_room[3]);
 +				xr.menu_locked = true;
 +			}
 +			xr.menu_was_up = menu_up;
-+			// To your player frame (what the renderer and the pointer use)
-+			const XrQuaternionf inv = qconj(yaw_q(xr.player_yaw));
++			// The player frame is the game's world (what the renderer and the pointer use): the panels stay where they were
++			// placed in the kitchen; the stations' room positions follow from there (you move, they do not)
 +			for (int k = 0; k < 4; k++)
 +			{
-+				out[k] = xr.hud_room[k];
-+				out[k].P = to_player(xr, xr.hud_room[k].P);
-+				out[k].A = rotate(inv, xr.hud_room[k].A);
-+				out[k].B = rotate(inv, xr.hud_room[k].B);
++				out[k] = xr.hud_pf[k];
++				xr.hud_room[k] = from_pf(xr.hud_pf[k]);
++				if (xr.spot_pf[k].on) xr.spot_room[k] = from_pf(xr.spot_pf[k]);
 +			}
 +			// Anchored in the game's world: placed once (at the food's distance, where the game's HUD shows each strip),
 +			// then each frame from the game's camera to you. Facing you, upright.
@@ -5393,10 +5417,26 @@ index 000000000..7eeb80f58
 +
 +			if (frame_state.shouldRender && xr.live3d && message.empty())
 +			{
-+				// Inside the game: each eye shows its newest image, from where that eye was when it was rendered
++				// Inside the game: each eye shows its newest image, from where that eye was when it was rendered. When one
++				// eye's image stops coming (a cutscene starts, a camera cut) the eyes would see two different pictures:
++				// then both show the newest image until the other eye catches up.
++				const int newest = xr.eye_at[1] > xr.eye_at[0] ? 1 : 0;
++				const bool apart = !xr.mono3d && xr.eye_at[newest] - xr.eye_at[1 - newest] > 120;
++				if (apart != xr.eyes_apart)
++				{
++					xr.eyes_apart = apart;
++					vr_log("Eyes: %s", apart ? "one eye's picture stopped, both eyes show the newest picture" : "both eyes have their own picture again");
++				}
++				if (live::capturing())
++				{
++					char note[96];
++					std::snprintf(note, sizeof(note), " | eyes L %llu R %llu ms old%s", static_cast<unsigned long long>(now_tick - xr.eye_at[0]),
++						static_cast<unsigned long long>(now_tick - xr.eye_at[1]), apart ? " (shown together)" : "");
++					live::g.note = note;
++				}
 +				for (int i = 0; i < 2; i++)
 +				{
-+					const int src = xr.mono3d ? 0 : i;
++					const int src = xr.mono3d ? 0 : apart ? newest : i;
 +					const XrPosef& rel = xr.eye_rel[src];
 +					const vec3 p = from_player(xr, to_vec(rel.position));
 +					pviews[i].pose.position = {p.x, p.y, p.z};
@@ -9315,10 +9355,10 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..2d602f1d6
+index 000000000..cc5508b0f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,393 @@
 +// Order Up VR: live test stream (Experimental). While you play, the mod sends what happens straight to the developer's
 +// Sentry project, so testing needs no log zips:
 +//  - every line the mod logs and the 4-per-second track (head, hands, buttons, pointer, HUD), batched every second
@@ -9352,6 +9392,8 @@ index 000000000..2d602f1d6
 +		u64 want_since = 0;
 +		std::string last_track;   // the newest track line, sent with every picture
 +		std::string frame_reason;
++	std::string note;          // extra state for the picture's summary (eye ages)
++	std::vector<u8> game_r; u32 game_r_w = 0, game_r_h = 0; bool game_r_ok = false;   // the right eye's game picture
 +		// the captured layers (left eye)
 +		std::vector<u8> env, body, game, screen;   // RGBA8
 +		u32 env_w = 0, env_h = 0, body_w = 0, body_h = 0, game_w = 0, game_h = 0, screen_w = 0, screen_h = 0;
@@ -9634,6 +9676,18 @@ index 000000000..2d602f1d6
 +				u8* o = &rgb[(usz{y} * W + x) * 3];
 +				o[0] = static_cast<u8>(std::clamp(c[2], 0.f, 255.f)); o[1] = static_cast<u8>(std::clamp(c[1], 0.f, 255.f)); o[2] = static_cast<u8>(std::clamp(c[0], 0.f, 255.f));
 +			}
++		// the right eye's game picture, top right (both eyes must show the same thing)
++		if (g.game_r_ok && g.game_r_w)
++		{
++			const u32 iw = W / 4, ih = iw * g.game_r_h / g.game_r_w;
++			for (u32 y = 0; y < ih && y + 4 < H; y++)
++				for (u32 x = 0; x < iw; x++)
++				{
++					const u8* p = at(g.game_r, g.game_r_w, g.game_r_h, (x + 0.5f) / iw, (y + 0.5f) / ih);
++					u8* o = &rgb[(usz{4 + y} * W + (W - iw - 4 + x)) * 3];
++					o[0] = p[2]; o[1] = p[1]; o[2] = p[0];
++				}
++		}
 +		// the game's own flat picture, bottom right
 +		if (g.screen_ok && g.screen_w)
 +		{
@@ -9681,8 +9735,9 @@ index 000000000..2d602f1d6
 +		if (g.on.load() != 1 || !g.want_frame) return;
 +		const bool have = (g.env_ok || g.body_ok) && (g.game_ok || !live3d);
 +		if (!have && GetTickCount64() - g.want_since < 300) return;
-+		send_frame(g.last_track);
-+		g.env_ok = g.body_ok = g.game_ok = g.screen_ok = false;
++		send_frame(g.last_track + g.note);
++		// the newest eye pictures are kept: a stale eye shows stale (its age is in the summary), not as an empty view
++		g.env_ok = g.body_ok = g.screen_ok = false;
 +	}
 +
 +	void shutdown()

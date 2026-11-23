@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.17.5",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Nothing moves with you anymore. The ticket rail, side panels, menu board and station spots stay where they are in the kitchen. Walk or turn with the stick to reach them.",
+      "No more different pictures in each eye. When one eye's picture stops (for example when a cutscene starts), both eyes show the same picture until the other eye catches up.",
+      "Live testing now also sends the right eye's picture and how old each eye's picture is."
+    ],
+    "notes": [
+      "The panels (hud_room) and stations (spot_room) were kept in room space and converted to the player frame each frame. Stick moves and snap turns change player_pos and player_yaw, so they rode along with the player through the game world. They are now stored in the player frame (hud_pf, spot_pf) when placed, and their room positions are derived from that. They are placed again on recentre or a new place, and the menu board each time a menu opens.",
+      "Eye sync: eye_at[] records when each eye's image arrived. If they are more than 120 ms apart and the view is not mono, both projection views use the newest eye. This is logged as 'Eyes: ...'.",
+      "Live: right-eye game image inset at the top right; ' | eyes L x R y ms old' added to every picture summary. The game eye picture is no longer cleared after each send, so a stale eye shows as stale instead of an empty void (views 22 and 35 of session 006d6c00)."
+    ]
+  },
+  {
     "version": "0.17.4",
     "channel": "beta",
     "date": "2026-11-23",
