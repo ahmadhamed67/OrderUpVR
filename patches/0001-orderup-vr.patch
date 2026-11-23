@@ -10988,10 +10988,10 @@ index 000000000..03b78a8be
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_vrui.inl b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
 new file mode 100644
-index 000000000..0446b3f63
+index 000000000..8406075ca
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,200 @@
 +// Order Up VR: the VR UI framework, the 3D side (BLES01470).
 +//
 +// The game's own UI is read live from its memory (OrderUpVR_uitree.inl); the renderer moves each of the game's HUD
@@ -11169,44 +11169,10 @@ index 000000000..0446b3f63
 +				ring(xr, s.P - vec3{0.f, 0.006f, 0.f}, s.A, s.B, r + 0.02f, 0.010f, wood, 28);
 +				continue;
 +			}
-+			// Upright signs: N points at you
-+			const f32 bottom = s.P.y - s.hh - 0.02f;
-+			const vec3 base{s.P.x, 0.f, s.P.z};
-+			if (k == 1)
-+			{
-+				// A bin on the floor in front of its sign, with a lid rim
-+				const f32 r = std::max(s.hw * 0.95f, 0.10f);
-+				const f32 fl = floor_or(xr, bottom - 0.5f);
-+				const vec3 ax = s.P + N * (r + 0.01f);
-+				const vec3 b0{ax.x, fl, ax.z}, b1{ax.x, bottom - 0.01f, ax.z};
-+				if (b1.y - b0.y > 0.05f)
-+				{
-+					draw_limb(xr, b0, b1, r * 0.88f, r, lit ? mix(dark, hi, 0.5f) : vec3{0.20f, 0.30f, 0.22f});
-+					ring(xr, b1, s.A, N, r * 1.03f, 0.008f, lit ? hi : steel);
-+				}
-+			}
-+			else if (k == 2)
-+			{
-+				// An oven under the counter: steel box, dark door window, a handle; its sign is the control panel
-+				const f32 w = std::max(s.hw * 1.3f, 0.2f), h = 0.34f, d = 0.30f;
-+				const vec3 c = s.P - s.B * (s.hh + 0.03f + h * 0.5f) + N * (d * 0.5f + 0.005f);
-+				draw_boxo(xr, c, s.A, s.B, N, {2.f * w, h, d}, steel);
-+				draw_boxo(xr, c + N * (d * 0.5f + 0.002f) - s.B * 0.02f, s.A, s.B, N, {2.f * w * 0.75f, h * 0.55f, 0.004f}, lit ? mix(dark, hi, 0.45f) : vec3{0.10f, 0.08f, 0.07f});
-+				const vec3 hc = c + N * (d * 0.5f + 0.03f) + s.B * (h * 0.32f);
-+				draw_limb(xr, hc - s.A * (w * 0.6f), hc + s.A * (w * 0.6f), 0.008f, 0.008f, lit ? hi : brass);
-+			}
-+			else
-+			{
-+				// The food processor on the counter in front of its sign: a base, a clear-ish jar, a lid
-+				const f32 r = std::max(s.hw * 0.7f, 0.07f);
-+				const vec3 ax = s.P + N * (r + 0.02f);
-+				const f32 y0 = bottom - 0.21f;
-+				const vec3 p0{ax.x, y0, ax.z}, p1{ax.x, y0 + 0.07f, ax.z}, p2{ax.x, bottom - 0.02f, ax.z};
-+				draw_limb(xr, p0, p1, r, r * 1.05f, lit ? mix(dark, hi, 0.4f) : vec3{0.85f, 0.20f, 0.18f});
-+				draw_limb(xr, p1, p2, r * 0.8f, r * 0.85f, vec3{0.55f, 0.65f, 0.70f});
-+				ring(xr, p2, s.A, N, r * 0.86f, 0.007f, lit ? hi : dark);
-+			}
-+			(void)base;
++			// Upright signs (trash, oven, food processor): the game's kitchen already has these things in 3D, so no
++			// solid stand-ins (drawn without depth they covered the counter and your hands). Only a glowing frame
++			// round the sign while food you hold is near or over it.
++			if (lit) frame(xr, s.P, s.A, s.B, N, s.hw, s.hh, hot ? 0.010f : 0.006f, 0.006f, hi);
 +		}
 +	}
 +

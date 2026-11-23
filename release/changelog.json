@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.17.4",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "The grey box and red cylinder by your hands are gone. They were stand-ins for the oven and food processor, and they hid the real kitchen and your hands.",
+      "While cooking, the wooden menu frame no longer hangs over the cutting board. It only appears when a menu with buttons is open.",
+      "Holding food near the oven, trash or food processor still lights them up with a glowing frame."
+    ],
+    "notes": [
+      "From live session 006d6c00 (73 pictures): the vrui station stand-ins (oven box 0.34 m, food processor, bin) showed in about 25 kitchen pictures. They were drawn without depth over the game's own appliances and covered the counter and the left hand. They are now a lit frame around the sign only. draw_board only runs when vr_btns is not empty: the front panel during cooking is the game's close-up, and the frame and chains cut through it."
+    ]
+  },
+  {
     "version": "0.17.3",
     "channel": "beta",
     "date": "2026-11-23",
