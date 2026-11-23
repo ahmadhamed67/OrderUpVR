@@ -9308,7 +9308,7 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..47c13defe
+index 000000000..2d602f1d6
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
 @@ -0,0 +1,378 @@
@@ -9317,7 +9317,7 @@ index 000000000..47c13defe
 +//  - every line the mod logs and the 4-per-second track (head, hands, buttons, pointer, HUD), batched every second
 +//    as Sentry Logs;
 +//  - a small JPEG of what your left eye sees (the room, the game's picture re-rendered for your eye, your body and
-+//    hands; the game's flat picture as an inset) every 5 seconds and right after every press or grab.
++//    hands; the game's flat picture as an inset) every 2.5 seconds and right after every press or grab.
 +// Switched off with "live=off" in config/orderupvr_live.txt (the launcher's switch). Nothing is recorded but the game,
 +// the mod's own state and the views above; no microphone sound, no files.
 +// Included inside namespace ouvr { namespace { ... } } of OrderUpVR.cpp, after the UI helpers.
@@ -9659,13 +9659,13 @@ index 000000000..47c13defe
 +		g.cv.notify_one();
 +	}
 +
-+	// Once per headset frame: batches the logs every second, asks for a picture every 5 s
++	// Once per headset frame: batches the logs every second, asks for a picture every 2.5 s
 +	void tick(const std::string& channel)
 +	{
 +		if (!enabled(channel)) return;
 +		const u64 now = GetTickCount64();
 +		if (now - g.last_flush >= 1000) { g.last_flush = now; flush_logs(); }
-+		if (!g.want_frame && now - g.last_frame >= 5000) { g.frame_reason = "timer"; g.want_since = now; g.want_frame = true; }
++		if (!g.want_frame && now - g.last_frame >= 2500) { g.frame_reason = "timer"; g.want_since = now; g.want_frame = true; }
 +	}
 +
 +	// After the headset frame: send the picture once its layers are in (or after 300 ms with what there is)

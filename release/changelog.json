@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.17.2",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "Live testing sends a picture of your view every 2.5 seconds (was 5), plus one right after every press."
+    ],
+    "notes": [
+      "Live stream: timer frames every 2500 ms; press frames at most every 1.5 s; the 4/s track and every press event are unchanged."
+    ]
+  },
+  {
     "version": "0.17.1",
     "channel": "beta",
     "date": "2026-11-23",
