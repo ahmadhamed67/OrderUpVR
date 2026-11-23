@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..ef976e6f4
+index 000000000..de7cced8f
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7870 @@
+@@ -0,0 +1,7901 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1141,11 +1141,15 @@ index 000000000..ef976e6f4
 +			bool mono3d = false;
 +			u64 last_3d_tick = 0;
 +			bool live3d = false;
++			u64 flat_at = 0;          // when the last flat (non-3D) picture arrived
++			bool flat_dark = false;   // it was (nearly) black: loading, a fade
++			bool holding3d = false;   // the game is between 3D scenes: you stay in the last 3D view
 +			XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 +			bool views_valid = false;
 +			// The EXIT button over your left shoulder
 +			bool xb_out = false, xb_lgrip_prev = false;
 +			u64 xb_since = 0, xb_squeeze_since = 0, xb_puff_tick = 0;
++			f32 xb_depress = 0.f;   // how far your finger pushes the red cap down (m)
 +			vec3 xb_pos{}, xb_puff_pos{};
 +			bool sticks_chord = false;   // SteamVR: both sticks pressed together (pause), not a recentre
 +			u64 rstick_since = 0, select_pulse_until = 0;   // SteamVR: right stick held = pause, a quick click = Select
@@ -2060,6 +2064,13 @@ index 000000000..ef976e6f4
 +						if (!create_swapchain(xr, f.w, f.h)) continue;
 +					}
 +					if (upload_image(xr, xr.swapchain, xr.images, f.px, f.w, f.bgra, xr.swapchain_is_bgra)) xr.have_image = true;
++					{
++						// Is the flat picture (nearly) black? Loading and fades between kitchens are.
++						u64 lum = 0, n = 0;
++						for (usz i = 0; i + 3 < f.px.size(); i += 4 * 97, n++) lum += f.px[i] + f.px[i + 1] + f.px[i + 2];
++						xr.flat_dark = n && lum / (n * 3) < 24;
++						xr.flat_at = GetTickCount64();
++					}
 +					if (live::capturing()) live::grab_pixels(f.px.data(), f.w, f.h, f.bgra, live::g.screen, live::g.screen_w, live::g.screen_h, live::g.screen_ok);
 +					continue;
 +				}
@@ -2072,7 +2083,7 @@ index 000000000..ef976e6f4
 +					if (!create_eye_swapchain(xr, eye, f.w, f.h)) continue;
 +				}
 +				const u64 now = GetTickCount64();
-+				if (now - xr.last_3d_tick > 400) xr.eye_has[0] = xr.eye_has[1] = false; // do not pair with an old image
++				if (now - xr.last_3d_tick > 20000) xr.eye_has[0] = xr.eye_has[1] = false; // do not pair with a very old image (the eyes catch up on their own: see eyes_apart)
 +				if (upload_image(xr, xr.eye_sc[eye], xr.eye_images[eye], f.px, f.w, f.bgra, xr.eye_bgra[eye]))
 +				{
 +					xr.eye_has[eye] = true;
@@ -3100,7 +3111,11 @@ index 000000000..ef976e6f4
 +		// ---- The EXIT button. Reach over your left shoulder and squeeze GRIP: a big red button comes out in your left
 +		// hand. GRIP again puts it away (a pop and a puff of cloud). Squeeze it with your right hand for 3 seconds to close
 +		// the game.
-+		constexpr u64 exit_hold_ms = 1000;   // touch the button for a second
++		constexpr u64 exit_hold_ms = 1000;   // (the old EXIT sign: hold the trigger on it)
++		constexpr f32 xb_base_r = 0.045f, xb_base_h = 0.03f;   // the white base
++		constexpr f32 xb_cap_r = 0.034f, xb_cap_h = 0.018f;    // the red cap on it
++		constexpr f32 xb_cap_top = xb_base_h + xb_cap_h;      // top of the cap above the base's bottom centre, at rest
++		constexpr f32 xb_travel = 0.010f;                       // how far the cap goes down
 +
 +		vec3 left_shoulder(const xr_state& xr)
 +		{
@@ -3150,6 +3165,8 @@ index 000000000..ef976e6f4
 +			PlaySoundW(reinterpret_cast<LPCWSTR>(w.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 +		}
 +
++		void buzz(xr_state& xr, int hand, f32 amplitude, int ms);
++
 +		// Every frame (input): take out, put away, squeeze
 +		void update_exit_button(xr_state& xr, u64 now_ms)
 +		{
@@ -3173,31 +3190,37 @@ index 000000000..ef976e6f4
 +					vr_log("Exit button: put away");
 +				}
 +			}
-+			// Pressed by touching it: any fingertip or the palm of your right hand on the red dome
-+			bool squeeze = false;
-+			(void)rg;
-+			if (xr.xb_out && xr.hand_valid[1] && now_ms - xr.xb_since > 400)
++			// A real push button: the red cap sits on a white base and goes down only as far as your right hand's fingertip
++			// (or palm) pushes it from above. Pushed all the way down (10 mm), it clicks and the game closes at once.
++			xr.xb_depress = 0.f;
++			if (xr.xb_out && xr.hand_valid[1] && now_ms - xr.xb_since > 600)
 +			{
 +				const hand_geo r = make_hand(xr.hand_pose[1], 1, xr.hand_grip[1], xr.hand_trig[1]);
-+				const vec3 dome = c + up * 0.03f;
-+				f32 best = dot(r.palm - dome, r.palm - dome);
-+				for (int f = 0; f < 5; f++) { const vec3 d = r.joints[f][3] - dome; best = std::min(best, dot(d, d)); }
-+				squeeze = best < 0.07f * 0.07f;
-+			}
-+			if (squeeze)
-+			{
-+				if (!xr.xb_squeeze_since) { xr.xb_squeeze_since = now_ms; vr_log("Exit button: squeezing"); }
-+				else if (now_ms - xr.xb_squeeze_since > exit_hold_ms && !xr.exit_done)
++				vec3 pts[6];
++				for (int f = 0; f < 5; f++) pts[f] = r.joints[f][3];
++				pts[5] = r.palm;
++				for (const vec3& p : pts)
 +				{
-+					xr.exit_done = true;
-+					play_pop(false);
-+					vr_log("Exit: the player pressed the EXIT button");
-+					Emu.CallFromMainThread([] { Emu.Quit(true); });
-+					// If the emulator has not closed in 4 seconds, end the process (the launcher sees it closing)
-+					std::thread([] { Sleep(4000); vr_log("Exit: closing the process"); TerminateProcess(GetCurrentProcess(), 0); }).detach();
++					const vec3 d = p - c;
++					const f32 h = dot(d, up);                      // height above the base's centre
++					const vec3 radial = d - up * h;
++					if (dot(radial, radial) > xb_cap_r * xb_cap_r) continue;   // not over the cap
++					const f32 push = xb_cap_top - (h - 0.008f);     // fingertip radius ~8 mm
++					if (push > 0.f && push < 0.04f) xr.xb_depress = std::max(xr.xb_depress, std::min(push, xb_travel));
 +				}
 +			}
-+			else xr.xb_squeeze_since = 0;
++			if (xr.xb_depress >= xb_travel * 0.95f && !xr.exit_done)
++			{
++				xr.exit_done = true;
++				play_pop(false);
++				buzz(xr, 1, 1.f, 120);
++				vr_log("Exit: the player pushed the EXIT button down");
++				Emu.CallFromMainThread([] { Emu.Quit(true); });
++				// If the emulator has not closed in 4 seconds, end the process (the launcher sees it closing)
++				std::thread([] { Sleep(4000); vr_log("Exit: closing the process"); TerminateProcess(GetCurrentProcess(), 0); }).detach();
++			}
++			else if (xr.xb_depress > 0.002f && !xr.xb_squeeze_since) { xr.xb_squeeze_since = now_ms; vr_log("Exit button: being pushed"); }
++			else if (xr.xb_depress <= 0.002f) xr.xb_squeeze_since = 0;
 +		}
 +
 +		// Drawn with your hands
@@ -3222,32 +3245,23 @@ index 000000000..ef976e6f4
 +			// Pops out with a little overshoot
 +			const f32 a = std::min(1.f, (now - xr.xb_since) / 220.f);
 +			const f32 k = std::max(0.05f, 1.f + 2.70158f * std::pow(a - 1.f, 3.f) + 1.70158f * std::pow(a - 1.f, 2.f));
-+			const f32 hold = xr.xb_squeeze_since ? std::min(1.f, static_cast<f32>(now - xr.xb_squeeze_since) / exit_hold_ms) : 0.f;
 +			// The label side faces you
 +			vec3 toward = xr.last_head - c;
 +			toward = toward - up * dot(toward, up);
 +			toward = dot(toward, toward) > 1e-6f ? normalize(toward) : any_perp(up);
 +			const vec3 side = normalize(cross(up, toward));
-+			const f32 R = 0.05f * k;
-+			// Base: a dark housing with a yellow ring
-+			draw_limb(xr, c - up * (0.025f * k), c + up * (0.01f * k), R, R, {0.12f, 0.12f, 0.13f});
-+			draw_limb(xr, c + up * (0.008f * k), c + up * (0.014f * k), R * 0.93f, R * 0.93f, {0.98f, 0.78f, 0.12f});
-+			// The red dome: pressed down while you squeeze, and pulsing brighter
-+			const f32 press = xr.xb_squeeze_since ? 0.45f : 1.f;
-+			const f32 pulse = xr.xb_squeeze_since ? 0.5f + 0.5f * std::sin(now * 0.02f) : 0.f;
-+			draw_ellipsoid(xr, c + up * (0.014f * k), side, up, toward, {R * 0.82f, 0.03f * k * press, R * 0.82f}, {0.85f + 0.15f * pulse, 0.08f + 0.12f * pulse, 0.08f});
-+			// Progress: lights around the rim fill up over 3 seconds
-+			const int lights = 16;
-+			for (int i = 0; i < lights; i++)
-+			{
-+				const f32 ang = 6.2831853f * i / lights;
-+				const vec3 p = c + (toward * std::cos(ang) + side * std::sin(ang)) * (R * 1.04f);
-+				const bool lit = hold * lights > i;
-+				draw_ball(xr, p, 0.0045f * k, lit ? vec3{0.3f, 1.f, 0.55f} : vec3{0.25f, 0.25f, 0.27f});
-+			}
++			const f32 R = xb_base_r * k;
++			// The white base, with a darker rim where the cap sits in it
++			draw_limb(xr, c, c + up * (xb_base_h * k), R, R * 0.96f, {0.93f, 0.93f, 0.91f});
++			draw_limb(xr, c + up * (xb_base_h * k), c + up * ((xb_base_h + 0.002f) * k), xb_cap_r * k * 1.08f, xb_cap_r * k * 1.08f, {0.55f, 0.55f, 0.56f});
++			// The red cap: as far down as your finger pushes it
++			const f32 down = std::min(xr.xb_depress, xb_travel);
++			const vec3 c0 = c + up * ((xb_base_h - xb_travel + 0.002f) * k), c1 = c + up * ((xb_cap_top - down) * k);
++			draw_limb(xr, c0, c1, xb_cap_r * k, xb_cap_r * k * 0.97f, {0.82f, 0.06f, 0.05f});
++			draw_ellipsoid(xr, c1, side, up, toward, {xb_cap_r * k * 0.97f, 0.006f * k, xb_cap_r * k * 0.97f}, {0.92f, 0.12f, 0.10f});
 +			// "EXIT" in white on a red plate facing you
-+			const vec3 pc = c - up * (0.008f * k) + toward * (R + 0.006f);
-+			draw_boxo(xr, pc, side, up, toward, {0.07f * k, 0.026f * k, 0.004f}, {0.75f, 0.06f, 0.06f});
++			const vec3 pc = c + up * (xb_base_h * 0.5f * k) + toward * (R + 0.003f);
++			draw_boxo(xr, pc, side, up, toward, {0.07f * k, 0.022f * k, 0.004f}, {0.75f, 0.06f, 0.06f});
 +			const f32 lh = 0.016f * k, lw = 0.011f * k, bar = 0.0028f * k;
 +			const vec3 face = pc + toward * 0.0035f;
 +			// You look at the plate from the "toward" side, so your right is -side
@@ -3653,7 +3667,10 @@ index 000000000..ef976e6f4
 +			auto& g = g_gfx;
 +			c.posed = false;
 +			if (xr.live3d) chef_detect_tick();   // never on menus: the load menu shows the default (male) chef
-+			const int want = !xr.comfort.body ? -1 : (xr.comfort.menu_female ? 1 : 0);   // the chef you picked, always
++			// Your body is your profile's chef once the game has shown it (a female profile gives a female body); until then
++			// (main menu, lobby) the menu chef from the launcher
++			const int want = !xr.comfort.body ? -1 : g_detect.found.load() ? g_detect.chosen.load() : (xr.comfort.menu_female ? 1 : 0);
++			if (want >= 0) xr.comfort.female = want == 1;   // the simple body too (proportions, neckerchief)
 +			if (want < 0 || !g.cvs || c.state == 1) return;
 +			if (want != c.which)
 +			{
@@ -5361,7 +5378,21 @@ index 000000000..ef976e6f4
 +			}
 +			const u64 now_tick = GetTickCount64();
 +			const bool was3d = xr.live3d;
-+			xr.live3d = xr.mode3d && now_tick - xr.last_3d_tick < 400 && xr.eye_has[0] && (xr.mono3d || xr.eye_has[1]);
++			{
++				// True VR never drops you onto a flat screen for a moment: while the game is between 3D scenes (loading, a
++				// fade, a black picture) you stay in the last 3D view, fixed in the world, until the next 3D scene or a real
++				// (not black) flat picture such as a menu comes
++				const bool fresh = now_tick - xr.last_3d_tick < 400;
++				const bool no_flat = now_tick - xr.flat_at > 600 || xr.flat_dark;
++				const bool hold = xr.mode3d && !fresh && no_flat && now_tick - xr.last_3d_tick < 30000;
++				if (hold != xr.holding3d)
++				{
++					xr.holding3d = hold;
++					if (hold || !fresh) vr_log("3D gap: %s", hold ? "the game is between scenes (no 3D, flat picture black or absent), you stay in the last 3D view" : "a flat picture came, shown on the big screen");
++					else vr_log("3D gap over: the game draws 3D again");
++				}
++				xr.live3d = xr.mode3d && (fresh || hold) && xr.eye_has[0] && (xr.mono3d || xr.eye_has[1]);
++			}
 +			if (xr.live3d != was3d) vr_log("Headset view: %s", xr.live3d ? "inside the game (3D)" : "big screen");
 +
 +			XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -11144,7 +11175,7 @@ index 000000000..03b78a8be
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_vrui.inl b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
 new file mode 100644
-index 000000000..8406075ca
+index 000000000..e6b1e84e6
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_vrui.inl
 @@ -0,0 +1,200 @@
@@ -11340,7 +11371,7 @@ index 000000000..8406075ca
 +			std::lock_guard lock(g_state_mutex);
 +			cam = g_cam;
 +		}
-+		if (cam.hud_seen[3]) draw_board(xr);
++		// (no wooden board and chains around the game's menus any more: a frame round a flat picture is not VR)
 +		if (xr.live3d && xr.mode3d)
 +		{
 +			if (cam.hud_seen[0]) draw_rail(xr);

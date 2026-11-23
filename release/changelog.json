@@ -1,5 +1,22 @@
 [
   {
+    "version": "0.17.7",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "The EXIT button is a real push button now: a white base with a red cap. Push the cap down with your finger and it moves with you. All the way down closes the game at once, with no waiting and no light ring.",
+      "Your body is your profile's chef: a female profile gives you a female body as soon as the game shows your chef.",
+      "No black big screen between kitchens. While the game loads you stay in the last 3D view.",
+      "The wooden board and chains around the game's menus are gone."
+    ],
+    "notes": [
+      "Session 0053140007ea94a0: views 58-60, 82-84 and 116-120 were 'view screen'. The live3d test needed an eye image under 400 ms old, so every loading gap dropped you into the diner in front of the big screen, showing the game's black loading picture. Now live3d holds the last eye images for up to 30 s while flat pictures are black (mean below 24) or absent ('3D gap' log). eye_has is reset only after 20 s; eyes_apart handles the rest.",
+      "Exit button: cap depression from the fingertip and palm heights over the cap (radius 34 mm), 10 mm travel. At 95% it exits with a buzz. The 1 s touch-to-exit hold and the rim lights are removed.",
+      "chef_tick: want = g_detect.found ? g_detect.chosen : menu_female (it used to ignore detection). comfort.female follows want.",
+      "vrui::draw no longer calls draw_board."
+    ]
+  },
+  {
     "version": "0.17.6",
     "channel": "beta",
     "date": "2026-11-23",
