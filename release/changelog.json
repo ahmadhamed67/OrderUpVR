@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.17.6",
+    "channel": "beta",
+    "date": "2026-11-23",
+    "simple": [
+      "The dark square that hung in front of you in the kitchen is gone. It was the game's screen dimming behind a dialog. The dialog itself stays.",
+      "Settings are cleaner. Removed: 3D depth, order tickets distance, cutscenes, kitchen mode, look to change station, wide view and pointing. True VR sets these itself now.",
+      "Crashes and freezes now reach the developer automatically, with the emulator's last log lines, so you don't have to upload anything."
+    ],
+    "notes": [
+      "Session 0063640007cd75ea: the game picture froze at 07:54:28 (views 36 to 46 are identical) and the process ended at 07:54:51 without a report. Now: an emu_tap logs::listener keeps the last 300 warning/error lines and streams errors. report_fatal_error calls ouvr::live_fatal, which sends the pending logs and a 'crash' event with emulator_log_tail.txt synchronously. live::watch sends a 'freeze' event when shown_frame_id has not changed for 8 s.",
+      "Flat draws covering the whole screen (wn and hn > 1.9 ndc) alongside a 3D scene get a degenerate transform (n_dim). They were matched to the menu board and showed as a dark sheet with the dialog on it.",
+      "Launcher 1.23.0: VrOptions keeps turning, snap angle, turn speed, walking speed, vignette, play position, menu chef and lip sync. WriteVrFile writes stereo=on, huddist=1.5, cutscenes=screen, kitchen=room, lookswitch=off, wideview=on, pointing=hand."
+    ]
+  },
+  {
     "version": "0.17.5",
     "channel": "beta",
     "date": "2026-11-23",

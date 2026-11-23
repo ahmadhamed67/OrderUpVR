@@ -586,15 +586,8 @@ namespace OrderUpVR
             new[] { "Comfort", "movespeed", "Walking speed", "Left stick walking", "1.4", "1.0", "Slow", "1.4", "Normal", "2.0", "Fast" },
             new[] { "Comfort", "vignette", "Comfort vignette", "Darkens the edges of your view while the stick moves you", "on", "on", "On", "off", "Off" },
             new[] { "You and the view", "playmode", "Play position", "Seated keeps your chef standing while you sit", "standing", "standing", "Standing", "seated", "Seated" },
-            new[] { "You and the view", "stereo", "3D depth", "Off shows one picture to both eyes: smoother, but flat", "on", "on", "On", "off", "Off" },
-            new[] { "You and the view", "huddist", "Order tickets distance", "How far the game's tickets and timers float (never inside the counter)", "1.5", "1.0", "Near", "1.5", "Normal", "2.0", "Far" },
-            new[] { "You and the view", "cutscenes", "Cutscenes", "Big screen: cutscenes and camera fly-throughs play on the diner screen", "screen", "screen", "Big screen", "3d", "Inside the game" },
             new[] { "You and the view", "menuchef", "Menu chef", "Your chef in the menus and the diner (a career uses its own chef)", "male", "male", "Male", "female", "Female" },
             new[] { "You and the view", "lipsync", "Lip sync", "Your chef's mouth moves when you talk (your PC's default microphone; nothing is recorded)", "on", "on", "On", "off", "Off" },
-            new[] { "In the kitchen", "kitchen", "Kitchen", "Room: the kitchen stays still around you, every station where it really is", "room", "room", "Room (true VR)", "follow", "Follows the camera" },
-            new[] { "In the kitchen", "lookswitch", "Look to change station", "Turn your head toward the next station and the game moves there", "on", "on", "On", "off", "Off" },
-            new[] { "In the kitchen", "wideview", "Wide view", "The game draws the whole restaurant around you, not just what its camera faces", "on", "on", "On", "off", "Off" },
-            new[] { "In the kitchen", "pointing", "Pointing", "Hands: reach for things. Laser: point from a distance", "hand", "hand", "Hands", "laser", "Laser" },
         };
 
         string VrGet(string key, string def) { string v; return s.Vr != null && s.Vr.TryGetValue(key, out v) ? v : def; }
@@ -676,6 +669,9 @@ namespace OrderUpVR
                 var sb = new System.Text.StringBuilder();
                 sb.Append("chef=auto").AppendLine();
                 foreach (var o in VrOptions) sb.Append(o[1]).Append('=').Append(VrGet(o[1], o[4])).AppendLine();
+                // Not choices: true VR is decided by the mod (3D depth, the kitchen still around you, your head does not
+                // change stations, the whole restaurant drawn, hands to reach, the HUD where the game puts it)
+                sb.Append("stereo=on\nhuddist=1.5\ncutscenes=screen\nkitchen=room\nlookswitch=off\nwideview=on\npointing=hand\n");
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), "live=" + (s.NoLiveStream ? "off" : "on") + "\n");
             }

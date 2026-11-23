@@ -525,10 +525,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..a3769fd25
+index 000000000..ef976e6f4
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,7856 @@
+@@ -0,0 +1,7870 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -862,6 +862,7 @@ index 000000000..a3769fd25
 +			proj cam;
 +			bool cam_this_frame = false;
 +			bool x3_ready = false, x2_ready = false;
++			u32 n_dim = 0;   // full-screen flat layers left out (dimming, fades)
 +			mat4 X3, X2;
 +
 +			vec3 up{0.f, 1.f, 0.f};
@@ -5231,6 +5232,7 @@ index 000000000..a3769fd25
 +			// the game's UI: which HUD pictures are the plate and the trash (and in Experimental the whole tree, logged)
 +			if (xr.mode3d && GetTickCount64() - uitree::g.last_labels >= 200) uitree::tick(uitree::g.names_tried ? std::string() : game_usrdir(), xr.channel == "beta");
 +			live::tick(xr.channel);   // the live test stream (Experimental unless switched off)
++		live::watch(xr.shown_frame_id);   // a frozen game sends a report
 +			if (xr.channel == "beta")
 +			{
 +				track_log(xr, out);
@@ -7864,6 +7866,14 @@ index 000000000..a3769fd25
 +			{
 +				const f32 cxn = (x0 + x1) * 0.5f, cyn = (y0 + y1) * 0.5f, wn = x1 - x0, hn = y1 - y0;
 +				int region = -1;
++				// A flat layer over the whole screen (the dark dimming behind a dialog, a fade): in VR it would be a dark
++				// sheet hanging in the kitchen in front of you, so it is not drawn (degenerate: nothing rasterises)
++				if (wn > 1.9f && hn > 1.9f)
++				{
++					std::memset(x, 0, sizeof(f32) * 16);
++					s.n_dim++;
++					return 6;
++				}
 +				// The VR UI framework: this piece of the game's HUD is matched to the game's own UI element it draws (from the
 +				// live UI tree: same rectangle on the 1280x720 screen), and goes to that element's place in VR: tickets on the
 +				// rail, the plate / trash / oven / food processor at their spots in your kitchen, assistants left, utensils and
@@ -8084,6 +8094,9 @@ index 000000000..a3769fd25
 +		return g_rv.gen.load(std::memory_order_relaxed);
 +	}
 +
++	// The emulator's fatal error handler: a crash report to the live stream before the process ends
++	void live_fatal(std::string_view text) { live::fatal(text); }
++
 +	void stereo_apply(void* rows, const f32 x[16])
 +	{
 +		mat4 S, X;
@@ -8146,6 +8159,7 @@ index 000000000..a3769fd25
 +	void apply_code_patches(const std::string&, const std::function<u8*(u32, u32)>&, std::vector<u32>&) {}
 +	void hud_vertices(const f32*, u32, u32, u32) {}
 +	u64 stereo_generation() { return 0; }
++	void live_fatal(std::string_view) {}
 +	void stereo_apply(void*, const f32*) {}
 +}
 +
@@ -8387,13 +8401,14 @@ index 000000000..a3769fd25
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR.h b/rpcs3/Emu/Io/OrderUpVR.h
 new file mode 100644
-index 000000000..54da34352
+index 000000000..7b70b0b0a
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.h
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,112 @@
 +#pragma once
 +#include <functional>
 +#include <string>
++#include <string_view>
 +#include <vector>
 +
 +// Order Up VR: OpenXR bridge for the PS3 game Order Up!! (BLES01470).
@@ -8493,6 +8508,9 @@ index 000000000..54da34352
 +
 +	// Changes once per presented frame (the eye being rendered changes); the renderer re-applies the transform then.
 +	u64 stereo_generation();
++
++	// A crash report to the live test stream (Experimental), sent before the process ends.
++	void live_fatal(std::string_view text);
 +
 +	// rows = the renderer's 4x4 viewport (scale/offset) matrix, row-major; it becomes rows * x.
 +	void stereo_apply(void* rows, const f32 x[16]);
@@ -9355,10 +9373,10 @@ index 000000000..5a94a5761
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..cc5508b0f
+index 000000000..4b38ca8f7
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
-@@ -0,0 +1,393 @@
+@@ -0,0 +1,476 @@
 +// Order Up VR: live test stream (Experimental). While you play, the mod sends what happens straight to the developer's
 +// Sentry project, so testing needs no log zips:
 +//  - every line the mod logs and the 4-per-second track (head, hands, buttons, pointer, HUD), batched every second
@@ -9474,6 +9492,8 @@ index 000000000..cc5508b0f
 +		}
 +	}
 +
++	void start_tap();
++
 +	// Decided once per run: Experimental channel, and not switched off in the launcher
 +	bool enabled(const std::string& channel)
 +	{
@@ -9492,8 +9512,89 @@ index 000000000..cc5508b0f
 +		QueryPerformanceCounter(&pc);
 +		g.session = hex(GetTickCount64() ^ (u64{GetCurrentProcessId()} << 40), static_cast<u64>(pc.QuadPart) * 0x9e3779b97f4a7c15ull);
 +		g.on = on ? 1 : 0;
-+		if (on) { g.th = std::thread(sender); g.th.detach(); g_log_hook = [](const char* line) { log("info", line, "mod"); }; }
++		if (on) { g.th = std::thread(sender); g.th.detach(); g_log_hook = [](const char* line) { log("info", line, "mod"); }; start_tap(); }
 +		return on;
++	}
++
++	// ---- Crashes and freezes: the emulator's own log (warnings and worse) is kept, errors are streamed, and a fatal
++	// error or a frozen game sends a report at once (synchronously: the process may be about to end)
++	inline std::mutex tail_m;
++	inline std::deque<std::string> tail;   // the emulator's newest warning/error lines
++
++	struct emu_tap final : logs::listener
++	{
++		void log(u64, const logs::message& msg, std::string_view prefix, std::string_view text) override
++		{
++			const auto lv = static_cast<logs::level>(msg);
++			if (lv > logs::level::warning) return;
++			std::string line = std::string(lv <= logs::level::fatal ? "F " : lv == logs::level::error ? "E " : "W ") + msg->name + ": " + std::string(prefix) + std::string(text);
++			if (line.size() > 600) line.resize(600);
++			{
++				std::lock_guard lock(tail_m);
++				tail.push_back(line);
++				if (tail.size() > 300) tail.pop_front();
++			}
++			if (lv <= logs::level::error) live::log(lv <= logs::level::fatal ? "fatal" : "error", line, "emu");
++		}
++	};
++	inline emu_tap* tap = nullptr;
++	void start_tap() { if (!tap) { tap = new emu_tap; logs::listener::add(tap); } }
++
++	void flush_logs();
++
++	// A report event (crash or freeze) with the emulator's log tail attached, sent now
++	void report(const char* kind, const std::string& text)
++	{
++		if (g.on.load() != 1) return;
++		static std::atomic<int> sent{0};
++		if (sent.fetch_add(1) >= 3) return;
++		std::string t;
++		{
++			std::lock_guard lock(tail_m);
++			for (const auto& s : tail) { t += s; t += '\n'; }
++		}
++		t += "\nlast track: " + g.last_track + g.note + "\n";
++		char ts[32];
++		std::snprintf(ts, sizeof(ts), "%.3f", now_s());
++		const std::string id = hex(GetTickCount64() * 0x9e3779b97f4a7c15ull ^ 0xc4a5, sent.load() * 2654435761ull ^ g.frames);
++		std::string first = text.substr(0, text.find('\n'));
++		if (first.size() > 120) first.resize(120);
++		const std::string ev = std::string("{\"event_id\":\"") + id + "\",\"timestamp\":" + ts + ",\"platform\":\"native\",\"level\":\"fatal\",\"logger\":\"" + kind + "\","
++			"\"message\":{\"formatted\":\"" + esc(std::string(kind) + ": " + text) + "\"},"
++			"\"tags\":{\"session\":\"" + g.session + "\",\"kind\":\"" + kind + "\"},"
++			"\"contexts\":{\"trace\":{\"trace_id\":\"" + g.session + "\",\"span_id\":\"" + id.substr(0, 16) + "\"}},"
++			"\"fingerprint\":[\"" + kind + "\",\"" + esc(first) + "\"]}";
++		std::string env = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\",\"length\":" + std::to_string(ev.size()) + "}\n" + ev +
++			"\n{\"type\":\"attachment\",\"length\":" + std::to_string(t.size()) + ",\"filename\":\"emulator_log_tail.txt\",\"content_type\":\"text/plain\"}\n" + t + "\n";
++		// everything still waiting first (the last seconds of logs), then the report itself
++		flush_logs();
++		std::deque<std::string> pending;
++		{
++			std::lock_guard lock(g.m);
++			pending.swap(g.out);
++		}
++		for (auto& e : pending) post(e);
++		post(env);
++	}
++
++	// Called by the emulator's fatal error handler (crashes, access violations, fatal asserts)
++	void fatal(std::string_view text) { report("crash", std::string(text)); }
++
++	// The game picture stopped changing for 8 s while the headset shows the game: a freeze report (once per freeze)
++	void watch(u64 game_frame)
++	{
++		if (g.on.load() != 1) return;
++		static u64 last = 0, since = 0;
++		static bool reported = false;
++		const u64 now = GetTickCount64();
++		if (game_frame != last) { last = game_frame; since = now; reported = false; return; }
++		if (!reported && since && game_frame && now - since > 8000)
++		{
++			reported = true;
++			char m[96];
++			std::snprintf(m, sizeof(m), "the game picture has not changed for %.0f s (frame %llu)", (now - since) / 1000.0, static_cast<unsigned long long>(game_frame));
++			report("freeze", m);
++		}
 +	}
 +
 +	// Any mod log line (vr_log) and the track: one Sentry log item each
@@ -11542,7 +11643,7 @@ index 36ba6b15e..571709b21 100644
      <ClCompile Include="Emu\Cell\Modules\cellHttp.cpp" />
      <ClCompile Include="Emu\Cell\Modules\cellHttpUtil.cpp" />
 diff --git a/rpcs3/rpcs3.cpp b/rpcs3/rpcs3.cpp
-index 78154f639..9d99a25cc 100644
+index 78154f639..e04a5d294 100644
 --- a/rpcs3/rpcs3.cpp
 +++ b/rpcs3/rpcs3.cpp
 @@ -28,6 +28,7 @@
@@ -11553,7 +11654,20 @@ index 78154f639..9d99a25cc 100644
  #ifdef _WIN32
  #include "module_verifier.hpp"
  #include "util/dyn_lib.hpp"
-@@ -562,6 +563,8 @@ void run_platform_sanity_checks()
+@@ -166,8 +167,12 @@ std::set<std::string> get_one_drive_paths()
+ }
+ #endif
+ 
++namespace ouvr { void live_fatal(std::string_view text); }
++
+ [[noreturn]] extern void report_fatal_error(std::string_view _text, bool is_html = false, bool include_help_text = true)
+ {
++	static std::atomic<bool> s_ouvr_reported{false};
++	if (!s_ouvr_reported.exchange(true)) ouvr::live_fatal(_text); // Order Up VR: crash report to the live test stream
+ #ifdef __linux__
+ 	extern void jit_announce(uptr, usz, std::string_view);
+ #endif
+@@ -562,6 +567,8 @@ void run_platform_sanity_checks()
  
  int run_rpcs3(int argc, char** argv)
  {
