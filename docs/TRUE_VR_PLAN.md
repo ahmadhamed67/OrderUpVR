@@ -141,10 +141,92 @@ Simulated: 40 frames of motion with culled, moving and rotated objects recover D
 
 Pointing maps the hand into the anchor's view, then by D^-1 into the current camera's view before projecting.
 
-Stations: the mod learns from your own A/B press which way each one moves the camera (stored as
-`station_cross` in orderupvr_state.txt), remembers each station's look target in the room, and when your head
-turns more than 30 degrees past the current station (or closer to a known neighbour), presses the button for you.
-A press that does nothing marks the end of the row on that side.
+Stations (after 0.17.11): the game's camera follows you. Each frame the mod finds the station row the game camera looks
+at (the kitchen's station nodes from Chef.wad, the camera from 0x003821d8) and where you are on it, in the game's
+world. When you reach (eye -> hand ray onto the counter or the row) or walk past the edge of what the camera frames
+in the game's own (not widened) view, toward a station it does not frame yet, the mod presses Cross or Circle for
+you (after 0.45 s reaching or 0.7 s standing there; never while gripping, in a menu or dialog, or in a cutscene).
+Which button goes which way is learned from the camera's own move, seen from where it looked before (your own A/B
+or the mod's first press), and stored as `station_cross` in orderupvr_state.txt; a button that does not take the
+view where it was meant to is not pressed again from that camera spot. The old head-turn trigger (`lookswitch`) is
+gone. A TRIGGER or GRIP press past the edge of the game's picture waits (the game does not get it) while the camera
+goes to the station that way, then lands there; with no station that way it lands on the picture's edge when it is
+within 20% of it, else two short buzzes say nothing can be reached there.
+
+HUD cards (after 0.17.11): every card of the game's HUD is its own plane in the kitchen. Each game frame the renderer
+lays out the cards from the UI tree (rv_layout_cards): order tickets (direct children of `order_reel*`) hang from the
+rail, tilted and swaying; the assistants (`AsstChef1/2`, `assistant_*`: one card per group with its timer bar and
+ingredient) stand in a row on a stand on the counter at your left; gesture, utensil and spice cards (`gesture_icon_*`,
+`spice_*`) stand on a shelf on the counter at your right (a plank higher when a row is full); the recipe card
+(`orderbig`, `orderbig_ticket` from ticket_reel.csl create_big_ticket, category C_RECIPE) is on a clipboard in your left
+hand, or stands on the counter while that hand is untracked or holds the EXIT button. Stand, shelf and counter spot
+are placed with the HUD, at the kitchen's own counter top when its layout is known. Each matched HUD piece is drawn on
+its card's plane (one renderer value per card and level, so the matrix is re-uploaded); pieces the UI tree does not
+place exactly (a ticket's scaled dish icon) go onto the smallest card holding their middle; an assistant's own 3D
+portrait (another lens) goes onto its card. The cards drawn each frame (plane + game-screen rectangle) go back to the
+main thread in `cam_info::cards`; touch and rays hit those exact planes first (nearest card), and the spot hit is the
+same spot of the game's screen, so the press lands on that element. The flat panels stay for pieces nothing matches.
+Inside a menu (hiring, buying spices) assistants and spices stay part of the menu. Log: "Cards: N tickets on the rail ...".
+
+Menus within reach (after 0.17.11): "a menu is open" comes from the game's UI tree (uitree::menu_open: an element whose
+name makes it a menu, covering at least 4% of the screen, or a named dialog card 400-1200 x 200-700 px) while the game
+draws something of it (vrui::menu_drawn, from the renderer's marks below; the renderer gets it in g_views), no longer
+from "the menu panel drew something last frame": that latched on for the whole kitchen (every unmatched HUD piece went
+to the menu panel and kept it seen), so the panel never came to a dialog that opened, and it caught the hand in front of
+the food. While a menu is open, only the unmatched HUD pieces on the part of the screen its menus and dialogs cover go
+onto the menu panel; the rest of the HUD stays where it is. The menu panel is pointed at only while a menu is open (or a
+menu group was drawn on it), and then before the cards. The UI tree now keeps each element's parent, class (vtable),
+name flag and whether it is the centred copy.
+Each menu's buttons become keys (vrui::find_keys): elements the scripts name as buttons; items of a list (two or more
+siblings of the same size side by side or one below the other: the restaurant list, the title and pause menus); small
+elements in the lower part of a dialog card (OK, Yes/No). Only inside a menu or dialog, and only where the game really
+draws something: the renderer marks the smallest UI element each of the game's flat draws lands in (rv_mark_drawn,
+`g_drawn`), menus and lobby too. A key holding two or more keys is a box (dropped); a key inside a key is its label.
+In the lobby (true VR, the game's flat picture) the menu goes onto the menu stand: a lectern 0.44 m in front of the spot
+you stand on, its 0.72 m screen 0.34 m below your eyes, sloping back 35 degrees, with a wooden bezel, a post and a foot
+(part of the lobby: it moves with it). The game's picture is that screen (the quad layer moves there); loading screens
+and films go back to the big screen. Inside the game the menu panel opens 0.55 m in front of you, 0.24 m below your
+eyes, sloping back 25 degrees, each time a menu opens, and it is tested before the cards while a menu is open. Every key
+is a raised rim round the game's button (never over its picture); your fingertip pushes it in and presses at its top
+(stand: 1.5 cm above the screen; menu panel: 3.1 cm, where the menu's stacked pieces are), or point at it and pull the
+TRIGGER. The pointer snaps to the button's middle with no smoothing, a press reaches the game for at least 90 ms, a
+light tick when you reach a key and a firm one when it goes in. The live pictures show the game's flat picture where
+the left eye sees it (big screen or stand), not only as the inset. Logs: "Menu keys: N (...): x,y wxh named|list|dialog
+vt <class>" (which class the buttons are), "Menu stand: ...", "Menu: key K of N pressed (fingertip|trigger, ...)";
+the track line ends with "| menu M keys N key K [touch] stand S".
+
+Grabbing what you touch (after 0.17.11): the game picks up what is under its own pointer when GRIP goes down, and the
+old grab only made a picture follow your hand (one try per grip, by model origin within 0.6 units, else by the pointer
+within 0.15 of the screen: the live logs show "nothing at your hand" every time). Now (grab_pre on the main thread,
+rv_hold_frame on the renderer) closing your hand in the kitchen (not on a ticket, card or menu, not the EXIT hand) holds
+the game's GRIP back for up to 0.2 s while the renderer looks at what the game drew: the thing within 32 cm of your grab
+point (a thing in the line from your eyes through your hand counts nearer), else the thing seen within 7 degrees behind
+your hand (food out of reach), else the thing under the game's pointer; only things inside what the game's own camera
+frames. Found: the game's pointer goes to its middle 40 ms before GRIP goes down and stays there 180 ms, then moves over
+0.3 s to your grab point seen from the game camera (where the food is drawn, in your hand), or moves with your hand's
+pointer when your hand is outside that camera's view. Not found: GRIP goes on at once as before and the renderer keeps
+looking while you hold it; when your closed hand reaches food, GRIP is let go 90 ms and pressed again on it. No drop spot
+takes the pointer while the game is picking up. Holding food in one hand, the other hand's stick walks or turns. Answer
+from the renderer: g_cam.grab_id/grab_state/grab_nx/grab_ny for g_views.hold_id. Logs: "Grab: N parts in your hand
+(touched|seen behind your hand|under the game's pointer, ...)", "Grab: nothing at your hand to hold yet (...)",
+"Grab: the game's pointer goes onto the food at your hand (...)".
+
+Height against the kitchen (after 0.17.11): standing with a known floor (the headset's stage space, else the lowest a
+controller reached while held: a controller lying still does not count; forgotten when the headset is recentred), your
+eyes go to your real eye height above the kitchen's floor, so your real floor is its floor even beyond the scale's limits
+(0.85-1.35 m per unit). Seated: the chef's 1.6 m scale, and the kitchen's counter tops 0.45 m below your eyes (a table,
+not your lap). The stations and holders use the kitchen's counter height you were placed at (vrui::counter_y). The
+automatic re-placement compares the scale it would give (no more re-placing every 20 s for very tall or short players)
+and waits while you grab, a menu is open or a press is held. interior::pick keeps the kitchen you were placed against
+(interior::sticky) unless another is clearly nearer, so height, rail and stations use the same kitchen; the rail, trash
+and oven only use a kitchen whose floor agrees with the camera's height. Diagnostics: every live picture's summary ends
+with "|| st seated|standing unit U eyes E (real R) floor guessed|headset|hand | place N rule .. eye Xu cam Yu kit PKG
+used|rejected|none pick PKG | rail kitchen|world|room trash .. oven .. | sf row|no-row PKG Nst cross S [held T|G] [going X|O]
+| cards tN aN sN rN | on TARGET [touch] | eyes L x R y ms [together] | pic z ms old". Decisions (Interior:, Height,
+Camera height, Restaurant floor, Recentred, UI tree:, Stations:, Comfort, Cards:, Menu keys, the start) also go out as
+Sentry events, logger "state", one issue per kind (fingerprint state/<kind>), rate-limited (2 s, UI tree 10 s; a burst
+sends its newest line with a count). Lines logged before the stream starts are kept and sent once it does, marked
+"(before the stream)".
 
 ## Findings from the 0.9.0 session (issue #1, OrderUpVR_logs_20261117_215838.zip)
 
@@ -203,3 +285,18 @@ Decoded from the game files (OrderUpVR_chef.inl; offline check: `rpcs3.exe --ouv
 - Station-local measurements, kept until the next anchor: `hud_depth` (20th percentile depth of on-screen objects, times 0.92), the restaurant extent (4th-96th percentile of object origins in the levelled anchor frame) used as stick walls, and the world scale (5th percentile object height = floor; 1.62 m / camera height).
 - Chef choice: 48-byte slices of each chef's DXT1 body texture are searched in RSX local memory (0xC0000000, 256 MB) every 5 s; when only one chef's pieces are present, that chef is used.
 - Hands: both chefs' hands have a hand bone, a two-bone thumb (forward of and below the palm) and two two-bone fingers. Joints scale with each chef's arm length; the hand is shrunk to about 24 cm; the OpenXR grip frame maps to the hand with wrist-to-knuckles = grip (0, -0.866, -0.5).
+
+## Arms and the EXIT button (body-exit pass)
+
+- Arms: the cartoon chef's shoulders sit about 0.68 m below and 0.34 m behind your eyes and its arms are 0.46 m long, so
+  reaching to a controller in front of your chest stretched them 1.6-2.3 times. Now each arm starts at your own shoulder
+  (`chef::real_shoulder`: a neck 10 cm below and 8 cm behind your eyes, shoulders 13 cm under it and 17 cm out, scaled
+  with your eye height, facing `body_yaw`) and has a person's upper arm and forearm (0.199 and 0.156 x eye height). The
+  chef's sleeves are drawn along those bones at a fixed length for you. Reaching further than the arm, the hand stays on
+  the controller and the shoulder end slides toward it (never a stretch, never a gap at the wrist). The simple body does
+  the same. In the plain diner (its mirror shows the whole chef) the arms blend over onto the chef's own shoulders and
+  may stretch up to 1.3x there. Log: `Arms: from your own shoulders, upper arm ...`.
+- EXIT button: comes out only when the left GRIP closes over your left shoulder (within 25 cm, not below its top, not in
+  front of it) and stays closed there for 0.4 s (a growing buzz), never while either hand holds food. A grip there is not
+  a press for the game and does not switch the pointer hand. The red cap must be held all the way down for 0.25 s to
+  close the game. Logs: `Exit button: not taken out (...)`, `pushed all the way down`, `came up again`.

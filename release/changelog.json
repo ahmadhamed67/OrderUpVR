@@ -1,5 +1,28 @@
 [
   {
+    "version": "0.18.0",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "You start at the counter of the active station, at your real height, not metres away in empty space.",
+      "The game's station camera follows you: walk or reach to another station and your hands work there. No going back to a screen.",
+      "Tickets, assistant chefs, spices and tools and the recipe card are cards on boards you can grab, carry and leave anywhere. Touch or point at a card to use it.",
+      "Menus work where you are: the main menu, lobby and map menus, Pause (Resume, Options, Quit) and dialogs open within reach. Touch them or point and pull the trigger.",
+      "Your hands are always drawn over flat screens and cards.",
+      "Grabbing picks up the food your hand is at.",
+      "The Exit button sits in your palm, its red cap springs and clicks under your finger, and the game closes immediately.",
+      "Your arms start at your real shoulders, and the Exit button only comes out on a deliberate gesture."
+    ],
+    "notes": [
+      "Built as two coordinated passes: mining sessions 006be000, 00b6c400 and 00a72000, code maps, 10 fix areas, then adversarial review. 48 findings, 36 fixed.",
+      "Root cause of 'can't function': place_screen capped the forward step at max_step 1.5 m, so with high kitchen cameras you started 7+ m from the food. Now the stand point is on the station row (interior layout, when it agrees with the camera) or the camera's look point, uncapped when looking down at a counter. Logged as 'Stand:' and shown in the picture summary.",
+      "Menu latch D1: hud_seen[3] stayed true from the menu panel's own draws, so every HUD piece went onto panel 3 for the whole kitchen. menu_open now comes from the UI tree.",
+      "Station follow: update_stations/station_press press Cross/Circle when you reach or walk past the camera's framing (hysteresis, never while gripping, holding food, in a cutscene or a menu). The direction is learned from the camera's own move.",
+      "Live: state events (logger 'state') and a longer picture summary (unit, floor source, stand rule, cards, station follow).",
+      "Untested in the headset. Pause menu detection is unconfirmed: no live UI tree of it exists yet."
+    ]
+  },
+  {
     "version": "0.17.11",
     "channel": "beta",
     "date": "2026-11-23",
