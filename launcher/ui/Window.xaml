@@ -248,8 +248,9 @@
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">
             <StackPanel>
               <TextBlock Style="{StaticResource H2}" Text="In VR"/>
-              <TextBlock Style="{StaticResource DimText}" Text="Pick what feels best. Changes reach the headset within a few seconds, even while you play." Margin="0,4,0,6" TextWrapping="Wrap"/>
+              <TextBlock Style="{StaticResource DimText}" Text="The same choices appear in the headset after you press Play (Quick setup). Changes here reach the headset within a few seconds." Margin="0,4,0,6" TextWrapping="Wrap"/>
               <StackPanel x:Name="VrRows"/>
+              <Button x:Name="SetupAgainBtn" Style="{StaticResource Ghost}" Content="Show the quick setup in the headset again" HorizontalAlignment="Left" Margin="0,14,0,0" Padding="18,9"/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">

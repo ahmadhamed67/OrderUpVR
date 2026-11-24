@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..b5d775ddc
+index 000000000..c74674183
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10481 @@
+@@ -0,0 +1,10714 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1182,6 +1182,10 @@ index 000000000..b5d775ddc
 +			// Status panel, shown while there is no game picture
 +			XrSwapchain panel = XR_NULL_HANDLE;
 +			std::vector<XrSwapchainImageD3D11KHR> panel_images;
++			// Flat pictures (the big screen / menu stand, the sign, cards, the status panel): drawn by the mod into the layer of
++			// your hands, with depth, instead of as the headset's own flat layers (which some runtimes put over everything)
++			struct flat_q { XrSwapchain sc; const std::vector<XrSwapchainImageD3D11KHR>* imgs; vec3 c; XrQuaternionf q; f32 w, h; };
++			std::vector<flat_q> flats, flats_draw;
 +			bool panel_is_bgra = false;
 +			bool panel_has_image = false;
 +			std::string panel_text;
@@ -1486,6 +1490,10 @@ index 000000000..b5d775ddc
 +			int chooser_hover = -1;
 +			std::wstring chooser_sig;
 +			bool chooser_trig_prev = true;
++			// Quick setup after PLAY (the VR settings one card at a time; the same choices as the launcher's Settings)
++			int setup_step = 0;
++			bool setup_hide = false;        // the "don't show this again" tick
++			std::map<std::string, std::string> setup_vals;
 +			XrSwapchain chooser = XR_NULL_HANDLE;
 +			std::vector<XrSwapchainImageD3D11KHR> chooser_images;
 +			bool chooser_bgra = false, chooser_has = false;
@@ -1971,6 +1979,9 @@ index 000000000..b5d775ddc
 +		}
 +
 +		// Draws a card (see OrderUpVR_ui.inl) and uploads it to its swapchain (premultiplied alpha).
++		// The image of each swapchain that holds its newest picture (the mod draws flat pictures itself, under your hands)
++		std::map<XrSwapchain, u32> g_sc_last;
++
 +		void draw_card(xr_state& xr, XrSwapchain& sc, std::vector<XrSwapchainImageD3D11KHR>& images, bool& is_bgra, bool& has_image, u32 cw, u32 ch, const ui::card& card)
 +		{
 +			if (sc == XR_NULL_HANDLE)
@@ -2015,6 +2026,7 @@ index 000000000..b5d775ddc
 +				{
 +					xr.context->UpdateSubresource(images[index].texture, 0, nullptr, px.data(), cw * 4, 0);
 +					has_image = true;
++					g_sc_last[sc] = index;
 +				}
 +				XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
 +				xrReleaseSwapchainImage(sc, &release);
@@ -2044,18 +2056,16 @@ index 000000000..b5d775ddc
 +			c.kicker = L"HOW TO PLAY";
 +			c.title = L"Your hands are the chef's hands";
 +			c.columns = 2;
++			// The essentials only (a short card, not a wall of text): the rest is learned by doing
 +			c.rows = {
-+				{L"TRIGGER", L"Choose and confirm"},
-+				{L"GRIP", L"Grab and hold food"},
-+				{L"A  B", L"Cross and Circle"},
-+				{L"X  Y", L"Square (pink) and Triangle"},
-+				{g_steamvr ? L"HOLD R-STICK" : L"MENU", L"Pause the game"},
++				{L"GRIP", L"Grab food, boards and cards"},
++				{L"TRIGGER", L"Press what you point at"},
 +				{L"FLIP", L"Hold GRIP, flick your wrist up"},
-+				{L"LEFT STICK", L"Walk"},
-+				{L"STICK CLICK", L"Recenter you"},
++				{L"LEFT STICK", L"Walk (click: recenter)"},
 +				{L"RIGHT STICK", L"Turn"},
-+				{L"REACH / WALK", L"The camera follows you to the next station"},
-+				{L"LEFT SHOULDER", L"Hold GRIP: EXIT button. Push it all the way"},
++				{g_steamvr ? L"HOLD R-STICK" : L"MENU", L"Pause the game"},
++				{L"OVER SHOULDER", L"GRIP: the EXIT button"},
++				{L"A B X Y", L"The game's buttons"},
 +			};
 +			c.tip = g_steamvr ? L"Hold the right stick in for 2 seconds to see this again." : L"Hold the left MENU button for 2 seconds to see this again.";
 +			return c;
@@ -2069,6 +2079,90 @@ index 000000000..b5d775ddc
 +			c.title = L"Press X";
 +			c.subtitle = L"Left hand";
 +			return c;
++		}
++
++		// ---- Quick setup: the VR settings, presented one by one after PLAY (like other VR games), the same choices as the
++		// launcher's Settings. A choice takes effect at once (config/orderupvr_comfort_vr.txt, read with the launcher's
++		// file; the launcher takes them over when it next starts). "Don't show this again" ends it for good; the launcher
++		// can bring it back.
++		struct setup_opt { const char* key; const wchar_t* title; const wchar_t* hint; const char* def; std::vector<std::pair<const char*, const wchar_t*>> opts; };
++		const std::vector<setup_opt>& setup_table()
++		{
++			static const std::vector<setup_opt> t = {
++				{"playmode", L"Play position", L"Seated keeps the kitchen at a comfortable height while you sit", "standing", {{"standing", L"Standing"}, {"seated", L"Seated"}}},
++				{"turn", L"Turning", L"How the right stick turns you", "snap", {{"snap", L"Snap"}, {"smooth", L"Smooth"}}},
++				{"snapangle", L"Snap angle", L"How far one flick of the right stick turns you", "45", {{"15", L"15\u00B0"}, {"30", L"30\u00B0"}, {"45", L"45\u00B0"}, {"60", L"60\u00B0"}, {"90", L"90\u00B0"}}},
++				{"turnspeed", L"Turn speed", L"How fast smooth turning goes", "120", {{"60", L"Slow"}, {"90", L"Gentle"}, {"120", L"Medium"}, {"180", L"Fast"}, {"240", L"Very fast"}}},
++				{"movespeed", L"Walking speed", L"How fast the left stick walks you", "1.4", {{"1.0", L"Slow"}, {"1.4", L"Normal"}, {"2.0", L"Fast"}}},
++				{"vignette", L"Comfort vignette", L"Darkens the edges of your view while the stick moves you", "on", {{"on", L"On"}, {"off", L"Off"}}},
++				{"menuchef", L"Your chef", L"Your body in the menus and the lobby (a career uses its own chef)", "male", {{"male", L"Male"}, {"female", L"Female"}}},
++				{"lipsync", L"Lip sync", L"Your chef's mouth moves when you talk (nothing is recorded)", "on", {{"on", L"On"}, {"off", L"Off"}}},
++			};
++			return t;
++		}
++		std::vector<const setup_opt*> setup_steps(const xr_state& xr)
++		{
++			std::vector<const setup_opt*> v;
++			const auto it = xr.setup_vals.find("turn");
++			const bool smooth = it != xr.setup_vals.end() && it->second == "smooth";
++			for (const auto& o : setup_table())
++			{
++				if (!std::strcmp(o.key, "snapangle") && smooth) continue;
++				if (!std::strcmp(o.key, "turnspeed") && !smooth) continue;
++				v.push_back(&o);
++			}
++			return v;
++		}
++		std::string setup_val(const xr_state& xr, const setup_opt& o)
++		{
++			const auto it = xr.setup_vals.find(o.key);
++			return it != xr.setup_vals.end() ? it->second : std::string(o.def);
++		}
++		ui::card setup_card(const xr_state& xr)
++		{
++			const auto steps = setup_steps(xr);
++			const int n = static_cast<int>(steps.size()), k = std::clamp(xr.setup_step, 0, n - 1);
++			const setup_opt& o = *steps[k];
++			ui::card c;
++			c.style = ui::card::SETUP;
++			c.kicker = L"QUICK SETUP  \u00B7  " + std::to_wstring(k + 1) + L" OF " + std::to_wstring(n);
++			c.title = o.title;
++			c.subtitle = o.hint;
++			const std::string cur = setup_val(xr, o);
++			for (usz i = 0; i < o.opts.size(); i++)
++			{
++				c.rows.push_back({o.opts[i].second, L""});
++				if (cur == o.opts[i].first) c.selected = static_cast<int>(i);
++			}
++			c.hover = xr.chooser_hover;
++			c.disabled = k == 0 ? 100 : -1;
++			c.progress_label = k == n - 1 ? L"Done" : L"Next";
++			c.check = xr.setup_hide;
++			c.tip = L"Point and pull the TRIGGER  \u00B7  you can change these any time in the launcher's Settings";
++			return c;
++		}
++		void setup_write(const xr_state& xr)
++		{
++			if (std::FILE* f = std::fopen((fs::get_config_dir(true) + "orderupvr_comfort_vr.txt").c_str(), "w"))
++			{
++				for (const auto& [k, v] : xr.setup_vals) std::fprintf(f, "%s=%s\n", k.c_str(), v.c_str());
++				std::fclose(f);
++			}
++		}
++		// Reads key=value lines of one of the launcher's files into kv (later files override earlier ones)
++		void read_kv(const char* name, std::map<std::string, std::string>& kv)
++		{
++			if (std::FILE* f = open_launcher_file(name))
++			{
++				char line[256];
++				while (std::fgets(line, sizeof(line), f))
++				{
++					std::string l(line);
++					while (!l.empty() && (l.back() == 10 || l.back() == 13 || l.back() == 32)) l.pop_back();
++					if (const usz eq = l.find('='); eq != std::string::npos) kv[l.substr(0, eq)] = l.substr(eq + 1);
++				}
++				std::fclose(f);
++			}
 +		}
 +
 +		ui::card chooser_card(int hover, bool truevr_ok, const std::string& channel)
@@ -2242,6 +2336,7 @@ index 000000000..b5d775ddc
 +			{
 +				xr.context->UpdateSubresource(images[index].texture, 0, nullptr, frame.data(), w * 4, 0);
 +				ok = true;
++				g_sc_last[sc] = index;
 +			}
 +
 +			XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -2380,6 +2475,26 @@ index 000000000..b5d775ddc
 +			return std::isfinite(h) && h > 1.f && h < 20.f;
 +		}
 +
++		void place_screen(xr_state& xr);
++
++		// Placed again by the mod itself (a new camera place, your height changed): when you already stand at a kitchen's
++		// station row and the game's camera now looks somewhere else (the dining room, a customer's table, a cutscene
++		// spot), you stay at your counter - the kitchen does not jump and you are never put among the customers. Your own
++		// recentre (stick click) always places you anew.
++		void auto_place(xr_state& xr, const char* why)
++		{
++			const vec3 pos = xr.player_pos, off = xr.eye_off;
++			const f32 yaw = xr.player_yaw, unit = xr.unit, gap = xr.stand_gap, turn = xr.stand_turn;
++			const int rule = xr.stand_rule;
++			place_screen(xr);
++			if (rule == 1 && xr.stand_rule != 1)
++			{
++				xr.player_pos = pos; xr.eye_off = off; xr.player_yaw = yaw; xr.unit = unit;
++				xr.stand_gap = gap; xr.stand_turn = turn; xr.stand_rule = rule;
++				vr_log("Stand: the game's camera looks away from the kitchen (%s); you stay at your counter", why);
++			}
++		}
++
 +		void place_screen(xr_state& xr)
 +		{
 +			vec3 f = xr.last_forward;
@@ -2501,7 +2616,9 @@ index 000000000..b5d775ddc
 +					const bool row_ok = kitchen_floor && counter_stand(c, S, N, klook, spkg) && spkg == kpkg;
 +					const f32 sh = std::sqrt(S.x * S.x + S.z * S.z);
 +					const f32 disagree = std::sqrt((klook.x - lv.x) * (klook.x - lv.x) + (klook.z - lv.z) * (klook.z - lv.z));
-+					if (row_ok && sh > 0.2f && sh < 40.f && disagree < std::max(2.5f, 0.3f * lh))
++					// (the kitchen's floor already agreed with the camera, so this is the right kitchen: its counter is where you work even when
++						// the camera looks across it into the dining room)
++						if (row_ok && sh > 0.2f && sh < 40.f && disagree < std::max(8.f, 0.8f * lh))
 +					{
 +						const vec3 E = S + N * (xr.reach / u);
 +						xr.eye_off = {E.x, eye_u - cam_u, E.z};
@@ -2713,6 +2830,8 @@ index 000000000..b5d775ddc
 +			mat4 vp;               // current eye's view-projection
 +		};
 +		gfx_t g_gfx; // headset thread only
++		ID3D11Buffer* g_flat_vb = nullptr;                                    // the flat pictures' corners (headset thread)
++		std::map<ID3D11Texture2D*, ID3D11ShaderResourceView*> g_flat_srv;     // a readable view of each swapchain image
 +
 +		struct cb_data { f32 mvp[16]; f32 model[16]; f32 color[4]; f32 params[4]; };
 +		struct chef_cb { f32 vp[16]; f32 eye[4]; f32 clip[4]; f32 tint[4]; f32 pad[4]; };
@@ -3160,6 +3279,9 @@ index 000000000..b5d775ddc
 +			rel(g.lvs); rel(g.lps); rel(g.lil); rel(g.lcb); rel(g.lvb); rel(g.lib); rel(g.lsmp); rel(g.bs_alpha); rel(g.bs_add); rel(g.ds_nowrite);
 +			for (auto*& t : g.lsrv) rel(t);
 +			for (auto*& t : g.ltex) rel(t);
++			rel(g_flat_vb);
++			for (auto& [t, v] : g_flat_srv) rel(v);
++			g_flat_srv.clear();
 +			g = {};
 +		}
 +
@@ -4494,6 +4616,82 @@ index 000000000..b5d775ddc
 +
 +		// Draws the restaurant around the menu board: you stand on its freest floor, the board in its longest view.
 +		// False when it is not ready (the plain diner is drawn instead).
++		// The flat pictures, in the current eye, into the layer being drawn (your body and hands): depth-tested against your
++		// hands (no depth written), blended by their own alpha. A hand in front of a screen or card hides it, a hand behind
++		// it is hidden, like real objects - whatever the headset's runtime does with layer order.
++		void draw_flats(xr_state& xr)
++		{
++			auto& g = g_gfx;
++			if (!g.lvs || !g.lps || !g.lil || !g.lcb || !g.lsmp || !g.bs_alpha || !g.ds_nowrite || xr.flats_draw.empty()) return;
++			auto* dev = xr.device;
++			auto* ctx = xr.context;
++			if (!g_flat_vb)
++			{
++				D3D11_BUFFER_DESC bd{};
++				bd.ByteWidth = sizeof(lobby::vert) * 6;
++				bd.Usage = D3D11_USAGE_DYNAMIC;
++				bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++				bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++				if (FAILED(dev->CreateBuffer(&bd, nullptr, &g_flat_vb))) return;
++			}
++			lobby_cb cb{};
++			std::memcpy(cb.mvp, g.vp.m, sizeof(cb.mvp));
++			cb.params[0] = 2.f;   // see-through where the picture is
++			cb.params[1] = 1.f;
++			ctx->UpdateSubresource(g.lcb, 0, nullptr, &cb, 0, 0);
++			ctx->IASetInputLayout(g.lil);
++			ctx->VSSetShader(g.lvs, nullptr, 0);
++			ctx->PSSetShader(g.lps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.lcb);
++			ctx->PSSetConstantBuffers(0, 1, &g.lcb);
++			ctx->PSSetSamplers(0, 1, &g.lsmp);
++			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++			const f32 bf[4] = {0, 0, 0, 0};
++			ctx->OMSetBlendState(g.bs_alpha, bf, 0xffffffff);
++			ctx->OMSetDepthStencilState(g.ds_nowrite, 0);
++			const UINT stride = sizeof(lobby::vert), offset = 0;
++			ctx->IASetVertexBuffers(0, 1, &g_flat_vb, &stride, &offset);
++			for (const auto& f : xr.flats_draw)
++			{
++				const auto it = g_sc_last.find(f.sc);
++				if (it == g_sc_last.end() || !f.imgs || it->second >= f.imgs->size()) continue;
++				ID3D11Texture2D* tex = (*f.imgs)[it->second].texture;
++				if (!tex) continue;
++				ID3D11ShaderResourceView*& srv = g_flat_srv[tex];
++				if (!srv)
++				{
++					D3D11_TEXTURE2D_DESC td{};
++					tex->GetDesc(&td);
++					D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
++					sd.Format = td.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB :
++						td.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : td.Format;
++					sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
++					sd.Texture2D.MipLevels = 1;
++					if (FAILED(dev->CreateShaderResourceView(tex, &sd, &srv))) { srv = nullptr; continue; }
++				}
++				const vec3 r = rotate(f.q, vec3{f.w * 0.5f, 0.f, 0.f}), u = rotate(f.q, vec3{0.f, f.h * 0.5f, 0.f});
++				const vec3 tl = f.c - r + u, tr = f.c + r + u, bl = f.c - r - u, br = f.c + r - u;
++				const auto V = [](vec3 p, f32 s, f32 t) { lobby::vert v{}; v.p[0] = p.x; v.p[1] = p.y; v.p[2] = p.z; v.uv[0] = s; v.uv[1] = t; v.c[0] = v.c[1] = v.c[2] = v.c[3] = 1.f; return v; };
++				const lobby::vert q[6] = {V(tl, 0, 0), V(tr, 1, 0), V(bl, 0, 1), V(bl, 0, 1), V(tr, 1, 0), V(br, 1, 1)};
++				D3D11_MAPPED_SUBRESOURCE ms{};
++				if (FAILED(ctx->Map(g_flat_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) continue;
++				std::memcpy(ms.pData, q, sizeof(q));
++				ctx->Unmap(g_flat_vb, 0);
++				ctx->PSSetShaderResources(0, 1, &srv);
++				ctx->Draw(6, 0);
++			}
++			// back to the plain shapes pipeline
++			ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
++			ctx->OMSetDepthStencilState(g.ds_on, 0);
++			ID3D11ShaderResourceView* none = nullptr;
++			ctx->PSSetShaderResources(0, 1, &none);
++			ctx->IASetInputLayout(g.il);
++			ctx->VSSetShader(g.vs, nullptr, 0);
++			ctx->PSSetShader(g.ps, nullptr, 0);
++			ctx->VSSetConstantBuffers(0, 1, &g.cb);
++			ctx->PSSetConstantBuffers(0, 1, &g.cb);
++		}
++
 +		bool lobby_draw(xr_state& xr)
 +		{
 +			auto& g = g_gfx;
@@ -4726,6 +4924,7 @@ index 000000000..b5d775ddc
 +							}
 +							draw_exit_button(xr);
 +							vrui::draw(xr);   // the menu board's keys, the stations, the ticket rail
++							draw_flats(xr);   // the big screen, the menu stand's picture, cards: with depth against your hands
 +						}
 +						if (e == 0 && live::capturing()) live::grab_texture(xr.device, ctx, g.body_img[e][idx].texture, live::g.st_body, live::g.body, live::g.body_w, live::g.body_h, live::g.body_ok);
 +						release(g.body_sc[e]);
@@ -4744,18 +4943,8 @@ index 000000000..b5d775ddc
 +		void load_comfort(xr_state& xr)
 +		{
 +			std::map<std::string, std::string> kv;
-+			if (std::FILE* f = open_launcher_file("orderupvr_comfort.txt"))
-+			{
-+				char line[256];
-+				while (std::fgets(line, sizeof(line), f))
-+				{
-+					std::string l(line);
-+					while (!l.empty() && (l.back() == 10 || l.back() == 13 || l.back() == 32)) l.pop_back();
-+					const usz eq = l.find('=');
-+					if (eq != std::string::npos) kv[l.substr(0, eq)] = l.substr(eq + 1);
-+				}
-+				std::fclose(f);
-+			}
++			read_kv("orderupvr_comfort.txt", kv);
++			read_kv("orderupvr_comfort_vr.txt", kv);   // what you chose in the headset's quick setup (until the launcher takes it over)
 +			const auto get = [&](const char* k, const char* def) { const auto it = kv.find(k); return it == kv.end() ? std::string(def) : it->second; };
 +			const auto num = [&](const char* k, f32 def, f32 lo, f32 hi) { const std::string v = get(k, ""); return v.empty() ? def : std::clamp(static_cast<f32>(std::atof(v.c_str())), lo, hi); };
 +			auto& c = xr.comfort;
@@ -6470,7 +6659,7 @@ index 000000000..b5d775ddc
 +							xr.last_auto_height = now_h;
 +							xr.height_off_since = 0;
 +							vr_log("Height (auto): your eyes are %.2f m above your floor, the scale in use was for %.2f m: placed again", xr.eye_est, used);
-+							place_screen(xr);
++							auto_place(xr, "your height");
 +						}
 +						if (!xr.height_logged && settled) { xr.height_logged = true; vr_log("Height (auto): floor found, your eyes %.2f m up", xr.eye_est); }
 +					}
@@ -7156,21 +7345,46 @@ index 000000000..b5d775ddc
 +								xr.aim_origin = o;
 +								xr.aim_hit = o + d * t + n * 0.01f;
 +								xr.show_pointer = true;
-+								for (int i = 0; i < 2; i++)
-+								{
-+									const D2D1_RECT_F tr = ui::chooser_tile(chooser_w, chooser_h, i);
-+									if (px >= tr.left && px <= tr.right && py >= tr.top && py <= tr.bottom) xr.chooser_hover = i;
-+								}
++								const auto in = [&](const D2D1_RECT_F& r) { return px >= r.left && px <= r.right && py >= r.top && py <= r.bottom; };
++								const auto steps = setup_steps(xr);
++								const int k = std::clamp(xr.setup_step, 0, static_cast<int>(steps.size()) - 1);
++								const int nopt = static_cast<int>(steps[k]->opts.size());
++								for (int i = 0; i < nopt; i++) if (in(ui::setup_tile(chooser_w, chooser_h, i, nopt))) xr.chooser_hover = i;
++								if (k > 0 && in(ui::setup_button(chooser_w, chooser_h, 100))) xr.chooser_hover = 100;
++								if (in(ui::setup_button(chooser_w, chooser_h, 101))) xr.chooser_hover = 101;
++								if (in(ui::setup_button(chooser_w, chooser_h, 102))) xr.chooser_hover = 102;
 +							}
 +						}
 +					}
 +					const bool pull = trig[hand] > 0.6f;
-+					if (pull && !xr.chooser_trig_prev && xr.chooser_hover >= 0 && (xr.chooser_hover == 0 || xr.truevr_ok))
++					if (pull && !xr.chooser_trig_prev && xr.chooser_hover >= 0)
 +					{
-+						xr.mode3d = xr.chooser_hover == 1;
-+						xr.chooser_active = false;
-+						persist_set("mode", xr.mode3d ? "3d" : "screen");
-+						vr_log("Start-up choice: %s", xr.mode3d ? "true VR (inside the game)" : "flat screen (the game on the big screen)");
++						const auto steps = setup_steps(xr);
++						const int n = static_cast<int>(steps.size()), k = std::clamp(xr.setup_step, 0, n - 1);
++						const setup_opt& so = *steps[k];
++						buzz(xr, hand, 0.5f, 25);
++						if (xr.chooser_hover < 100 && xr.chooser_hover < static_cast<int>(so.opts.size()))
++						{
++							// a choice takes effect at once
++							xr.setup_vals[so.key] = so.opts[xr.chooser_hover].first;
++							setup_write(xr);
++							load_comfort(xr);
++							vr_log("Quick setup: %s = %s", so.key, so.opts[xr.chooser_hover].first);
++						}
++						else if (xr.chooser_hover == 100) xr.setup_step = std::max(0, k - 1);
++						else if (xr.chooser_hover == 102) xr.setup_hide = !xr.setup_hide;
++						else if (xr.chooser_hover == 101)
++						{
++							if (k + 1 < n) xr.setup_step = k + 1;
++							else
++							{
++								xr.chooser_active = false;
++								setup_write(xr);
++								if (xr.setup_hide) persist_set("setup_hide", "1");
++								vr_log("Quick setup: done%s", xr.setup_hide ? ", not shown again" : "");
++							}
++						}
++						xr.chooser_hover = -1;
 +					}
 +					xr.chooser_trig_prev = pull;
 +					out.move = out.t = false;
@@ -7382,7 +7596,7 @@ index 000000000..b5d775ddc
 +				{
 +					xr.seen_place_id = cam.place_id;
 +					xr.last_auto_recentre = now_ms;
-+					if (cam.place_id) place_screen(xr);
++					if (cam.place_id) auto_place(xr, "a new camera place");
 +				}
 +			}
 +
@@ -7586,6 +7800,7 @@ index 000000000..b5d775ddc
 +			// The room around the game, and your body and hands: drawn by the mod at full headset rate
 +			const bool drew = frame_state.shouldRender && gfx_render(xr, true, true);
 +			live_state_note(xr);   // what the mod decided, for the live test picture's summary
++			xr.flats.clear();      // this frame's flat pictures (drawn by the next frame's render, with your hands)
 +			live::after_frame(xr.live3d);
 +			if (drew)
 +			{
@@ -7664,6 +7879,7 @@ index 000000000..b5d775ddc
 +				quad.pose.position = {xr.screen_center.x, xr.screen_center.y, xr.screen_center.z};
 +				quad.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				quad.size = {xr.screen_width, xr.screen_width * xr.sc_h / xr.sc_w};
++				const bool hide_black = xr.mode3d && xr.flat_dark && !(xr.menu_near && xr.stand.on);   // true VR: no black screen while loading
 +				if (xr.menu_near && xr.stand.on)
 +				{
 +					// True VR in the lobby: the game's menu is the screen of the menu stand within reach (vrui::update_stand)
@@ -7672,7 +7888,7 @@ index 000000000..b5d775ddc
 +					quad.pose.orientation = quat_from_axes(st.A, st.B, normalize(cross(st.A, st.B)));
 +					quad.size = {st.hw * 2.f, st.hh * 2.f};
 +				}
-+				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
++				if (!hide_black) xr.flats.push_back({xr.swapchain, &xr.images, vec3{quad.pose.position.x, quad.pose.position.y, quad.pose.position.z}, quad.pose.orientation, quad.size.width, quad.size.height});
 +				if (xr.views_valid)
 +				{
 +					// the live test picture shows the game's flat picture where your left eye sees it
@@ -7768,7 +7984,7 @@ index 000000000..b5d775ddc
 +					sign.pose.position = {pos.x, pos.y, pos.z};
 +					sign.pose.orientation = yaw_q(xr.screen_yaw);
 +					sign.size = {width, height};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sign);
++					xr.flats.push_back({xr.sign, &xr.sign_images, vec3{sign.pose.position.x, sign.pose.position.y, sign.pose.position.z}, sign.pose.orientation, sign.size.width, sign.size.height});
 +				}
 +			}
 +
@@ -7804,8 +8020,7 @@ index 000000000..b5d775ddc
 +					help.pose.position = {pos.x, pos.y, pos.z};
 +					help.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
 +					help.size = {help_width_m, help_width_m * help_h / help_w};
-+					if (xr.live3d) card_layers[card_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&help);
-+					else layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&help);
++					xr.flats.push_back({xr.help, &xr.help_images, vec3{help.pose.position.x, help.pose.position.y, help.pose.position.z}, help.pose.orientation, help.size.width, help.size.height});
 +				}
 +			}
 +
@@ -7838,8 +8053,7 @@ index 000000000..b5d775ddc
 +					calib.pose.position = {pos.x, pos.y, pos.z};
 +					calib.pose.orientation = yaw_q(yaw);
 +					calib.size = {0.8f, 0.8f * 300.f / 1024.f};
-+					if (xr.live3d) card_layers[card_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);
-+					else layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);
++					xr.flats.push_back({xr.calib, &xr.calib_images, vec3{calib.pose.position.x, calib.pose.position.y, calib.pose.position.z}, calib.pose.orientation, calib.size.width, calib.size.height});
 +				}
 +			}
 +
@@ -7874,7 +8088,7 @@ index 000000000..b5d775ddc
 +			XrCompositionLayerQuad choose{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			if (xr.chooser_active && xr.screen_placed)
 +			{
-+				const ui::card cc = chooser_card(xr.chooser_hover, xr.truevr_ok, xr.channel);
++				const ui::card cc = setup_card(xr);
 +				const std::wstring sig = cc.signature();
 +				if (sig != xr.chooser_sig) { draw_card(xr, xr.chooser, xr.chooser_images, xr.chooser_bgra, xr.chooser_has, chooser_w, chooser_h, cc); xr.chooser_sig = sig; }
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
@@ -7891,7 +8105,7 @@ index 000000000..b5d775ddc
 +					choose.pose.position = {xr.chooser_pos.x, xr.chooser_pos.y, xr.chooser_pos.z};
 +					choose.pose.orientation = yaw_q(xr.chooser_yaw);
 +					choose.size = {chooser_width_m, chooser_width_m * chooser_h / chooser_w};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&choose);
++					xr.flats.push_back({xr.chooser, &xr.chooser_images, vec3{choose.pose.position.x, choose.pose.position.y, choose.pose.position.z}, choose.pose.orientation, choose.size.width, choose.size.height});
 +				}
 +			}
 +
@@ -7910,9 +8124,10 @@ index 000000000..b5d775ddc
 +				panel.pose.position = {pos.x, pos.y, pos.z};
 +				panel.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				panel.size = {panel_width_m, panel_width_m * panel_h / panel_w};
-+				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);
++				xr.flats.push_back({xr.panel, &xr.panel_images, vec3{panel.pose.position.x, panel.pose.position.y, panel.pose.position.z}, panel.pose.orientation, panel.size.width, panel.size.height});
 +			}
 +
++			xr.flats_draw = xr.flats;
 +			// Now your body and hands, above every flat picture added so far, and then the pointer's laser and cursor above them
 +			if (drew && layer_count < 16) layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&body_layer);
 +			for (u32 i = 0; i < card_count && layer_count < 16; i++) layers[layer_count++] = card_layers[i];
@@ -8184,9 +8399,22 @@ index 000000000..b5d775ddc
 +				xr.truevr_ok = xr.channel == "beta" && (!kv.count("truevr") || kv["truevr"] == "1");
 +				vr_log("Channel: %s, true VR %s", xr.channel.c_str(), xr.truevr_ok ? "available" : "not available yet");
 +			}
-+			// Flat until the player picks on the start-up card (the card offers the last choice first)
-+			xr.mode3d = false;
++			// No question after PLAY: Experimental is true VR, Stable the big screen. The card after PLAY is the quick setup of
++			// the VR settings, until "don't show this again" (the launcher can bring it back: orderupvr_setup_again.txt)
++			xr.mode3d = xr.truevr_ok;
 +			xr.chooser_hover = -1;
++			{
++				const std::string again = fs::get_config_dir(true) + "orderupvr_setup_again.txt";
++				if (fs::is_file(again)) { persist_set("setup_hide", "0"); fs::remove_file(again); }
++				std::map<std::string, std::string> kv;
++				read_kv("orderupvr_comfort.txt", kv);
++				read_kv("orderupvr_comfort_vr.txt", kv);
++				for (const auto& o : setup_table()) xr.setup_vals[o.key] = kv.count(o.key) ? kv[o.key] : std::string(o.def);
++				xr.setup_step = 0;
++				xr.setup_hide = false;
++				xr.chooser_active = persist_get("setup_hide") != "1";
++				vr_log("Start: %s; quick setup %s", xr.mode3d ? "true VR" : "the big screen", xr.chooser_active ? "shown" : "hidden (don't show again)");
++			}
 +			xr.stereo = persist_get("stereo") != "0";
 +			xr.pointing_laser = persist_get("pointing") == "laser";
 +			xr.lower = 0.f;   // the old right-stick height offset is gone: recenter sets your height
@@ -10891,8 +11119,13 @@ index 000000000..b5d775ddc
 +			out("help.png", help_card(), help_w, help_h);
 +			out("sign.png", sign_card(true), sign_w, sign_h);
 +			out("calib.png", calib_card(), 1024, 300);
-+			out("chooser_stable.png", chooser_card(0, false, "stable"), chooser_w, chooser_h);
-+			out("chooser_beta.png", chooser_card(1, true, "beta"), chooser_w, chooser_h);
++			{
++				static xr_state sx;
++				for (const auto& o : setup_table()) sx.setup_vals[o.key] = o.def;
++				sx.setup_step = 0; sx.chooser_hover = 1; out("setup_1.png", setup_card(sx), chooser_w, chooser_h);
++				sx.setup_step = 2; sx.chooser_hover = 101; sx.setup_hide = true; out("setup_3.png", setup_card(sx), chooser_w, chooser_h);
++				sx.setup_step = 6; sx.chooser_hover = 102; out("setup_last.png", setup_card(sx), chooser_w, chooser_h);
++			}
 +			return 0;
 +		}
 +		if (cmd == "--ouvr-lobby-test" && argc >= 4)
@@ -12068,10 +12301,10 @@ index 000000000..02bd4c5d3
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_interior.inl b/rpcs3/Emu/Io/OrderUpVR_interior.inl
 new file mode 100644
-index 000000000..3c6d26593
+index 000000000..e7b3d4dc4
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_interior.inl
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,164 @@
 +// Order Up VR: every kitchen's interior, read from the player's own game files at start-up (nothing is shipped).
 +//
 +// Each restaurant package in Chef.wad has a layout file: named placements (name, position, rotation, scale) in the
@@ -12209,7 +12442,10 @@ index 000000000..3c6d26593
 +			if (dd < bd) { bd = dd; best = &k; }
 +			if (keep && k.pkg == keep && dd < kd) { kd = dd; kept = &k; }
 +		}
-+		if (kept && kd < 6.f && kd < bd + 1.5f) { best = kept; bd = kd; }
++		// the kitchen already recognised stays (restaurants share coordinates: when the camera turns to the dining room, another
++		// restaurant's station row can be nearer its look point); only a clear match of another kitchen replaces it
++		if (kept && kd < 12.f && !(bd < 1.0f && kd > 2.5f)) { best = kept; bd = kd; }
++		if (kept && best == kept) { if (dist) *dist = bd; return best; }
 +		if (dist) *dist = bd;
 +		return bd < 6.f ? best : nullptr;
 +	}
@@ -12235,7 +12471,7 @@ index 000000000..3c6d26593
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..6bf223748
+index 000000000..3bc7941f0
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
 @@ -0,0 +1,783 @@
@@ -12645,7 +12881,7 @@ index 000000000..6bf223748
 +	inline state_kind state_kinds[] = {
 +		{"Interior:", "interior", 2000}, {"Height", "height", 2000}, {"Camera height", "height", 2000}, {"Restaurant floor", "height", 2000},
 +		{"Recentred", "recentred", 2000}, {"Stand:", "recentred", 2000},{"UI tree:", "uitree", 10000, 40}, {"Stations:", "stations", 2000}, {"Comfort", "comfort", 2000},
-+		{"Order Up VR starting", "start", 2000}, {"Cards:", "cards", 2000}, {"Menu keys", "menu", 2000},
++		{"Order Up VR starting", "start", 2000}, {"OpenXR runtime", "runtime", 2000}, {"Quick setup", "setup", 2000}, {"Start: ", "start", 2000}, {"Cards:", "cards", 2000}, {"Menu keys", "menu", 2000},
 +		{"Board:", "boards", 1000, 60},   // picking up and putting down the rail, the stand, the shelf and the clipboard
 +		{"Exit", "exit", 500, 40},        // the EXIT button: taken out, pushed, let go, the full press that closes the game
 +	};
@@ -13607,10 +13843,10 @@ index 000000000..28a8b0576
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_ui.inl b/rpcs3/Emu/Io/OrderUpVR_ui.inl
 new file mode 100644
-index 000000000..6bb2773ba
+index 000000000..8e1a85400
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_ui.inl
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,567 @@
 +// Order Up VR: the cards shown in the headset (loading, controls, the diner sign, hints), drawn with Direct2D and
 +// DirectWrite into premultiplied BGRA pictures. Also writes PNG files for the developer tools.
 +// Included from OrderUpVR.cpp inside namespace ouvr.
@@ -13621,7 +13857,7 @@ index 000000000..6bb2773ba
 +
 +	struct card
 +	{
-+		enum style_t { PANEL, SIGN, HELP, HINT, CHOOSER } style = PANEL;
++		enum style_t { PANEL, SIGN, HELP, HINT, CHOOSER, SETUP } style = PANEL;
 +		std::wstring kicker, title, subtitle;
 +		std::vector<row> rows;
 +		int progress = -1;            // 0..100; -2 = busy (moving bar)
@@ -13631,12 +13867,16 @@ index 000000000..6bb2773ba
 +		int columns = 1;              // rows in this many columns (controls card)
 +		// CHOOSER: rows are big tiles (key = name, text = what it is); hover lights one, disabled shows "Coming soon"
 +		int hover = -1, disabled = -1;
++		// SETUP: one setting per card; rows are its choices; selected = the current one; hover: 0.. a choice, 100 Back,
++		// 101 Next/Done, 102 the "don't show this again" tick; check = that tick; disabled = 100 hides Back
++		int selected = -1;
++		bool check = false;
 +
 +		std::wstring signature() const
 +		{
 +			std::wstring s = kicker + L"|" + title + L"|" + subtitle + L"|" + progress_label + L"|" + tip + L"|" + std::to_wstring(progress) + L"|" + std::to_wstring(static_cast<int>(phase * 20));
 +			for (const auto& r : rows) s += L"|" + r.key + L"=" + r.text;
-+			s += L"|" + std::to_wstring(hover) + L"|" + std::to_wstring(disabled);
++			s += L"|" + std::to_wstring(hover) + L"|" + std::to_wstring(disabled) + L"|" + std::to_wstring(selected) + (check ? L"|x" : L"|o");
 +			return s;
 +		}
 +	};
@@ -13881,6 +14121,25 @@ index 000000000..6bb2773ba
 +		return {l, y0, l + tw, y1};
 +	}
 +
++	// Setup card: the choices of one setting, side by side (card pixels; the headset's hit test uses the same rectangles)
++	inline D2D1_RECT_F setup_tile(u32 w, u32 h, int i, int n)
++	{
++		(void)h;
++		n = std::max(n, 1);
++		const f32 m = 22.f, pad = 52.f, x0 = m + pad, x1 = static_cast<f32>(w) - m - pad, gap = 22.f;
++		const f32 tw = (x1 - x0 - gap * (n - 1)) / n;
++		const f32 l = x0 + i * (tw + gap);
++		return {l, 262.f, l + tw, 412.f};
++	}
++	// Setup card buttons: 100 Back, 101 Next / Done, 102 the "don't show this again" tick
++	inline D2D1_RECT_F setup_button(u32 w, u32 h, int id)
++	{
++		const f32 m = 22.f, pad = 52.f, y0 = static_cast<f32>(h) - m - 148.f, y1 = y0 + 84.f, W = static_cast<f32>(w);
++		if (id == 100) return {m + pad, y0, m + pad + 210.f, y1};
++		if (id == 101) return {W - m - pad - 290.f, y0, W - m - pad, y1};
++		return {m + pad + 240.f, y0, W - m - pad - 320.f, y1};
++	}
++
 +	// Draws the card into premultiplied BGRA pixels (w x h)
 +	inline bool render(const card& c, u32 w, u32 h, std::vector<u8>& out)
 +	{
@@ -13921,7 +14180,67 @@ index 000000000..6bb2773ba
 +			const f32 pad = 52.f;
 +			f32 x = r.left + pad, y = r.top + 44.f;
 +			const f32 cw = r.right - r.left - pad * 2.f;
-+			if (c.style == card::CHOOSER)
++			if (c.style == card::SETUP)
++			{
++				p.badge(x, y, 60.f);
++				p.text(c.kicker, x + 80.f, y + 16.f, cw - 80.f, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);
++				p.text(c.title, x, y + 80.f, cw, 70.f, 46.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true, false);
++				p.text(c.subtitle, x, y + 144.f, cw, 40.f, 24.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xC9CED8), false, false);
++				const int n = static_cast<int>(c.rows.size());
++				for (int i = 0; i < n && i < 6; i++)
++				{
++					const D2D1_RECT_F t = setup_tile(w, h, i, n);
++					const bool sel = i == c.selected, on = i == c.hover;
++					if (sel)
++					{
++						ID2D1LinearGradientBrush* g = p.linear({t.left, t.top}, {t.right, t.bottom}, {{0.f, rgba(0xFF8A00, 0.85f)}, {1.f, rgba(0xFF3D6E, 0.75f)}});
++						if (g) rt->FillRoundedRectangle({t, 24.f, 24.f}, g);
++						ui::rel(g);
++					}
++					else p.fill_round(t, 24.f, rgba(0xFFFFFF, on ? 0.12f : 0.06f));
++					if (on) for (int k = 3; k >= 1; k--) p.stroke_round(t, 24.f, rgba(0xFFB25C, 0.12f), 3.f + k * 5.f);
++					p.stroke_round(t, 24.f, sel ? rgba(0xFFD3A3) : on ? rgba(0xFFB25C) : rgba(0xFFFFFF, 0.16f), sel || on ? 3.f : 2.f);
++					p.text(c.rows[i].key, t.left + 12.f, t.top + 40.f, t.right - t.left - 24.f, 60.f, n > 3 ? 32.f : 38.f, DWRITE_FONT_WEIGHT_SEMI_BOLD,
++						rgba(0xFFFFFF), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++					if (!c.rows[i].text.empty())
++						p.text(c.rows[i].text, t.left + 12.f, t.top + 96.f, t.right - t.left - 24.f, 40.f, 20.f, DWRITE_FONT_WEIGHT_NORMAL,
++							rgba(sel ? 0xFFF3E0 : 0xB7BDC9), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++				}
++				// Back, the tick, Next / Done
++				const auto button = [&](int id, const std::wstring& label, bool primary)
++				{
++					const D2D1_RECT_F b = setup_button(w, h, id);
++					const bool on = c.hover == id;
++					if (primary)
++					{
++						ID2D1LinearGradientBrush* g = p.linear({b.left, b.top}, {b.right, b.bottom}, {{0.f, rgba(0xFF8A00)}, {1.f, rgba(0xFF3D6E)}});
++						if (g) rt->FillRoundedRectangle({b, 42.f, 42.f}, g);
++						ui::rel(g);
++						if (on) p.stroke_round(b, 42.f, rgba(0xFFFFFF), 3.f);
++					}
++					else
++					{
++						p.fill_round(b, 42.f, rgba(0xFFFFFF, on ? 0.16f : 0.08f));
++						p.stroke_round(b, 42.f, on ? rgba(0xFFB25C) : rgba(0xFFFFFF, 0.18f), 2.f);
++					}
++					p.text(label, b.left, b.top + 20.f, b.right - b.left, 50.f, 32.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF), true, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++				};
++				if (c.disabled != 100) button(100, L"Back", false);
++				button(101, c.progress_label.empty() ? L"Next" : c.progress_label, true);
++				{
++					const D2D1_RECT_F b = setup_button(w, h, 102);
++					const bool on = c.hover == 102;
++					const f32 bs = 44.f, by = b.top + (b.bottom - b.top - bs) * 0.5f;
++					const D2D1_RECT_F box{b.left + 18.f, by, b.left + 18.f + bs, by + bs};
++					if (on) p.fill_round(b, 42.f, rgba(0xFFFFFF, 0.08f));
++					p.fill_round(box, 10.f, c.check ? rgba(0xFF8A00) : rgba(0xFFFFFF, 0.06f));
++					p.stroke_round(box, 10.f, c.check ? rgba(0xFFD3A3) : on ? rgba(0xFFB25C) : rgba(0xFFFFFF, 0.35f), 2.5f);
++					if (c.check) p.text(L"\u2713", box.left, box.top + 2.f, bs, bs, 34.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFFFFF), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++					p.text(L"Don't show this again", box.right + 16.f, b.top + 24.f, b.right - box.right - 20.f, 44.f, 26.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xE6E8EE), false, false);
++				}
++				p.text(c.tip, x, r.bottom - 50.f, cw, 34.f, 20.f, DWRITE_FONT_WEIGHT_NORMAL, rgba(0x9AA1AF), false, false, DWRITE_TEXT_ALIGNMENT_CENTER);
++			}
++			else if (c.style == card::CHOOSER)
 +			{
 +				p.badge(x, y, 60.f);
 +				p.text(c.kicker, x + 80.f, y + 16.f, cw - 80.f, 40.f, 22.f, DWRITE_FONT_WEIGHT_BOLD, rgba(0xFFC58A), false, false);

@@ -586,8 +586,20 @@ namespace OrderUpVR
             RefreshAll();
             ApplyGameArt(false);
             RenderHeroChannel();
+            TakeHeadsetChoices();
             WriteVrFile();
             SetStatus(ModInstalled ? "Ready to play" : "Getting the mod ready...", ModInstalled ? 0 : 1, "");
+            Get<Button>("SetupAgainBtn").Click += delegate
+            {
+                // The mod shows its quick setup again at the next Play (it removes this file when it does)
+                try
+                {
+                    string dir = System.IO.Path.Combine(Core.EmuDir(s), "config");
+                    if (Directory.Exists(dir)) File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_setup_again.txt"), "1\n");
+                    ShowToast("The quick setup will show in the headset when you next press Play.", true);
+                }
+                catch { }
+            };
         }
 
         // VR choices, grouped. Each: group, key, label, hint, default, then value/display pairs in the order shown.
@@ -672,6 +684,32 @@ namespace OrderUpVR
             nt.Text = "Your chef is picked by the game: you are the male chef in the menus, and when you start or load a career you become that career's chef.";
             note.Child = nt;
             rows.Children.Add(note);
+        }
+
+        // What the player chose in the headset's quick setup (config/orderupvr_comfort_vr.txt, written by the mod) becomes
+        // the launcher's own settings, so both always agree; the file is then removed
+        void TakeHeadsetChoices()
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(Core.EmuDir(s), "config", "orderupvr_comfort_vr.txt");
+                if (!File.Exists(path)) return;
+                if (s.Vr == null) s.Vr = new Dictionary<string, string>();
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string k = line.Substring(0, eq).Trim(), v = line.Substring(eq + 1).Trim();
+                    foreach (var o in VrOptions)
+                        if (o[1] == k)
+                            for (int i = 5; i + 1 < o.Length; i += 2)
+                                if (o[i] == v) s.Vr[k] = v;
+                }
+                s.Save();
+                File.Delete(path);
+                BuildVrRows();
+            }
+            catch { }
         }
 
         void WriteVrFile()

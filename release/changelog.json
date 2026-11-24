@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.18.4",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Your hands are never hidden behind a flat screen or card anymore. Screens and cards now behave like real objects: your hand in front covers them.",
+      "No more 'flat screen or true VR?' question after Play. Experimental always starts in true VR.",
+      "Quick setup in the headset: after Play, the VR settings appear one at a time (play position, turning, walking speed, vignette, your chef, lip sync), with a 'Don't show this again' tick. The launcher can bring it back.",
+      "You stay at your kitchen's counter. The mod no longer puts you among the customers when the game's camera looks into the dining room, and no longer moves you every few seconds.",
+      "No black screen in the lobby while the game loads, and a shorter controls card."
+    ],
+    "notes": [
+      "Session 008a6800 (12:17-12:20 UTC, seated): the kitchen was first recognised as 906a2b6d, then switched to 2d1cd440 when the camera turned to the dining room (another restaurant's station row was nearer its look point). The stand was then at the camera's look point, a customer table, about 6 times in 40 s. Now interior::pick keeps the recognised kitchen unless another matches within 1 unit, the station-row stand is accepted within max(8, 0.8 x look distance) once the floor agreed, and automatic placements (new camera place, height) keep you at the counter if the camera looks away (auto_place).",
+      "Flat pictures (big screen / menu stand, sign, controls card, calibration hint, quick setup, status panel) are no longer OpenXR quad layers. draw_flats renders them in the body/hands pass from their swapchain images (SRVs, g_sc_last), depth-tested against the hands. This works whatever the runtime does with layer order.",
+      "Chooser removed: mode3d = truevr_ok. ui::card::SETUP style (setup_tile/setup_button). Choices are written to config/orderupvr_comfort_vr.txt (read after the launcher's file); launcher 1.26.0 takes them over at start (TakeHeadsetChoices) and has a 'Show the quick setup in the headset again' button (orderupvr_setup_again.txt).",
+      "Live: the OpenXR runtime name and quick setup lines are sent as state events."
+    ]
+  },
+  {
     "version": "0.18.3",
     "channel": "beta",
     "date": "2026-11-24",
