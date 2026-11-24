@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..359ff7047
+index 000000000..aed6578c9
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10721 @@
+@@ -0,0 +1,10738 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -2830,6 +2830,7 @@ index 000000000..359ff7047
 +			mat4 vp;               // current eye's view-projection
 +		};
 +		gfx_t g_gfx; // headset thread only
++		ID3D11BlendState* g_flat_bs = nullptr;   // flat pictures: their colour AND their opacity go into the layer (the headset shows a pixel only as opaque as its alpha)
 +		ID3D11Buffer* g_flat_vb = nullptr;                                    // the flat pictures' corners (headset thread)
 +		std::map<ID3D11Texture2D*, ID3D11ShaderResourceView*> g_flat_srv;     // a readable view of each swapchain image
 +
@@ -3280,6 +3281,7 @@ index 000000000..359ff7047
 +			for (auto*& t : g.lsrv) rel(t);
 +			for (auto*& t : g.ltex) rel(t);
 +			rel(g_flat_vb);
++			rel(g_flat_bs);
 +			for (auto& [t, v] : g_flat_srv) rel(v);
 +			g_flat_srv.clear();
 +			g = {};
@@ -4625,6 +4627,21 @@ index 000000000..359ff7047
 +			if (!g.lvs || !g.lps || !g.lil || !g.lcb || !g.lsmp || !g.bs_alpha || !g.ds_nowrite || xr.flats_draw.empty()) return;
 +			auto* dev = xr.device;
 +			auto* ctx = xr.context;
++			if (!g_flat_bs)
++			{
++				// (the lobby's see-through blend keeps the layer's alpha as it was - in the layer of your hands that is 0 wherever
++				// no hand is, so a picture drawn with it was only seen where a hand was behind it, like invisible ink)
++				D3D11_BLEND_DESC bd{};
++				bd.RenderTarget[0].BlendEnable = TRUE;
++				bd.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;   // the pictures are premultiplied (as the headset wants this layer)
++				bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
++				bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
++				bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
++				bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
++				bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
++				bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
++				if (FAILED(dev->CreateBlendState(&bd, &g_flat_bs))) return;
++			}
 +			if (!g_flat_vb)
 +			{
 +				D3D11_BUFFER_DESC bd{};
@@ -4647,7 +4664,7 @@ index 000000000..359ff7047
 +			ctx->PSSetSamplers(0, 1, &g.lsmp);
 +			ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 +			const f32 bf[4] = {0, 0, 0, 0};
-+			ctx->OMSetBlendState(g.bs_alpha, bf, 0xffffffff);
++			ctx->OMSetBlendState(g_flat_bs, bf, 0xffffffff);
 +			ctx->OMSetDepthStencilState(g.ds_nowrite, 0);
 +			const UINT stride = sizeof(lobby::vert), offset = 0;
 +			ctx->IASetVertexBuffers(0, 1, &g_flat_vb, &stride, &offset);
@@ -7984,7 +8001,7 @@ index 000000000..359ff7047
 +					sign.pose.position = {pos.x, pos.y, pos.z};
 +					sign.pose.orientation = yaw_q(xr.screen_yaw);
 +					sign.size = {width, height};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sign);   // (a card: the headset's own flat layer)
++					xr.flats.push_back({xr.sign, &xr.sign_images, vec3{sign.pose.position.x, sign.pose.position.y, sign.pose.position.z}, sign.pose.orientation, sign.size.width, sign.size.height});
 +				}
 +			}
 +
@@ -8020,7 +8037,7 @@ index 000000000..359ff7047
 +					help.pose.position = {pos.x, pos.y, pos.z};
 +					help.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
 +					help.size = {help_width_m, help_width_m * help_h / help_w};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&help);   // (a card: the headset's own flat layer)
++					xr.flats.push_back({xr.help, &xr.help_images, vec3{help.pose.position.x, help.pose.position.y, help.pose.position.z}, help.pose.orientation, help.size.width, help.size.height});
 +				}
 +			}
 +
@@ -8053,7 +8070,7 @@ index 000000000..359ff7047
 +					calib.pose.position = {pos.x, pos.y, pos.z};
 +					calib.pose.orientation = yaw_q(yaw);
 +					calib.size = {0.8f, 0.8f * 300.f / 1024.f};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);   // (a card: the headset's own flat layer)
++					xr.flats.push_back({xr.calib, &xr.calib_images, vec3{calib.pose.position.x, calib.pose.position.y, calib.pose.position.z}, calib.pose.orientation, calib.size.width, calib.size.height});
 +				}
 +			}
 +
@@ -8112,7 +8129,7 @@ index 000000000..359ff7047
 +					choose.pose.position = {xr.chooser_pos.x, xr.chooser_pos.y, xr.chooser_pos.z};
 +					choose.pose.orientation = yaw_q(xr.chooser_yaw);
 +					choose.size = {chooser_width_m, chooser_width_m * chooser_h / chooser_w};
-+					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&choose);   // (a card: the headset's own flat layer)
++					xr.flats.push_back({xr.chooser, &xr.chooser_images, vec3{choose.pose.position.x, choose.pose.position.y, choose.pose.position.z}, choose.pose.orientation, choose.size.width, choose.size.height});
 +				}
 +			}
 +
@@ -8131,7 +8148,7 @@ index 000000000..359ff7047
 +				panel.pose.position = {pos.x, pos.y, pos.z};
 +				panel.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				panel.size = {panel_width_m, panel_width_m * panel_h / panel_w};
-+				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);   // (a card: the headset's own flat layer)
++				xr.flats.push_back({xr.panel, &xr.panel_images, vec3{panel.pose.position.x, panel.pose.position.y, panel.pose.position.z}, panel.pose.orientation, panel.size.width, panel.size.height});
 +			}
 +
 +			xr.flats_draw = xr.flats;

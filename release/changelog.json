@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.18.6",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Fixed: the big screen on the menu stand and the cards were invisible, showing only where your hand was ('invisible ink'). They now show normally, and your hands are always in front of them.",
+      "The live pictures now include the cards and screens you see."
+    ],
+    "notes": [
+      "Root cause (also behind the invisible cards in 0.18.4, which was not a SteamVR issue): draw_flats reused the lobby's bs_alpha blend state, whose write mask excludes alpha (SrcBlendAlpha ZERO / DestBlendAlpha ONE). In the body layer the alpha stays 0 except where hands were drawn, and the headset composites by that alpha. Now draw_flats has its own g_flat_bs: premultiplied colour (ONE / INV_SRC_ALPHA), alpha ONE / INV_SRC_ALPHA, write mask ALL. The cards (setup, panel, sign, controls, calibration) are back in draw_flats, so your hands are in front of all of them, and the live picture (which composites the body layer) now shows them."
+    ]
+  },
+  {
     "version": "0.18.5",
     "channel": "beta",
     "date": "2026-11-24",
