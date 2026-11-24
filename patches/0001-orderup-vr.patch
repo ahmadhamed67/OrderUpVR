@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..e1892de67
+index 000000000..d077faa0e
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10817 @@
+@@ -0,0 +1,10829 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -2635,7 +2635,19 @@ index 000000000..e1892de67
 +						// the camera looks across it into the dining room)
 +						if (row_ok && sh > 0.2f && sh < 40.f && disagree < std::max(8.f, 0.8f * lh))
 +					{
-+						const vec3 E = S + N * (xr.reach / u);
++						// Within reach of the FOOD, not of the row's marker line: the station nodes are the game's camera targets and in
++						// most kitchens they sit at the back of the counter, so the food the camera looks at was 0.8-1.8 m beyond your
++						// hands (2026-11-24 logs: every grab was 84-181 cm from the hand). The food point (where the camera's centre
++						// meets the food) decides how far across the counter you stand; the row still decides the facing.
++						f32 across = 0.f;
++						if (c.food_d > 0.05f)
++						{
++							const f32 beyond = dot(S - vec3{lv.x, 0.f, lv.z}, N);   // > 0: the food is further than the line
++							if (beyond > 0.f && beyond < 3.0f / u) across = beyond;
++							else if (beyond < 0.f && beyond > -1.0f / u) across = beyond;   // (food on your side: step back to it)
++						}
++						const vec3 E = S + N * (xr.reach / u - across);
++						if (across != 0.f) vr_log("Stand: the food is %.2f m %s the station line: you stand %.2f m from the food", std::fabs(across) * u, across > 0.f ? "beyond" : "in front of", xr.reach);
 +						xr.eye_off = {E.x, eye_u - cam_u, E.z};
 +						// turned so that the row's face (-N, from you to the counter) is straight ahead of you (only a sane turn:
 +						// the kitchen cameras look at their row nearly square on)

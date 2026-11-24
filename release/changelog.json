@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.19.0",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "The food is now within your reach: in every kitchen you stand at the counter so the food is in front of your hands, not across the counter.",
+      "Includes the fixes since 0.18.6: the crash a few seconds into some restaurants, never starting up in the sky, seated keeps the real size, height kept between recentres, steady chef, smaller tips."
+    ],
+    "notes": [
+      "Reach: the station nodes in Chef.wad are camera targets at the back of the counter; the logs of 2026-11-24 had every grab 84-181 cm (up to 955 cm) from the hand. Rule 1 now moves the stand along the row normal by how far the camera's food point lies beyond the row line (0-3 units; up to 1 unit back if it is in front), keeping the row's facing."
+    ]
+  },
+  {
     "version": "0.18.9",
     "channel": "beta",
     "date": "2026-11-24",
