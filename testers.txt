@@ -1,0 +1,3 @@
+# Order Up VR: approved live testers (SHA-256 of each tester key, one per line). Remove a line to revoke.
+# owner
+4450b36a1699e0426ac877ac72d927d6dc51c994f45920b4bb400b24d50d65ae
