@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..c74674183
+index 000000000..359ff7047
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10714 @@
+@@ -0,0 +1,10721 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -7984,7 +7984,7 @@ index 000000000..c74674183
 +					sign.pose.position = {pos.x, pos.y, pos.z};
 +					sign.pose.orientation = yaw_q(xr.screen_yaw);
 +					sign.size = {width, height};
-+					xr.flats.push_back({xr.sign, &xr.sign_images, vec3{sign.pose.position.x, sign.pose.position.y, sign.pose.position.z}, sign.pose.orientation, sign.size.width, sign.size.height});
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sign);   // (a card: the headset's own flat layer)
 +				}
 +			}
 +
@@ -8020,7 +8020,7 @@ index 000000000..c74674183
 +					help.pose.position = {pos.x, pos.y, pos.z};
 +					help.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
 +					help.size = {help_width_m, help_width_m * help_h / help_w};
-+					xr.flats.push_back({xr.help, &xr.help_images, vec3{help.pose.position.x, help.pose.position.y, help.pose.position.z}, help.pose.orientation, help.size.width, help.size.height});
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&help);   // (a card: the headset's own flat layer)
 +				}
 +			}
 +
@@ -8053,7 +8053,7 @@ index 000000000..c74674183
 +					calib.pose.position = {pos.x, pos.y, pos.z};
 +					calib.pose.orientation = yaw_q(yaw);
 +					calib.size = {0.8f, 0.8f * 300.f / 1024.f};
-+					xr.flats.push_back({xr.calib, &xr.calib_images, vec3{calib.pose.position.x, calib.pose.position.y, calib.pose.position.z}, calib.pose.orientation, calib.size.width, calib.size.height});
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&calib);   // (a card: the headset's own flat layer)
 +				}
 +			}
 +
@@ -8091,6 +8091,13 @@ index 000000000..c74674183
 +				const ui::card cc = setup_card(xr);
 +				const std::wstring sig = cc.signature();
 +				if (sig != xr.chooser_sig) { draw_card(xr, xr.chooser, xr.chooser_images, xr.chooser_bgra, xr.chooser_has, chooser_w, chooser_h, cc); xr.chooser_sig = sig; }
++				// Never a lock behind a card you cannot see: if the quick setup card could not be drawn within 6 s, it steps aside
++				{
++					static u64 waiting_since = 0;
++					if (xr.chooser_has) waiting_since = 0;
++					else if (!waiting_since) waiting_since = now_tick;
++					else if (now_tick - waiting_since > 6000) { xr.chooser_active = false; waiting_since = 0; vr_log("Quick setup: its card could not be shown; skipped so the game goes on"); }
++				}
 +				const vec3 normal{std::sin(xr.screen_yaw), 0.0f, std::cos(xr.screen_yaw)};
 +				xr.chooser_pos = xr.screen_center + normal * std::max(xr.screen_distance - 1.5f, 0.2f);
 +				xr.chooser_pos.y = xr.last_head.y - 0.05f;   // at eye level: no looking down
@@ -8105,7 +8112,7 @@ index 000000000..c74674183
 +					choose.pose.position = {xr.chooser_pos.x, xr.chooser_pos.y, xr.chooser_pos.z};
 +					choose.pose.orientation = yaw_q(xr.chooser_yaw);
 +					choose.size = {chooser_width_m, chooser_width_m * chooser_h / chooser_w};
-+					xr.flats.push_back({xr.chooser, &xr.chooser_images, vec3{choose.pose.position.x, choose.pose.position.y, choose.pose.position.z}, choose.pose.orientation, choose.size.width, choose.size.height});
++					layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&choose);   // (a card: the headset's own flat layer)
 +				}
 +			}
 +
@@ -8124,7 +8131,7 @@ index 000000000..c74674183
 +				panel.pose.position = {pos.x, pos.y, pos.z};
 +				panel.pose.orientation = {0.0f, std::sin(xr.screen_yaw * 0.5f), 0.0f, std::cos(xr.screen_yaw * 0.5f)};
 +				panel.size = {panel_width_m, panel_width_m * panel_h / panel_w};
-+				xr.flats.push_back({xr.panel, &xr.panel_images, vec3{panel.pose.position.x, panel.pose.position.y, panel.pose.position.z}, panel.pose.orientation, panel.size.width, panel.size.height});
++				layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);   // (a card: the headset's own flat layer)
 +			}
 +
 +			xr.flats_draw = xr.flats;

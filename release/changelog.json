@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.18.5",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Fixed: after Play, the quick setup and the other cards were invisible, and the game couldn't go on behind them. They show again.",
+      "If a card ever can't be shown, the quick setup steps aside after a few seconds so you can always play."
+    ],
+    "notes": [
+      "Session 007a7000 (13:30 UTC, SteamVR in Meta compatibility mode): the whole session in 'choosing' mode. The game's title screen (xr.swapchain, drawn by draw_flats) was visible, but the setup card, sign and panel (draw_card swapchains, also via draw_flats) were not, while their hit test still worked ('Quick setup: playmode = standing'). The cards are back to OpenXR quad layers; the big screen and menu stand stay in draw_flats (your hands over them). Safety: if chooser_has stays false for 6 s, the quick setup closes itself.",
+      "Known: the live pictures include the big screen but not the cards on the headset's own flat layers."
+    ]
+  },
+  {
     "version": "0.18.4",
     "channel": "beta",
     "date": "2026-11-24",
