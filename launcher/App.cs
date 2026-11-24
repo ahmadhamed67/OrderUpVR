@@ -543,9 +543,10 @@ namespace OrderUpVR
             var au = Get<CheckBox>("AutoUpdateToggle");
             au.IsChecked = !s.NoAutoUpdate;
             au.Click += delegate { s.NoAutoUpdate = au.IsChecked != true; s.Save(); };
-            var lt = Get<CheckBox>("LiveToggle");
-            lt.IsChecked = !s.NoLiveStream;
-            lt.Click += delegate { s.NoLiveStream = lt.IsChecked != true; s.Save(); WriteVrFile(); };
+            // Live test sharing: only invited testers, only in Experimental, only with a key the developer approved
+            var tk = Get<TextBox>("TesterKeyBox");
+            tk.Text = s.TesterKey ?? "";
+            tk.LostFocus += delegate { s.TesterKey = tk.Text.Trim(); s.Save(); WriteVrFile(); };
             var mt = Get<CheckBox>("MinimizeToggle");
             mt.IsChecked = !s.KeepLauncherOpen;
             mt.Click += delegate { s.KeepLauncherOpen = mt.IsChecked != true; s.Save(); };
@@ -673,7 +674,9 @@ namespace OrderUpVR
                 // change stations, the whole restaurant drawn, hands to reach, the HUD where the game puts it)
                 sb.Append("stereo=on\nhuddist=1.5\ncutscenes=screen\nkitchen=room\nlookswitch=off\nwideview=on\npointing=hand\n");
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
-                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), "live=" + (s.NoLiveStream ? "off" : "on") + "\n");
+                // Shared live only by an approved tester in Experimental (the mod checks the key against the approved list)
+                string key = Core.ChannelOf(s) == "beta" ? (s.TesterKey ?? "").Trim() : "";
+                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), key.Length > 0 ? "key=" + key + "\n" : "live=off\n");
             }
             catch { }
         }
@@ -1965,6 +1968,7 @@ namespace OrderUpVR
         {
             BuildChannelRows();
             RenderFolderRows();
+            Get<StackPanel>("TesterRow").Visibility = Core.ChannelOf(s) == "beta" ? Visibility.Visible : Visibility.Collapsed;
             Get<TextBlock>("AboutText").Text = "Launcher " + Core.LauncherVersion + "   ·   Mod " + (ModInstalled ? s.InstalledVersion : "not installed") +
                 "\nInstalled in " + s.InstallDir;
             ShowPage("SettingsPage", true);

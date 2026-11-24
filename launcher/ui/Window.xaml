@@ -234,7 +234,11 @@
               <StackPanel x:Name="ChannelRows" Margin="0,0,0,18"/>
               <CheckBox x:Name="AutoUpdateToggle" Style="{StaticResource Toggle}" Content="Check for updates automatically"/>
               <CheckBox x:Name="MinimizeToggle" Style="{StaticResource Toggle}" Content="Minimize the launcher while playing" Margin="0,14,0,0"/>
-              <CheckBox x:Name="LiveToggle" Style="{StaticResource Toggle}" Content="Experimental: share what I see and do live with the developer" Margin="0,14,0,0"/>
+              <StackPanel x:Name="TesterRow" Margin="0,18,0,0" Visibility="Collapsed">
+                <TextBlock Style="{StaticResource Body}" FontWeight="SemiBold" Text="Tester key"/>
+                <TextBlock Style="{StaticResource DimText}" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,6" Text="Only for testers the developer invited: your sessions are shared live with the developer. Leave empty to share nothing."/>
+                <TextBox x:Name="TesterKeyBox" Style="{StaticResource Field}"/>
+              </StackPanel>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Margin="0,16,0,0">

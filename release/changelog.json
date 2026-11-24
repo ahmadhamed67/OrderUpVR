@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.18.1",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Sharing your sessions with the developer is now for invited testers only. In Experimental, Settings has a 'Tester key' field: leave it empty and nothing is ever shared. Stable no longer has the option at all."
+    ],
+    "notes": [
+      "live::enabled: streams only on the beta channel with key=<k> in config/orderupvr_live.txt whose SHA-256 is listed in https://raw.githubusercontent.com/ahmadhamed67/OrderUpVR/main/testers.txt. Checked once per run on a background thread; no key, an unknown key or no internet means off. Approving or revoking a tester is an edit of testers.txt (hashes only), no release needed.",
+      "Launcher 1.24.0: the 'share what I see' checkbox is replaced by a Tester key field, shown only on the Experimental channel. WriteVrFile writes key=... (Experimental with a key) or live=off."
+    ]
+  },
+  {
     "version": "0.18.0",
     "channel": "beta",
     "date": "2026-11-24",

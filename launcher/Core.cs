@@ -56,7 +56,8 @@ namespace OrderUpVR
         public string ManifestUrl { get; set; }
         public bool NoAutoUpdate { get; set; }       // default false = check automatically
         public bool KeepLauncherOpen { get; set; }   // default false = minimize while playing
-        public bool NoLiveStream { get; set; }       // default false = Experimental streams live test data to the developer
+        public bool NoLiveStream { get; set; }       // (no longer used: live sharing needs an approved tester key)
+        public string TesterKey { get; set; }        // an invited tester's key (Experimental only); empty = nothing is shared
         public bool Uninstalled { get; set; }        // removed with "keep my data"; setup offers to reuse it
         public string PreparedVersion { get; set; }  // mod version that already finished its first-start preparation
         public bool SeenHowTo { get; set; }          // the controls guide was shown once

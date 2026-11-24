@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..70a863736
+index 000000000..9eed126cc
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10476 @@
+@@ -0,0 +1,10478 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -604,6 +604,8 @@ index 000000000..70a863736
 +#include <deque>
 +#include <winhttp.h>
 +#pragma comment(lib, "winhttp.lib")
++#include <bcrypt.h>
++#pragma comment(lib, "bcrypt.lib")
 +#include <string>
 +#include <thread>
 +#include <span>
@@ -12230,10 +12232,10 @@ index 000000000..3c6d26593
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..b5cc4bb24
+index 000000000..ea695a079
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
-@@ -0,0 +1,675 @@
+@@ -0,0 +1,766 @@
 +// Order Up VR: live test stream (Experimental). While you play, the mod sends what happens straight to the developer's
 +// Sentry project, so testing needs no log zips:
 +//  - every line the mod logs and the 4-per-second track (head, hands, buttons, pointer, HUD), batched every second
@@ -12363,19 +12365,110 @@ index 000000000..b5cc4bb24
 +	void start_tap();
 +
 +	// Decided once per run: Experimental channel, and not switched off in the launcher
++	// ---- Who may stream: only testers the owner approved. The launcher writes the player's tester key (key=...) into
++	// config/orderupvr_live.txt (Experimental only). The mod hashes it (SHA-256) and looks for the hash in the approved list
++	// published in the project's repository (testers.txt, one hash per line). No key, an unknown key, no internet, or the
++	// Stable channel: nothing is ever sent. The keys themselves are never published; approving or removing a tester is an
++	// edit of that list, no new release.
++	inline std::atomic<int> approved{-1};   // -1 not checked yet / checking, 0 no, 1 yes
++
++	std::string sha256_hex(const std::string& in)
++	{
++		BCRYPT_ALG_HANDLE alg = nullptr;
++		BCRYPT_HASH_HANDLE h = nullptr;
++		u8 out[32]{};
++		bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) &&
++			BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0)) &&
++			BCRYPT_SUCCESS(BCryptHashData(h, reinterpret_cast<PUCHAR>(const_cast<char*>(in.data())), static_cast<ULONG>(in.size()), 0)) &&
++			BCRYPT_SUCCESS(BCryptFinishHash(h, out, sizeof(out), 0));
++		if (h) BCryptDestroyHash(h);
++		if (alg) BCryptCloseAlgorithmProvider(alg, 0);
++		if (!ok) return {};
++		static const char* d = "0123456789abcdef";
++		std::string r;
++		for (u8 b : out) { r += d[b >> 4]; r += d[b & 15]; }
++		return r;
++	}
++
++	// The approved list (https://raw.githubusercontent.com/ahmadhamed67/OrderUpVR/main/testers.txt)
++	std::string fetch_testers()
++	{
++		std::string body;
++		HINTERNET ses = WinHttpOpen(L"orderupvr-live/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
++		if (!ses) return body;
++		if (HINTERNET con = WinHttpConnect(ses, L"raw.githubusercontent.com", INTERNET_DEFAULT_HTTPS_PORT, 0))
++		{
++			if (HINTERNET req = WinHttpOpenRequest(con, L"GET", L"/ahmadhamed67/OrderUpVR/main/testers.txt", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE))
++			{
++				WinHttpSetTimeouts(req, 5000, 5000, 8000, 8000);
++				if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, nullptr))
++				{
++					DWORD code = 0, len = sizeof(code);
++					WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &len, WINHTTP_NO_HEADER_INDEX);
++					DWORD n = 0;
++					while (code == 200 && WinHttpQueryDataAvailable(req, &n) && n && body.size() < 256 * 1024)
++					{
++						std::string chunk(n, '\0');
++						DWORD got = 0;
++						if (!WinHttpReadData(req, chunk.data(), n, &got) || !got) break;
++						body.append(chunk.data(), got);
++					}
++				}
++				WinHttpCloseHandle(req);
++			}
++			WinHttpCloseHandle(con);
++		}
++		WinHttpCloseHandle(ses);
++		return body;
++	}
++
 +	bool enabled(const std::string& channel)
 +	{
 +		int v = g.on.load();
 +		if (v >= 0) return v == 1;
-+		bool on = channel == "beta";
-+		for (const std::string& p : {fs::get_config_dir(true) + "orderupvr_live.txt", fs::get_config_dir() + "orderupvr_live.txt"})
-+			if (std::FILE* f = std::fopen(p.c_str(), "r"))
++		if (approved.load() == -2) return false;   // the check is running
++		if (approved.load() == -1)
++		{
++			std::string key;
++			if (channel == "beta")
++				for (const std::string& p : {fs::get_config_dir(true) + "orderupvr_live.txt", fs::get_config_dir() + "orderupvr_live.txt"})
++					if (std::FILE* f = std::fopen(p.c_str(), "r"))
++					{
++						char line[256] = {};
++						while (std::fgets(line, sizeof(line), f))
++							if (std::strncmp(line, "key=", 4) == 0)
++							{
++								key = line + 4;
++								while (!key.empty() && (key.back() == '\n' || key.back() == '\r' || key.back() == ' ')) key.pop_back();
++							}
++						std::fclose(f);
++						break;
++					}
++			if (key.size() < 8) { approved = 0; g.on = 0; return false; }
++			approved = -2;
++			std::thread([key]
 +			{
-+				char line[64] = {};
-+				while (std::fgets(line, sizeof(line), f)) if (std::strncmp(line, "live=off", 8) == 0) on = false;
-+				std::fclose(f);
-+				break;
-+			}
++				const std::string mine = sha256_hex(key);
++				const std::string list = fetch_testers();
++				bool ok = false;
++				if (!mine.empty())
++				{
++					usz p = 0;
++					while (p < list.size())
++					{
++						usz e = list.find('\n', p);
++						if (e == std::string::npos) e = list.size();
++						std::string ln = list.substr(p, e - p);
++						while (!ln.empty() && (ln.back() == '\r' || ln.back() == ' ')) ln.pop_back();
++						if (ln == mine) { ok = true; break; }
++						p = e + 1;
++					}
++				}
++				approved = ok ? 1 : 0;
++			}).detach();
++			return false;
++		}
++		bool on = approved.load() == 1 && channel == "beta";
 +		LARGE_INTEGER pc;
 +		QueryPerformanceCounter(&pc);
 +		g.session = hex(GetTickCount64() ^ (u64{GetCurrentProcessId()} << 40), static_cast<u64>(pc.QuadPart) * 0x9e3779b97f4a7c15ull);
