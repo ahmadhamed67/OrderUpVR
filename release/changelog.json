@@ -4,6 +4,17 @@
     "channel": "beta",
     "date": "2026-11-24",
     "simple": [
+      "Launcher: switching between Stable and Experimental in Settings now shows or hides the Tester key section at once. On Stable your key is never handed to the mod."
+    ],
+    "notes": [
+      "Launcher 1.25.1: SwitchChannel calls RefreshTesterRow() and WriteVrFile(), so the visibility and config/orderupvr_live.txt (keyp= only on beta, else live=off) follow the channel immediately. Verified with the --render-ui tour (Experimental shows the section, Stable hides it)."
+    ]
+  },
+  {
+    "version": "0.18.3",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
       "Live sharing uses a new connection that only approved testers' versions have. Older Experimental versions can no longer send anything."
     ],
     "notes": [

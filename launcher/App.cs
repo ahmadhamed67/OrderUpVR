@@ -125,7 +125,9 @@ namespace OrderUpVR
             steps.Add(delegate { shot("5_help2"); win.ShowHelpSlide(3); });
             steps.Add(delegate { shot("6_help4"); win.CloseHelp(); win.s.Channel = "beta"; win.OpenSettings(); });
             steps.Add(delegate { shot("7_settings"); var sv = FindChild<ScrollViewer>(win.Get<Grid>("SettingsPage")); if (sv != null) sv.ScrollToVerticalOffset(520); });
-            steps.Add(delegate { shot("8_settings_vr"); win.Close(); });
+            steps.Add(delegate { shot("8_settings_vr"); var sv = FindChild<ScrollViewer>(win.Get<Grid>("SettingsPage")); if (sv != null) sv.ScrollToVerticalOffset(0); });
+            steps.Add(delegate { shot("9_settings_top_experimental"); win.s.Channel = "stable"; win.BuildChannelRows(); win.RenderHeroChannel(); win.RefreshTesterRow(); });
+            steps.Add(delegate { shot("10_settings_top_stable"); win.Close(); });
             int k = 0;
             var t = new DispatcherTimer(); t.Interval = TimeSpan.FromMilliseconds(1300);
             t.Tick += delegate { if (k < steps.Count) steps[k++](); else t.Stop(); };
@@ -1928,6 +1930,10 @@ namespace OrderUpVR
             s.Save();
             BuildChannelRows();
             RenderHeroChannel();
+            // Live: the tester key section shows only on Experimental, and the file the mod reads follows at once
+            // (Stable: the key is not written there at all, so nothing can be shared)
+            RefreshTesterRow();
+            WriteVrFile();
             manifest = null;
             updatePromptShown = false;
             RefreshAll();
@@ -1999,12 +2005,18 @@ namespace OrderUpVR
             });
         }
 
+        void RefreshTesterRow()
+        {
+            bool beta = Core.ChannelOf(s) == "beta";
+            Get<StackPanel>("TesterRow").Visibility = beta ? Visibility.Visible : Visibility.Collapsed;
+            if (beta) CheckTesterKey();
+        }
+
         void OpenSettings()
         {
             BuildChannelRows();
             RenderFolderRows();
-            Get<StackPanel>("TesterRow").Visibility = Core.ChannelOf(s) == "beta" ? Visibility.Visible : Visibility.Collapsed;
-            if (Core.ChannelOf(s) == "beta") CheckTesterKey();
+            RefreshTesterRow();
             Get<TextBlock>("AboutText").Text = "Launcher " + Core.LauncherVersion + "   ·   Mod " + (ModInstalled ? s.InstalledVersion : "not installed") +
                 "\nInstalled in " + s.InstallDir;
             ShowPage("SettingsPage", true);
