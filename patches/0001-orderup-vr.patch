@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..aed6578c9
+index 000000000..e48abad9e
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10738 @@
+@@ -0,0 +1,10767 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1265,7 +1265,9 @@ index 000000000..aed6578c9
 +			bool sticks_chord = false;   // SteamVR: both sticks pressed together (pause), not a recentre
 +			u64 rstick_since = 0, select_pulse_until = 0;   // SteamVR: right stick held = pause, a quick click = Select
 +			bool rstick_paused = false;
-+			u64 stick_down_since = 0; // left stick click: short = recentre, hold = switch 3D / screen
++			u64 stick_down_since = 0; // left stick click: short = recentre (where you stand), hold 1.5 s = measure your height again
++			bool hlock = false, hlock_renew = false;   // your height is kept between placements (a recentre never changes it)
++			f32 hlock_y = 0.f;
 +			bool snap_armed = true;
 +			f32 lower = 0.f;          // how far below the game camera the player stands (metres; right stick up/down)
 +			bool height_dirty = false;
@@ -2061,7 +2063,7 @@ index 000000000..aed6578c9
 +				{L"GRIP", L"Grab food, boards and cards"},
 +				{L"TRIGGER", L"Press what you point at"},
 +				{L"FLIP", L"Hold GRIP, flick your wrist up"},
-+				{L"LEFT STICK", L"Walk (click: recenter)"},
++				{L"LEFT STICK", L"Walk (click: recenter, hold: height)"},
 +				{L"RIGHT STICK", L"Turn"},
 +				{g_steamvr ? L"HOLD R-STICK" : L"MENU", L"Pause the game"},
 +				{L"OVER SHOULDER", L"GRIP: the EXIT button"},
@@ -2515,7 +2517,14 @@ index 000000000..aed6578c9
 +			// True VR: one scale for your body, the lobby and the restaurant (your eyes are the chef's eyes). Your eyes go
 +			// to the chef's eye height above the game's floor (at most eye_drop below the game camera), stepped towards
 +			// what the camera looks at until it is within reach.
-+			xr.player_pos = xr.last_head;
++			// Your height is measured once (and again only when you hold the stick in, when your own height measurement
++			// changes, or the headset is recentred): a recentre or a new camera place then never moves the floor, however
++			// your head leans at that moment
++			vec3 head = xr.last_head;
++			if (xr.hlock && !xr.hlock_renew) head.y = xr.hlock_y;
++			else { xr.hlock = true; xr.hlock_y = xr.last_head.y; vr_log("Height: measured from your head now (%.2f m)", xr.last_head.y - xr.floor_y); }
++			xr.hlock_renew = false;
++			xr.player_pos = head;
 +			xr.player_yaw = xr.screen_yaw;
 +			xr.eye_off = {};
 +			{
@@ -2527,7 +2536,7 @@ index 000000000..aed6578c9
 +				// Your size: with a known floor, your real eye height (the chef's eyes are yours, and the kitchen's floor is
 +				// your real floor), standing or seated (seated, the world is scaled to your seated eyes, so the chef's feet
 +				// stand on your real floor and the counter comes to table height); with no floor, the chef's 1.6 m eyes
-+				const f32 eye_now = xr.last_head.y - xr.floor_y;
++				const f32 eye_now = head.y - xr.floor_y;
 +				const bool real_floor = xr.floor_known && (!xr.comfort.seated || (eye_now > 0.6f && eye_now < 1.8f));
 +				f32 eye_m = seated_eye_m;
 +				if (real_floor) eye_m = !xr.comfort.seated && xr.eye_est > 0.9f ? xr.eye_est : eye_now;
@@ -2647,7 +2656,7 @@ index 000000000..aed6578c9
 +						if (row_ok || kitchen_floor)
 +							vr_log("Stand: the kitchen's station row %s; at the camera's look point instead", row_ok ? "disagrees with the camera" : "is not in view");
 +					}
-+					xr.player_pos = xr.last_head - rotate(yaw_q(xr.player_yaw), xr.eye_off * u);
++					xr.player_pos = head - rotate(yaw_q(xr.player_yaw), xr.eye_off * u);
 +					static const char* rules[5] = {"", "the chef's eyes", "your real eyes over your floor", "seated at the counter", "over the game's counter"};
 +					static const char* floors[3] = {"guessed", "from the headset", "your hand touched it"};
 +					static const char* stands[4] = {"", "at the kitchen's station row", "at the camera's look point", "towards the camera's look point"};
@@ -4220,6 +4229,7 @@ index 000000000..aed6578c9
 +			u64 last = 0;
 +			int scans = 0;
 +			bool logged_found = false;
++			int streak_f = -1, streak = 0;   // the same chef seen alone, scans in a row
 +		};
 +		chef_detect_t g_detect;
 +
@@ -4301,9 +4311,15 @@ index 000000000..aed6578c9
 +					}
 +				}
 +				const int was = dd.chosen.load();
-+				// One chef clearly present (a profile's chef stays in video memory while its career is shown)
-+				if (hits[1] >= 2 && hits[1] > hits[0] + 1) { dd.chosen = 1; dd.found = true; }
-+				else if (hits[0] >= 2 && hits[0] > hits[1] + 1) { dd.chosen = 0; dd.found = true; }
++				// One chef alone in video memory (none of the other's pieces), in several scans in a row: your chef. Both
++				// chefs' pictures can be loaded at once (quick play, cutscenes, the lobby's other chef): then nothing
++				// changes. Once known, your chef changes only when the other one is seen alone for 5 scans (another profile).
++				const int alone = (hits[1] >= 2 && hits[0] == 0) ? 1 : (hits[0] >= 2 && hits[1] == 0) ? 0 : -1;
++				if (alone < 0) dd.streak = 0;
++				else if (alone == dd.streak_f) dd.streak++;
++				else { dd.streak_f = alone; dd.streak = 1; }
++				const int need = dd.found.load() ? 5 : 2;
++				if (alone >= 0 && dd.streak >= need && (!dd.found.load() || alone != dd.chosen.load())) { dd.chosen = alone; dd.found = true; }
 +				const bool found_now = dd.found.load();
 +				if (dd.chosen.load() != was || dd.scans++ == 0 || (found_now && !dd.logged_found))
 +				{
@@ -6166,9 +6182,11 @@ index 000000000..aed6578c9
 +			if (walked_off) vr_log("Menu: you walked away from the menu in front of you, it came to where you are now");
 +			if ((menu_up && !xr.menu_was_up) || !xr.menu_locked || walked_off)
 +			{
-+				const f32 hw = 0.34f, slope = 0.44f;   // about 0.68 m wide, sloping back 25 degrees: touch it or point at it
++				// about 0.50 m wide at 0.68 m (40 degrees of your view, as a TV shows the game: its tips, OK buttons and tabs at a
++				// readable size, not filling your eyes), sloping back 25 degrees, still within your fingertips' reach
++				const f32 hw = 0.25f, slope = 0.44f;
 +				hud_panel& m = xr.hud_room[3];
-+				set(m, head + fwd * 0.55f + vec3{0.f, -0.24f, 0.f}, head, hw, hw / aspect);
++				set(m, head + fwd * 0.68f + vec3{0.f, -0.20f, 0.f}, head, hw, hw / aspect);
 +				m.B = vec3{0.f, std::cos(slope), 0.f} + fwd * std::sin(slope);
 +				xr.hud_pf[3] = to_pf(xr.hud_room[3]);
 +				xr.menu_locked = true;
@@ -6676,7 +6694,8 @@ index 000000000..aed6578c9
 +							xr.last_auto_height = now_h;
 +							xr.height_off_since = 0;
 +							vr_log("Height (auto): your eyes are %.2f m above your floor, the scale in use was for %.2f m: placed again", xr.eye_est, used);
-+							auto_place(xr, "your height");
++							xr.hlock_renew = true;
++						auto_place(xr, "your height");
 +						}
 +						if (!xr.height_logged && settled) { xr.height_logged = true; vr_log("Height (auto): floor found, your eyes %.2f m up", xr.eye_est); }
 +					}
@@ -6723,7 +6742,14 @@ index 000000000..aed6578c9
 +				}
 +				else
 +				{
-+					if (xr.stick_down_since && !xr.sticks_chord) place_screen(xr);
++					if (xr.stick_down_since && !xr.sticks_chord)
++					{
++						const bool hold = now_ms - xr.stick_down_since >= 1500;
++						if (hold) xr.hlock_renew = true;
++						vr_log("Recentre: stick %s (%s)", hold ? "held" : "clicked", hold ? "your height is measured again" : "your height is kept");
++						place_screen(xr);
++						buzz(xr, 0, hold ? 0.8f : 0.4f, hold ? 200 : 80);
++					}
 +					xr.stick_down_since = 0;
 +				}
 +				if (!lclick && !rclick) xr.sticks_chord = false;
@@ -7686,6 +7712,7 @@ index 000000000..aed6578c9
 +					// The headset was recentred (its own menu): the room's origin moves. A floor your hand found is in the old
 +					// room, so it is found again; the headset's own floor comes again on its own.
 +					const auto& ch = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&event);
++					if (ch.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) xr.hlock_renew = true;
 +					if (ch.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL && xr.floor_src == 2)
 +					{
 +						xr.floor_known = false;
@@ -7798,6 +7825,8 @@ index 000000000..aed6578c9
 +				xr.live3d = xr.mode3d && (fresh || hold) && xr.eye_has[0] && (xr.mono3d || xr.eye_has[1]);
 +			}
 +			if (xr.live3d != was3d) vr_log("Headset view: %s", xr.live3d ? "inside the game (3D)" : "big screen");
++			// the first time inside the game (you have your headset on and sit or stand as you will play): your height is measured
++			{ static bool first3d = true; if (xr.live3d && first3d) { first3d = false; xr.hlock_renew = true; } }
 +
 +			XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 +			XrCompositionLayerQuad panel{XR_TYPE_COMPOSITION_LAYER_QUAD};

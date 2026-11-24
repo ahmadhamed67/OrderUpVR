@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.18.7",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Your height stays put: clicking the left stick only recentres where you stand, and a new camera view (Y) no longer moves the floor. Hold the left stick for 1.5 s to measure your height again.",
+      "Your chef no longer flips between male and female in Quick Play.",
+      "Tips, OK buttons and tabs are smaller and a little further away, so they can be read and pressed."
+    ],
+    "notes": [
+      "Height lock: place_screen measures from a kept head height (hlock_y), renewed on the first 3D view, a 1.5 s stick hold, the automatic height measurement and a headset recentre.",
+      "Chef detection: a chef is adopted only when its texture pieces are found with none of the other's, 2 scans in a row (5 to change once known).",
+      "Front panel: 0.50 m wide at 0.68 m (was 0.68 m at 0.55 m)."
+    ]
+  },
+  {
     "version": "0.18.6",
     "channel": "beta",
     "date": "2026-11-24",
