@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..33bda3458
+index 000000000..e1892de67
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10789 @@
+@@ -0,0 +1,10817 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -11002,6 +11002,34 @@ index 000000000..33bda3458
 +				std::fclose(f);
 +				break;
 +			}
++		}
++		// Crash guard (always on): the kitchen start code (0x92f78) looks an item up by id (0x9e638, a list search that
++		// gives null when the id is missing, as for a restaurant opened before its career unlocks it) and hands the result
++		// to 0x9e068, which reads 0x10(r31) from it: an access violation, the emulator freezes ("PS3 application has likely
++		// crashed", 2026-11-24 14:23:59 at 0x92fd0). 0x9e068 now returns 0 at once for null, the answer it already gives
++		// for "nothing there" (its caller then skips that step). Room for the check: its own "cmpwi r4,0 / beq" tests a
++		// constant (r4 = 0x32b430) and never branches, so the prologue moves down two words over it. 2 callers, no branch
++		// lands inside the moved words.
++		{
++			static const u32 was[22] = {0xf821ff41, 0x7c0802a6, 0xf80100d0, 0xfbe100b8, 0x607f0000, 0x3c600037, 0x8063b430, 0x8063000c, 0x3063002c, 0x78630020, 0x3c800033,
++				0x3084b430, 0xfbc100b0, 0xfba100a8, 0xfb8100a0, 0xfb610098, 0xfb410090, 0xfb210088, 0xfb010080, 0xfae10078, 0x2c040000, 0x41820100};
++			bool same = true;
++			for (u32 k = 0; k < 22 && same; k++)
++			{
++				const u8* p = ptr(0x9e068 + k * 4, 4);
++				same = p && static_cast<u32>(p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]) == was[k];
++			}
++			if (same)
++			{
++				for (u32 k = 0; k < 22; k++)
++				{
++					const u32 v = k == 0 ? 0x2c030000u : k == 1 ? 0x4d820020u : was[k - 2];   // cmpwi r3,0 ; beqlr ; the prologue
++					u8* p = ptr(0x9e068 + k * 4, 4);
++					p[0] = static_cast<u8>(v >> 24); p[1] = static_cast<u8>(v >> 16); p[2] = static_cast<u8>(v >> 8); p[3] = static_cast<u8>(v);
++					applied.push_back(0x9e068 + k * 4);
++				}
++			}
++			vr_log("Fix: kitchen start crash guard %s", same ? "applied" : "not applied (unexpected game code)");
 +		}
 +		if (kv["enabled"] == "off") return;
 +		const auto write = [&](u32 addr, u32 expect, u32 value) -> bool

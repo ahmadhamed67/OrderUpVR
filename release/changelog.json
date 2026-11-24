@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.18.9",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Fixed a crash a few seconds into some restaurants ('The PS3 application has likely crashed'): the game no longer freezes when a restaurant opened early by the unlock mod is missing something."
+    ],
+    "notes": [
+      "Crash 2026-11-24 14:23:59, kitchen 8c524289: F VM main_thread at 0x92fd0. The kitchen start code looks an item up by id (0x9e638 returns null when the id is not in its list) and passes it to 0x9e068, which reads 0x10(r31) from it. 0x9e068 now begins with cmpwi r3,0 / beqlr (returns 0, its own 'nothing' answer); the prologue moved down two words over its dead 'cmpwi r4,0 / beq' (r4 is the constant 0x32b430). 2 callers, no branch into the moved words. Verified by disassembling the patched image."
+    ]
+  },
+  {
     "version": "0.18.8",
     "channel": "beta",
     "date": "2026-11-24",
