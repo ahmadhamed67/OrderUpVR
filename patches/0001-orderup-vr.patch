@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..9eed126cc
+index 000000000..b5d775ddc
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10478 @@
+@@ -0,0 +1,10481 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -606,6 +606,9 @@ index 000000000..9eed126cc
 +#pragma comment(lib, "winhttp.lib")
 +#include <bcrypt.h>
 +#pragma comment(lib, "bcrypt.lib")
++#include <wincrypt.h>
++#include <dpapi.h>
++#pragma comment(lib, "crypt32.lib")
 +#include <string>
 +#include <thread>
 +#include <span>
@@ -12232,10 +12235,10 @@ index 000000000..3c6d26593
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..ea695a079
+index 000000000..d7e08095d
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
-@@ -0,0 +1,766 @@
+@@ -0,0 +1,783 @@
 +// Order Up VR: live test stream (Experimental). While you play, the mod sends what happens straight to the developer's
 +// Sentry project, so testing needs no log zips:
 +//  - every line the mod logs and the 4-per-second track (head, hands, buttons, pointer, HUD), batched every second
@@ -12434,12 +12437,29 @@ index 000000000..ea695a079
 +				for (const std::string& p : {fs::get_config_dir(true) + "orderupvr_live.txt", fs::get_config_dir() + "orderupvr_live.txt"})
 +					if (std::FILE* f = std::fopen(p.c_str(), "r"))
 +					{
-+						char line[256] = {};
++						char line[2048] = {};
 +						while (std::fgets(line, sizeof(line), f))
-+							if (std::strncmp(line, "key=", 4) == 0)
++							if (std::strncmp(line, "keyp=", 5) == 0)
 +							{
-+								key = line + 4;
-+								while (!key.empty() && (key.back() == '\n' || key.back() == '\r' || key.back() == ' ')) key.pop_back();
++								// the key, encrypted by the launcher for this Windows user (DPAPI): only this user on this PC can read it
++								std::string b64 = line + 5;
++								while (!b64.empty() && (b64.back() == '\n' || b64.back() == '\r' || b64.back() == ' ')) b64.pop_back();
++								DWORD n = 0;
++								if (CryptStringToBinaryA(b64.c_str(), 0, CRYPT_STRING_BASE64, nullptr, &n, nullptr, nullptr) && n && n < 4096)
++								{
++									std::vector<BYTE> blob(n);
++									if (CryptStringToBinaryA(b64.c_str(), 0, CRYPT_STRING_BASE64, blob.data(), &n, nullptr, nullptr))
++									{
++										static const char ent[] = "OrderUpVR tester key v1";
++										DATA_BLOB in{n, blob.data()}, entropy{static_cast<DWORD>(sizeof(ent) - 1), reinterpret_cast<BYTE*>(const_cast<char*>(ent))}, out{};
++										if (CryptUnprotectData(&in, nullptr, &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out))
++										{
++											key.assign(reinterpret_cast<const char*>(out.pbData), out.cbData);
++											SecureZeroMemory(out.pbData, out.cbData);
++											LocalFree(out.pbData);
++										}
++									}
++								}
 +							}
 +						std::fclose(f);
 +						break;

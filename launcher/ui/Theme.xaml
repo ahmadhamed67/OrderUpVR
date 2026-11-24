@@ -274,6 +274,29 @@
     </Setter>
   </Style>
 
+  <!-- A masked field (the tester key), same look as Field -->
+  <Style x:Key="SecretField" TargetType="PasswordBox">
+    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+    <Setter Property="CaretBrush" Value="{StaticResource Text}"/>
+    <Setter Property="SelectionBrush" Value="{StaticResource Accent}"/>
+    <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="PasswordBox">
+          <Border x:Name="Bd" CornerRadius="11" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1">
+            <ScrollViewer x:Name="PART_ContentHost" Margin="12,9" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+              <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Accent}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
   <!-- Thin scrollbar -->
   <Style TargetType="ScrollBar">
     <Setter Property="Width" Value="8"/>

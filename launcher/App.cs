@@ -544,9 +544,20 @@ namespace OrderUpVR
             au.IsChecked = !s.NoAutoUpdate;
             au.Click += delegate { s.NoAutoUpdate = au.IsChecked != true; s.Save(); };
             // Live test sharing: only invited testers, only in Experimental, only with a key the developer approved
-            var tk = Get<TextBox>("TesterKeyBox");
-            tk.Text = s.TesterKey ?? "";
-            tk.LostFocus += delegate { s.TesterKey = tk.Text.Trim(); s.Save(); WriteVrFile(); };
+            // The key is kept encrypted for this Windows user only (never as plain text), masked on screen, and checked
+            // against the approved list right away: the line under it says whether it is approved.
+            if (!string.IsNullOrEmpty(s.TesterKey)) { s.TesterKeyProtected = Core.Protect(s.TesterKey.Trim()); s.TesterKey = null; s.Save(); }
+            var tk = Get<PasswordBox>("TesterKeyBox");
+            tk.Password = Core.Unprotect(s.TesterKeyProtected) ?? "";
+            tk.LostFocus += delegate
+            {
+                string k = tk.Password.Trim();
+                s.TesterKeyProtected = k.Length > 0 ? Core.Protect(k) : null;
+                s.Save();
+                WriteVrFile();
+                CheckTesterKey();
+            };
+            tk.KeyDown += (o, e) => { if (e.Key == Key.Enter) Keyboard.ClearFocus(); };
             var mt = Get<CheckBox>("MinimizeToggle");
             mt.IsChecked = !s.KeepLauncherOpen;
             mt.Click += delegate { s.KeepLauncherOpen = mt.IsChecked != true; s.Save(); };
@@ -675,8 +686,9 @@ namespace OrderUpVR
                 sb.Append("stereo=on\nhuddist=1.5\ncutscenes=screen\nkitchen=room\nlookswitch=off\nwideview=on\npointing=hand\n");
                 File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_comfort.txt"), sb.ToString());
                 // Shared live only by an approved tester in Experimental (the mod checks the key against the approved list)
-                string key = Core.ChannelOf(s) == "beta" ? (s.TesterKey ?? "").Trim() : "";
-                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), key.Length > 0 ? "key=" + key + "\n" : "live=off\n");
+                // (the key is written encrypted for this Windows user: the file is useless on another PC or account)
+                string kp = Core.ChannelOf(s) == "beta" ? (s.TesterKeyProtected ?? "") : "";
+                File.WriteAllText(System.IO.Path.Combine(dir, "orderupvr_live.txt"), kp.Length > 0 ? "keyp=" + kp + "\n" : "live=off\n");
             }
             catch { }
         }
@@ -1964,11 +1976,35 @@ namespace OrderUpVR
             }
         }
 
+        // The line under the tester key: approved (green), not approved (red), could not check (amber), or no key
+        int testerCheck;
+        void CheckTesterKey()
+        {
+            var dot = Get<Ellipse>("TesterDot");
+            var st = Get<TextBlock>("TesterStatus");
+            string key = Core.Unprotect(s.TesterKeyProtected);
+            if (string.IsNullOrEmpty(key)) { dot.Fill = DimBrush; st.Foreground = DimBrush; st.Text = "No key: nothing is shared"; return; }
+            dot.Fill = DimBrush; st.Foreground = DimBrush; st.Text = "Checking your key...";
+            int ticket = ++testerCheck;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                int r = Core.TesterApproved(key);
+                Ui(delegate
+                {
+                    if (ticket != testerCheck) return;   // a newer check is running
+                    if (r == 1) { dot.Fill = GoodBrush; st.Foreground = GoodBrush; st.Text = "✓ Approved tester: your Experimental sessions are shared with the developer"; }
+                    else if (r == 0) { dot.Fill = BadBrush; st.Foreground = BadBrush; st.Text = "✗ This key is not approved: nothing is shared"; }
+                    else { dot.Fill = WarnBrush; st.Foreground = WarnBrush; st.Text = "Couldn't check the key (no internet?): nothing is shared until it can be checked"; }
+                });
+            });
+        }
+
         void OpenSettings()
         {
             BuildChannelRows();
             RenderFolderRows();
             Get<StackPanel>("TesterRow").Visibility = Core.ChannelOf(s) == "beta" ? Visibility.Visible : Visibility.Collapsed;
+            if (Core.ChannelOf(s) == "beta") CheckTesterKey();
             Get<TextBlock>("AboutText").Text = "Launcher " + Core.LauncherVersion + "   ·   Mod " + (ModInstalled ? s.InstalledVersion : "not installed") +
                 "\nInstalled in " + s.InstallDir;
             ShowPage("SettingsPage", true);

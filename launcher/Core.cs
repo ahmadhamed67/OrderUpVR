@@ -57,7 +57,8 @@ namespace OrderUpVR
         public bool NoAutoUpdate { get; set; }       // default false = check automatically
         public bool KeepLauncherOpen { get; set; }   // default false = minimize while playing
         public bool NoLiveStream { get; set; }       // (no longer used: live sharing needs an approved tester key)
-        public string TesterKey { get; set; }        // an invited tester's key (Experimental only); empty = nothing is shared
+        public string TesterKey { get; set; }        // (old plain-text key: moved into TesterKeyProtected on start, then cleared)
+        public string TesterKeyProtected { get; set; } // an invited tester's key, encrypted for this Windows user (Experimental only)
         public bool Uninstalled { get; set; }        // removed with "keep my data"; setup offers to reuse it
         public string PreparedVersion { get; set; }  // mod version that already finished its first-start preparation
         public bool SeenHowTo { get; set; }          // the controls guide was shown once
@@ -500,6 +501,49 @@ namespace OrderUpVR
         const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\OrderUpVR";
         public const string MarkerName = ".orderupvr";
         public const string RepoUrl = "https://github.com/ahmadhamed67/OrderUpVR";
+
+        // ---- Tester keys. Kept encrypted with Windows' per-user protection (DPAPI, with the mod's own entropy so the mod can
+        // read it for the same user); approved when the key's SHA-256 is in the published list of approved testers.
+        public const string TestersUrl = "https://raw.githubusercontent.com/ahmadhamed67/OrderUpVR/main/testers.txt";
+        static readonly byte[] KeyEntropy = Encoding.UTF8.GetBytes("OrderUpVR tester key v1");
+
+        public static string Protect(string key)
+        {
+            return Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(key), KeyEntropy, DataProtectionScope.CurrentUser));
+        }
+
+        public static string Unprotect(string protectedKey)
+        {
+            if (string.IsNullOrEmpty(protectedKey)) return null;
+            try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(protectedKey), KeyEntropy, DataProtectionScope.CurrentUser)); }
+            catch { return null; }
+        }
+
+        // 1 approved, 0 not approved, -1 could not check (no internet)
+        public static int TesterApproved(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return 0;
+            string mine;
+            using (var sha = SHA256.Create())
+            {
+                var sb = new StringBuilder();
+                foreach (byte b in sha.ComputeHash(Encoding.UTF8.GetBytes(key))) sb.Append(b.ToString("x2"));
+                mine = sb.ToString();
+            }
+            string list;
+            try
+            {
+                using (var wc = new WebClient())
+                {
+                    wc.Headers[HttpRequestHeader.CacheControl] = "no-cache";
+                    list = wc.DownloadString(TestersUrl + "?t=" + DateTime.UtcNow.Ticks);
+                }
+            }
+            catch { return -1; }
+            foreach (string line in list.Split('\n'))
+                if (line.Trim() == mine) return 1;
+            return 0;
+        }
 
         public static void RegisterApp(Settings s)
         {

@@ -62,7 +62,7 @@ try {
     $wpf = Join-Path $fw 'WPF'
     $refs = @(
         "/r:$wpf\PresentationFramework.dll", "/r:$wpf\PresentationCore.dll", "/r:$wpf\WindowsBase.dll", "/r:$fw\System.Xaml.dll",
-        '/r:System.Web.Extensions.dll', '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', '/r:System.Drawing.dll'
+        '/r:System.Web.Extensions.dll', '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', '/r:System.Drawing.dll', '/r:System.Security.dll'
     )
     $res = foreach ($x in Get-ChildItem (Join-Path $PSScriptRoot 'ui') -Filter *.xaml) { "/resource:$($x.FullName),OrderUpVR.$($x.Name)" }
     & (Join-Path $fw 'csc.exe') /nologo /codepage:65001 /target:winexe /platform:anycpu /optimize+ "/out:$Out" "/win32icon:$icoPath" @refs @res @sources

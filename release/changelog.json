@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.18.2",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Settings shows whether your tester key is approved: a green tick when your sessions are shared, a red cross when the key isn't approved, amber when it can't be checked.",
+      "Your tester key is hidden while you type it and stored encrypted for your Windows account only. It's never saved as plain text."
+    ],
+    "notes": [
+      "Launcher 1.25.0: PasswordBox (SecretField style) plus a status line. Core.TesterApproved checks SHA-256 against testers.txt (no-cache) on save and whenever Settings opens. The key is stored with DPAPI CurrentUser plus entropy 'OrderUpVR tester key v1' (TesterKeyProtected; an old plain TesterKey is migrated and cleared). The launcher writes keyp=<base64 DPAPI blob>.",
+      "Mod: reads keyp= only (plain key= is no longer accepted), decodes with CryptStringToBinaryA + CryptUnprotectData using the same entropy, and wipes the decrypted copy after use."
+    ]
+  },
+  {
     "version": "0.18.1",
     "channel": "beta",
     "date": "2026-11-24",
