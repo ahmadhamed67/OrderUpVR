@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.19.1",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "The competition no longer freezes the game: when the game looks for something that is not there, it now finds 'nothing' and carries on.",
+      "Your body is always the chef you chose in the quick setup (it used to guess from the game and picked the wrong one in the competition).",
+      "If the game ever crashes again, the exact place and the emulator's state are sent with the live test data, so it can be fixed in one go."
+    ],
+    "notes": [
+      "The 0.18.9 guard at 0x9e068 was applied (log) but the arena still froze at 0x92fd0 (15:13:26): the null read is elsewhere on that path. Now the 64 KB page under the program (0x0-0xFFFF, nothing of the game there) is mapped read-only and zero, so null+offset reads give 0 instead of an access violation; writes there still stop.",
+      "Access violations now send a live crash report with the address and dump_useful_thread_info() (registers, function).",
+      "Chef: want = menu_female always; the video-memory detection only logs (it saw male 2 / female 0 in the arena with a female profile)."
+    ]
+  },
+  {
     "version": "0.19.0",
     "channel": "beta",
     "date": "2026-11-24",

@@ -1,3 +1,25 @@
+diff --git a/Utilities/Thread.cpp b/Utilities/Thread.cpp
+index 8f79b7c3f..f711b0f96 100644
+--- a/Utilities/Thread.cpp
++++ b/Utilities/Thread.cpp
+@@ -123,6 +123,8 @@ namespace stx
+ 
+ enum cpu_threads_emulation_info_dump_t : u32 {};
+ 
++namespace ouvr { void live_fatal(std::string_view text); }
++
+ std::string dump_useful_thread_info()
+ {
+ 	std::string result;
+@@ -2250,6 +2252,8 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
+ 	{
+ 		vm_log.notice("\n%s", dump_useful_thread_info());
+ 		vm_log.fatal("Access violation %s location 0x%x (%s)", is_writing ? "writing" : (is_exec ? "executing" : "reading"), addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
++		// Order Up VR: the crash, its address and the thread's registers to the live test stream (testers only)
++		ouvr::live_fatal(fmt::format("Access violation %s location 0x%x, %s", is_writing ? "writing" : (is_exec ? "executing" : "reading"), addr, dump_useful_thread_info()));
+ 	}
+ 
+ 	while (Emu.IsPausedOrReady())
 diff --git a/rpcs3/Emu/Cell/Modules/cellGem.cpp b/rpcs3/Emu/Cell/Modules/cellGem.cpp
 index 0dfcf9cb7..c89550dac 100644
 --- a/rpcs3/Emu/Cell/Modules/cellGem.cpp
@@ -551,10 +573,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..d077faa0e
+index 000000000..d54c68b10
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10829 @@
+@@ -0,0 +1,10844 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -2099,7 +2121,7 @@ index 000000000..d077faa0e
 +				{"turnspeed", L"Turn speed", L"How fast smooth turning goes", "120", {{"60", L"Slow"}, {"90", L"Gentle"}, {"120", L"Medium"}, {"180", L"Fast"}, {"240", L"Very fast"}}},
 +				{"movespeed", L"Walking speed", L"How fast the left stick walks you", "1.4", {{"1.0", L"Slow"}, {"1.4", L"Normal"}, {"2.0", L"Fast"}}},
 +				{"vignette", L"Comfort vignette", L"Darkens the edges of your view while the stick moves you", "on", {{"on", L"On"}, {"off", L"Off"}}},
-+				{"menuchef", L"Your chef", L"Your body in the menus and the lobby (a career uses its own chef)", "male", {{"male", L"Male"}, {"female", L"Female"}}},
++				{"menuchef", L"Your chef", L"Your body in VR, everywhere in the game", "male", {{"male", L"Male"}, {"female", L"Female"}}},
 +				{"lipsync", L"Lip sync", L"Your chef's mouth moves when you talk (nothing is recorded)", "on", {{"on", L"On"}, {"off", L"Off"}}},
 +			};
 +			return t;
@@ -4388,7 +4410,10 @@ index 000000000..d077faa0e
 +			if (xr.live3d) chef_detect_tick();   // never on menus: the load menu shows the default (male) chef
 +			// Your body is your profile's chef once the game has shown it (a female profile gives a female body); until then
 +			// (main menu, lobby) the menu chef from the launcher
-+			const int want = !xr.comfort.body ? -1 : g_detect.found.load() ? g_detect.chosen.load() : (xr.comfort.menu_female ? 1 : 0);
++			// Your body is the chef YOU chose (quick setup / launcher): the game's video memory holds whichever chef models a scene
++			// needs (the competition's arena loads the male model with a female profile, 2026-11-24 15:12), so reading it gave
++			// the wrong body. The detection still runs and is logged, but it no longer decides.
++			const int want = !xr.comfort.body ? -1 : (xr.comfort.menu_female ? 1 : 0);
 +			if (want >= 0) xr.comfort.female = want == 1;   // the simple body too (proportions, neckerchief)
 +			if (want < 0 || !g.cvs || c.state == 1) return;
 +			if (want != c.which)
@@ -11042,6 +11067,18 @@ index 000000000..d077faa0e
 +				}
 +			}
 +			vr_log("Fix: kitchen start crash guard %s", same ? "applied" : "not applied (unexpected game code)");
++		}
++		// Safety net (always on): this game reads through null pointers when something it looks for is not there (a
++		// restaurant or the competition opened in a state the game did not expect): the emulator froze ("PS3 application
++		// has likely crashed", 2026-11-24 14:23 and 15:13, in the competition's arena). The page under the program
++		// (0x0-0xFFFF: nothing of the game lives there, it starts at 0x10000) becomes read-only zeros, so such a read finds
++		// "nothing" (0), which the game's own checks then handle, instead of stopping the emulation. Writes there still stop.
++		{
++			bool ok = false;
++			if (!vm::check_addr(0))
++				if (const auto blk = vm::map(0, 0x10000, 0))
++					ok = blk->falloc(0, 0x10000, nullptr, vm::alloc_unwritable);
++			vr_log("Fix: zero page under the program %s", ok ? "mapped (null reads give 0)" : "not mapped");
 +		}
 +		if (kv["enabled"] == "off") return;
 +		const auto write = [&](u32 addr, u32 expect, u32 value) -> bool
