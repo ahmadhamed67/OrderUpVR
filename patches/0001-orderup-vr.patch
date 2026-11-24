@@ -551,10 +551,10 @@ index 1ff578491..582984ecd 100644
  		// Compare memory changes in memory after executable code sections end
 diff --git a/rpcs3/Emu/Io/OrderUpVR.cpp b/rpcs3/Emu/Io/OrderUpVR.cpp
 new file mode 100644
-index 000000000..e48abad9e
+index 000000000..33bda3458
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR.cpp
-@@ -0,0 +1,10767 @@
+@@ -0,0 +1,10789 @@
 +#include "stdafx.h"
 +#include "OrderUpVR.h"
 +
@@ -1268,6 +1268,8 @@ index 000000000..e48abad9e
 +			u64 stick_down_since = 0; // left stick click: short = recentre (where you stand), hold 1.5 s = measure your height again
 +			bool hlock = false, hlock_renew = false;   // your height is kept between placements (a recentre never changes it)
 +			f32 hlock_y = 0.f;
++			bool place_retry = false;   // placed before the game's floor was known: placed again once it is
++			u64 place_retry_at = 0;
 +			bool snap_armed = true;
 +			f32 lower = 0.f;          // how far below the game camera the player stands (metres; right stick up/down)
 +			bool height_dirty = false;
@@ -2537,7 +2539,11 @@ index 000000000..e48abad9e
 +				// your real floor), standing or seated (seated, the world is scaled to your seated eyes, so the chef's feet
 +				// stand on your real floor and the counter comes to table height); with no floor, the chef's 1.6 m eyes
 +				const f32 eye_now = head.y - xr.floor_y;
-+				const bool real_floor = xr.floor_known && (!xr.comfort.seated || (eye_now > 0.6f && eye_now < 1.8f));
++				// Seated (as VR games do it): the world keeps its real size and your eyes are the chef's standing eyes; your real
++				// floor is not the kitchen's (you sit lower than you would stand, so the counter comes to your seated hands).
++				// The old seated rule shrank the whole restaurant to your seated eye height: everything was a toy's size.
++				(void)eye_now;
++				const bool real_floor = xr.floor_known && !xr.comfort.seated;
 +				f32 eye_m = seated_eye_m;
 +				if (real_floor) eye_m = !xr.comfort.seated && xr.eye_est > 0.9f ? xr.eye_est : eye_now;
 +				xr.unit = std::clamp(eye_m / chef_eye_u, unit_lo, unit_hi);
@@ -2580,7 +2586,7 @@ index 000000000..e48abad9e
 +					// Seated: the kitchen's counter goes where a table is for you, a little below your elbows (0.45 m under your
 +					// eyes), not in your lap
 +					constexpr f32 seated_eye_over_counter_m = 0.45f;
-+					if (xr.comfort.seated && kitchen_floor && top_k > 0.3f && top_k < cam_u - 0.3f)
++					if (false && xr.comfort.seated && kitchen_floor && top_k > 0.3f && top_k < cam_u - 0.3f)
 +					{
 +						if (real_floor)
 +						{
@@ -2666,8 +2672,18 @@ index 000000000..e48abad9e
 +						rules[xr.eye_rule], eye_u * u, step * u, stands[xr.stand_rule], xr.stand_gap, xr.stand_turn * 57.29578f, xr.counter_drop,
 +						kpkg, xr.kit_state == 1 ? "used" : xr.kit_state == 2 ? "rejected" : "none");
 +				}
-+				else vr_log("Recentred: %s, %.3f m per unit, the game camera is at your eyes (restaurant floor %s)",
-+					xr.comfort.seated ? "seated" : "standing", u, c.bounds ? "out of range" : "not measured yet");
++				else
++				{
++					// The game's floor is not known yet (the first moment of a scene): never at the camera (it hangs metres up, in
++					// the sky); your eyes go as far under it as a kitchen camera usually is above the chef's eyes, and you are
++					// placed again as soon as the floor is measured
++					xr.eye_off = {0.f, chef_eye_u - 3.5f, 0.f};
++					xr.player_pos = head - rotate(yaw_q(xr.player_yaw), xr.eye_off * u);
++					xr.eye_rule = 0;
++					vr_log("Recentred: %s, %.3f m per unit, the game's floor is not measured yet: your eyes 2 units under the camera for now (restaurant floor %s)",
++						xr.comfort.seated ? "seated" : "standing", u, c.bounds ? "out of range" : "not measured yet");
++					xr.place_retry = true;
++				}
 +			}
 +			xr.player_pos.y += xr.lower;
 +			vr_log("Screen placed: centre (%.2f, %.2f, %.2f), yaw %.1f deg, %.2f m wide at %.2f m",
@@ -7640,6 +7656,12 @@ index 000000000..e48abad9e
 +					xr.seen_place_id = cam.place_id;
 +					xr.last_auto_recentre = now_ms;
 +					if (cam.place_id) auto_place(xr, "a new camera place");
++				}
++				else if (xr.live3d && xr.place_retry && !cam.cinema && now_ms - xr.place_retry_at > 1000)
++				{
++					xr.place_retry_at = now_ms;
++					xr.place_retry = false;
++					place_screen(xr);   // (sets place_retry again while the floor is still unknown)
 +				}
 +			}
 +

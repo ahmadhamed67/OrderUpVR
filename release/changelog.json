@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.18.8",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Fixed: entering the kitchen put you up at the game camera, metres in the air. You now start at the chef's eye height and are placed properly as soon as the kitchen is measured.",
+      "Seated now works like other VR games: the restaurant keeps its real size and you see from the chef's standing eyes while you sit, with the counter at your hands."
+    ],
+    "notes": [
+      "Root cause of 'raised to the sky': place_screen with no measured floor left eye_off at 0 (eyes at the camera, 3.5-4.5 units up) until the next camera place change; now eyes go 2.05 units under the camera and placement retries every second until measured.",
+      "Seated used to scale the world to the seated eye height (unit 0.77 for 1.14 m eyes, about 70% size); now unit = 1.6 m / chef eyes and a height offset, as standard seated VR."
+    ]
+  },
+  {
     "version": "0.18.7",
     "channel": "beta",
     "date": "2026-11-24",
