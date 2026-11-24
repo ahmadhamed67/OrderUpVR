@@ -12235,7 +12235,7 @@ index 000000000..3c6d26593
 +}
 diff --git a/rpcs3/Emu/Io/OrderUpVR_live.inl b/rpcs3/Emu/Io/OrderUpVR_live.inl
 new file mode 100644
-index 000000000..d7e08095d
+index 000000000..6bf223748
 --- /dev/null
 +++ b/rpcs3/Emu/Io/OrderUpVR_live.inl
 @@ -0,0 +1,783 @@
@@ -12253,7 +12253,7 @@ index 000000000..d7e08095d
 +{
 +	constexpr const wchar_t* host = L"o4512473892126720.ingest.de.sentry.io";
 +	constexpr const wchar_t* path = L"/api/4512479065604176/envelope/";
-+	constexpr const char* key = "72893c6f3d527017a94b02896e2c5da3";
++	constexpr const char* key = "c21ff38a7be0ea8e7db3111f51e60ddb";   // the approved-testers key (0.18.3+); the old key of 0.17.1-0.18.2 is switched off in Sentry
 +
 +	void log(const char* level, const std::string& body, const char* kind, f64 at = 0.0);
 +	void state_line(const std::string& line);

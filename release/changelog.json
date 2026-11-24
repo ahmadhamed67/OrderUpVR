@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.18.3",
+    "channel": "beta",
+    "date": "2026-11-24",
+    "simple": [
+      "Live sharing uses a new connection that only approved testers' versions have. Older Experimental versions can no longer send anything."
+    ],
+    "notes": [
+      "New Sentry client key c21ff38a ('Approved testers (0.18.3+)'). The old key 72893c6f, built into 0.17.1-0.18.2, is deactivated in Sentry, so anything those versions send is rejected at Sentry's door, whatever is installed."
+    ]
+  },
+  {
     "version": "0.18.2",
     "channel": "beta",
     "date": "2026-11-24",
